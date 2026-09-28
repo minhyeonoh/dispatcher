@@ -29,6 +29,7 @@ dev = [
 
 [project.scripts]
 dispatcher = "dispatcher.cli:main"
+dispatcher-weight-tuner = "dispatcher.weight_tuner:main"
 
 [build-system]
 requires = ["hatchling"]

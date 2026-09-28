@@ -44,7 +44,27 @@ def main(argv: list[str] | None = None) -> int:
     default=None,
     help="built web UI to serve at /ui",
   )
+  monitor = sub.add_parser(
+    "monitor", help="live terminal monitor over the SSE stream"
+  )
+  monitor.add_argument("--server", default="http://127.0.0.1:7200")
+  monitor.add_argument("--detail", default=None, metavar="ATTEMPT_ID")
+  monitor.add_argument("--refresh-per-second", type=int, default=4)
+
   args = ap.parse_args(argv)
+
+  if args.cmd == "monitor":
+    from rich.console import Console
+
+    from dispatcher.monitor_ui import run_monitor
+
+    run_monitor(
+      server=args.server,
+      detail=args.detail,
+      refresh_per_second=args.refresh_per_second,
+      console=Console(),
+    )
+    return 0
 
   import uvicorn
 

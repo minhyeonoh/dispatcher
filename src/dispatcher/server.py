@@ -63,6 +63,15 @@ from dispatcher.event_log import (
   scan_outcomes,
   seq_in_trial_name,
 )
+from dispatcher.host_autotune import (
+  HOST_METRICS_FILENAME,
+  HostAutotuneConfig,
+  HostAutotunePatch,
+  HostAutotuneState,
+  autotune_tick,
+  load_ring,
+  truncate_ring_file,
+)
 from dispatcher.metrics import AttemptMetrics, MetricsCache
 from dispatcher.models import HostSettings, TrialView
 from dispatcher.notify import (
@@ -130,6 +139,9 @@ class DispatcherConfig(BaseModel):
     default_factory=StateReconciliationConfig
   )
   orphan_gc: OrphanGCConfig = Field(default_factory=OrphanGCConfig)
+  host_autotune: HostAutotuneConfig = Field(
+    default_factory=HostAutotuneConfig
+  )
   pool_caps: dict[str, NonNegativeInt] = Field(default_factory=dict)
   notify: NotifyConfig = Field(default_factory=NotifyConfig)
   archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
@@ -176,6 +188,7 @@ class SettingsPatch(BaseModel):
   max_concurrent: NonNegativeInt | None = None
   state_reconciliation: StateReconciliationPatch | None = None
   orphan_gc: OrphanGCPatch | None = None
+  host_autotune: HostAutotunePatch | None = None
   notify: NotifyPatch | None = None
   archive: ArchivePatch | None = None
   # Whole-dict replacement; {} clears all caps.
@@ -206,6 +219,7 @@ class ServerState:
   runtime_task: asyncio.Task[None] | None = None
   resolver_task: asyncio.Task[None] | None = None
   gc_task: asyncio.Task[None] | None = None
+  autotune_task: asyncio.Task[None] | None = None
   archive_task: asyncio.Task[None] | None = None
   notify_task: asyncio.Task[None] | None = None
   notify_sender: TelegramSender | None = None
@@ -327,6 +341,7 @@ class ClusterConfigOut(BaseModel):
   data_dir: Path
   state_reconciliation: StateReconciliationConfig
   orphan_gc: OrphanGCConfig
+  host_autotune: HostAutotuneConfig
   notify: NotifyConfig
   archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
   pool_caps: dict[str, int] = Field(default_factory=dict)
@@ -568,6 +583,26 @@ def create_app(
     server_state.gc_task = asyncio.create_task(
       _supervised("gc_task", lambda: _gc_forever(runtime, config))
     )
+    metrics_file = config.data_dir / HOST_METRICS_FILENAME
+    initial_ring = load_ring(
+      metrics_file, config.host_autotune.ring_buffer_size
+    )
+    try:
+      truncate_ring_file(metrics_file, initial_ring)
+    except OSError:
+      logger.exception(
+        "host_autotune: initial ring truncate failed (%s)",
+        metrics_file,
+      )
+    autotune_state = HostAutotuneState(
+      metrics_file=metrics_file, ring=initial_ring
+    )
+    server_state.autotune_task = asyncio.create_task(
+      _supervised(
+        "autotune_task",
+        lambda: _autotune_forever(server_state, autotune_state),
+      )
+    )
     server_state.archive_task = asyncio.create_task(
       _supervised(
         "archive_task",
@@ -594,6 +629,7 @@ def create_app(
         server_state.runtime_task,
         server_state.resolver_task,
         server_state.gc_task,
+        server_state.autotune_task,
         server_state.archive_task,
         server_state.notify_task,
       ):
@@ -855,6 +891,24 @@ def _apply_settings_patch(app: FastAPI, patch: SettingsPatch) -> None:
       )
     if gc.min_container_age_s is not None:
       st.config.orphan_gc.min_container_age_s = gc.min_container_age_s
+  if patch.host_autotune is not None:
+    at = patch.host_autotune
+    if at.enabled is not None:
+      st.config.host_autotune.enabled = at.enabled
+    if at.seconds_between_ticks is not None:
+      st.config.host_autotune.seconds_between_ticks = (
+        at.seconds_between_ticks
+      )
+    if at.ring_buffer_size is not None:
+      st.config.host_autotune.ring_buffer_size = at.ring_buffer_size
+    if at.bootstrap_min_samples is not None:
+      st.config.host_autotune.bootstrap_min_samples = (
+        at.bootstrap_min_samples
+      )
+    if at.peak_floor_bytes is not None:
+      st.config.host_autotune.peak_floor_bytes = at.peak_floor_bytes
+    if at.reserve_fraction is not None:
+      st.config.host_autotune.reserve_fraction = at.reserve_fraction
   if patch.pool_caps is not None:
     normalised = {name: int(cap) for name, cap in patch.pool_caps.items()}
     st.scheduler.set_pool_caps(normalised)
@@ -1638,6 +1692,42 @@ async def _gc_forever(
         "orphan_gc: removed %s container(s) — %s",
         sum(removed.values()),
         ", ".join(f"{h}={n}" for h, n in removed.items()),
+      )
+
+
+async def _autotune_forever(
+  server_state: ServerState,
+  autotune_state: HostAutotuneState,
+) -> None:
+  """Knobs re-read each tick; applied caps mirror into config so
+  /state readback stays truthful."""
+  config = server_state.config
+
+  def _apply(host: str, cap: int) -> None:
+    new = server_state.scheduler.set_host_settings(
+      host, max_concurrent=cap
+    )
+    config.hosts[host] = new.model_copy()
+
+  while True:
+    await asyncio.sleep(config.host_autotune.seconds_between_ticks)
+    if not config.host_autotune.enabled:
+      continue
+    try:
+      applied = await autotune_tick(
+        state=autotune_state,
+        scheduler=server_state.scheduler,
+        config=config.host_autotune,
+        self_host=config.self_host,
+        apply_cap=_apply,
+      )
+    except Exception:
+      logger.exception("host_autotune tick failed")
+      continue
+    if applied:
+      logger.warning(
+        "host_autotune: %s",
+        ", ".join(f"{h}={cap}" for h, cap in applied.items()),
       )
 
 
