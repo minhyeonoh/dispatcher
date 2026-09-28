@@ -547,9 +547,7 @@ def test_monitor_stream_mounted_and_sse_frame_shape(
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )
-  paths = {
-    getattr(route, "path", None) for route in app.routes
-  }
+  paths = {getattr(route, "path", None) for route in app.routes}
   assert "/monitor/stream" in paths
   frame = _sse("snapshot", {"nested": {"inner": [1, 2, 3]}})
   assert frame.startswith("event: snapshot\ndata: ")
