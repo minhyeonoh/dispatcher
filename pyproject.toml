@@ -1,0 +1,86 @@
+[project]
+name = "dispatcher"
+version = "0.0.0"
+description = "Experiment dispatcher — schedules trials across a host fleet, independent of any one research repo"
+requires-python = ">=3.12"
+
+# Deliberately thin. The dispatcher schedules work and reports state;
+# it does not know what a trial computes, how its config is assembled,
+# or what its reward means. Anything benchmark-, harness-, or
+# repo-specific belongs in an adapter on the research-repo side
+# (see README, "What does not live here").
+dependencies = [
+    "pydantic>=2",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "anyio>=4",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.380",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dispatcher", "src/dispatcher_sdk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Per-test watchdog: a test still running after `timeout` seconds is
+# treated as a hang. On expiry pytest-timeout dumps every thread's
+# stack to stderr and aborts. `thread` method so it works off the main
+# thread and does not rely on SIGALRM. Bump a genuinely slow test with
+# `@pytest.mark.timeout(N)`.
+timeout = 60
+timeout_method = "thread"
+
+[tool.ruff]
+line-length = 75
+indent-width = 2
+
+[tool.ruff.format]
+indent-style = "space"
+
+[tool.ruff.lint]
+# Matches the agents repo, which this was extracted from: same author,
+# same habits, and code moving between the two should not have to be
+# relinted on arrival.
+#
+# An explicit set, not ruff's default. The default has grown wide
+# enough (415 rules as of 0.16) to include opinionated checks like
+# BLE001 and S110, which flag deliberate constructs — and a rule you
+# suppress at every site it fires is a rule you have not chosen.
+#
+# UP : pyupgrade — UP037 strips quoted annotations once they're safe.
+# FA : flake8-future-annotations — auto-adds `from __future__ import
+#      annotations`, which is what makes UP037 safe (annotations stop
+#      evaluating at runtime so TYPE_CHECKING-only names can be
+#      unquoted).
+# TC : flake8-type-checking — moves runtime-unused imports into a
+#      `if TYPE_CHECKING:` block.
+# RUF100 : flags a `# noqa` that suppresses nothing. Every suppression
+#      here is an argued exception, so one that has stopped applying
+#      is a comment asserting a reason that is no longer true, and
+#      nothing tells the next reader.
+select = ["E", "F", "I", "UP", "B", "FA", "TC", "RUF100"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+
+[tool.ruff.lint.isort]
+# Force `from __future__ import annotations` everywhere — once
+# present, UP037 can safely strip quoted annotations that previously
+# existed only to dodge runtime NameErrors from TYPE_CHECKING-only
+# imports.
+required-imports = ["from __future__ import annotations"]
