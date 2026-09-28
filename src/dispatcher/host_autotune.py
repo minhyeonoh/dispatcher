@@ -52,7 +52,7 @@ class HostAutotuneConfig(BaseModel):
   """Lower bound on the estimate — a P75 dragged down by
   short-lived trials would over-cap into OOM."""
 
-  reserve_fraction: float = Field(0.15, gt=0.0, lt=1.0)
+  reserve_fraction: float = Field(default=0.15, gt=0.0, lt=1.0)
 
 
 class HostAutotunePatch(BaseModel):
