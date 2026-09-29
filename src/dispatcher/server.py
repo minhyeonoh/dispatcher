@@ -26,7 +26,7 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,9 +68,16 @@ from dispatcher.host_autotune import (
   HostAutotuneConfig,
   HostAutotunePatch,
   HostAutotuneState,
-  autotune_tick,
   load_ring,
   truncate_ring_file,
+)
+from dispatcher.loops import (
+  LoopSkip,
+  archive_loop,
+  autotune_loop,
+  gc_loop,
+  resolver_loop,
+  supervised,
 )
 from dispatcher.metrics import AttemptMetrics, MetricsCache
 from dispatcher.models import HostSettings, TrialView
@@ -216,12 +223,7 @@ class ServerState:
   runtime: DispatcherRuntime
   metrics: MetricsCache
   event_bus: EventBus
-  runtime_task: asyncio.Task[None] | None = None
-  resolver_task: asyncio.Task[None] | None = None
-  gc_task: asyncio.Task[None] | None = None
-  autotune_task: asyncio.Task[None] | None = None
-  archive_task: asyncio.Task[None] | None = None
-  notify_task: asyncio.Task[None] | None = None
+  tasks: list[asyncio.Task[None]] = field(default_factory=list)
   notify_sender: TelegramSender | None = None
   _seq: int = field(default=0)
 
@@ -571,18 +573,6 @@ def create_app(
           f"{k}={v}" for k, v in startup_outcomes.items() if v > 0
         ),
       )
-    server_state.runtime_task = asyncio.create_task(
-      _supervised("runtime_task", runtime.run_forever)
-    )
-    server_state.resolver_task = asyncio.create_task(
-      _supervised(
-        "resolver_task",
-        lambda: _resolver_forever(runtime, config),
-      )
-    )
-    server_state.gc_task = asyncio.create_task(
-      _supervised("gc_task", lambda: _gc_forever(runtime, config))
-    )
     metrics_file = config.data_dir / HOST_METRICS_FILENAME
     initial_ring = load_ring(
       metrics_file, config.host_autotune.ring_buffer_size
@@ -597,18 +587,18 @@ def create_app(
     autotune_state = HostAutotuneState(
       metrics_file=metrics_file, ring=initial_ring
     )
-    server_state.autotune_task = asyncio.create_task(
-      _supervised(
-        "autotune_task",
-        lambda: _autotune_forever(server_state, autotune_state),
-      )
-    )
-    server_state.archive_task = asyncio.create_task(
-      _supervised(
-        "archive_task",
-        lambda: _archive_forever(app, server_state, clock_fn),
-      )
-    )
+
+    def _apply_autotune_cap(host: str, cap: int) -> None:
+      # Mirror into config so /state readback stays truthful.
+      new = scheduler.set_host_settings(host, max_concurrent=cap)
+      config.hosts[host] = new.model_copy()
+
+    def _auto_archive_one(aid: str) -> None:
+      try:
+        _archive_attempt(app, aid, clock_fn, kind="auto")
+      except HTTPException as exc:
+        raise LoopSkip(str(exc.detail)) from exc
+
     server_state.notify_sender = TelegramSender(
       telegram_bot_token_from_env()
     )
@@ -619,24 +609,35 @@ def create_app(
       sender=server_state.notify_sender,
       metrics=metrics,
     )
-    server_state.notify_task = asyncio.create_task(
-      _supervised("notify_task", notify_manager.run)
-    )
+    loops: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+      ("runtime", runtime.run_forever),
+      ("resolver", lambda: resolver_loop(runtime, config)),
+      ("orphan_gc", lambda: gc_loop(runtime, config)),
+      (
+        "host_autotune",
+        lambda: autotune_loop(
+          scheduler, config, autotune_state, _apply_autotune_cap
+        ),
+      ),
+      (
+        "auto_archive",
+        lambda: archive_loop(
+          scheduler, config, clock_fn, _auto_archive_one
+        ),
+      ),
+      ("notify", notify_manager.run),
+    ]
+    server_state.tasks = [
+      asyncio.create_task(supervised(name, factory))
+      for name, factory in loops
+    ]
     try:
       yield
     finally:
-      for task in (
-        server_state.runtime_task,
-        server_state.resolver_task,
-        server_state.gc_task,
-        server_state.autotune_task,
-        server_state.archive_task,
-        server_state.notify_task,
-      ):
-        if task is not None:
-          task.cancel()
-          with contextlib.suppress(asyncio.CancelledError):
-            await task
+      for task in reversed(server_state.tasks):
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+          await task
       if server_state.notify_sender is not None:
         await server_state.notify_sender.close()
       if docker_events is not None:
@@ -1623,177 +1624,6 @@ async def _run_startup_census(
       )
       continue
     await runtime.reconcile_from_census(host, containers)
-
-
-async def _supervised(
-  name: str,
-  factory: Callable[[], Awaitable[None]],
-  *,
-  restart_delay_s: float = 30.0,
-) -> None:
-  """Restart-on-death shell for the long-running tasks.
-
-  Catches BaseException (not Exception): asyncio swallows an
-  unhandled exception in a strongly-referenced Task silently — a
-  dead GC loop once served HTTP for 25h with no log line. Only
-  CancelledError propagates (clean shutdown)."""
-  while True:
-    try:
-      await factory()
-      return
-    except asyncio.CancelledError:
-      raise
-    except BaseException:
-      logger.exception("%s died; restarting in %ss", name, restart_delay_s)
-      await asyncio.sleep(restart_delay_s)
-
-
-async def _resolver_forever(
-  runtime: DispatcherRuntime, config: DispatcherConfig
-) -> None:
-  """Knobs re-read each tick so PATCH /settings applies on the
-  next boundary."""
-  while True:
-    await asyncio.sleep(config.state_reconciliation.seconds_between_probes)
-    try:
-      outcomes = await runtime.resolve_state_once(
-        max_concurrent_probes=(
-          config.state_reconciliation.max_concurrent_probes
-        ),
-      )
-    except Exception:
-      logger.exception("resolver tick failed")
-      continue
-    if any(v > 0 for v in outcomes.values()):
-      logger.info(
-        "resolver: %s",
-        ", ".join(f"{k}={v}" for k, v in outcomes.items() if v > 0),
-      )
-
-
-async def _gc_forever(
-  runtime: DispatcherRuntime, config: DispatcherConfig
-) -> None:
-  while True:
-    await asyncio.sleep(config.orphan_gc.seconds_between_sweeps)
-    if not config.orphan_gc.enabled:
-      continue
-    try:
-      removed = await runtime.gc_orphans_once(
-        min_container_age_s=config.orphan_gc.min_container_age_s,
-      )
-    except Exception:
-      logger.exception("orphan_gc sweep failed")
-      continue
-    if removed:
-      # WARNING: the dispatcher touched containers — operators
-      # must see this even at quiet log levels.
-      logger.warning(
-        "orphan_gc: removed %s container(s) — %s",
-        sum(removed.values()),
-        ", ".join(f"{h}={n}" for h, n in removed.items()),
-      )
-
-
-async def _autotune_forever(
-  server_state: ServerState,
-  autotune_state: HostAutotuneState,
-) -> None:
-  """Knobs re-read each tick; applied caps mirror into config so
-  /state readback stays truthful."""
-  config = server_state.config
-
-  def _apply(host: str, cap: int) -> None:
-    new = server_state.scheduler.set_host_settings(
-      host, max_concurrent=cap
-    )
-    config.hosts[host] = new.model_copy()
-
-  while True:
-    await asyncio.sleep(config.host_autotune.seconds_between_ticks)
-    if not config.host_autotune.enabled:
-      continue
-    try:
-      applied = await autotune_tick(
-        state=autotune_state,
-        scheduler=server_state.scheduler,
-        config=config.host_autotune,
-        self_host=config.self_host,
-        apply_cap=_apply,
-      )
-    except Exception:
-      logger.exception("host_autotune tick failed")
-      continue
-    if applied:
-      logger.warning(
-        "host_autotune: %s",
-        ", ".join(f"{h}={cap}" for h, cap in applied.items()),
-      )
-
-
-async def _archive_forever(
-  app: FastAPI,
-  server_state: ServerState,
-  clock_fn: Callable[[], datetime],
-) -> None:
-  config = server_state.config
-  while True:
-    await asyncio.sleep(config.archive.scan_interval_seconds)
-    threshold_days = config.archive.auto_after_days
-    if threshold_days <= 0:
-      continue
-    try:
-      candidates = _scan_auto_archive_candidates(
-        server_state, clock_fn(), threshold_days
-      )
-    except Exception:
-      logger.exception("archive scan failed")
-      continue
-    archived = 0
-    for aid in candidates:
-      try:
-        _archive_attempt(app, aid, clock_fn, kind="auto")
-        archived += 1
-      except HTTPException as exc:
-        # A resolver may have re-flipped a trial between the scan
-        # and the archive; skip, re-check next tick.
-        logger.info("auto-archive skipped attempt=%s: %s", aid, exc.detail)
-      except Exception:
-        logger.exception("auto-archive failed attempt=%s", aid)
-    if archived:
-      logger.warning(
-        "auto-archive: promoted %d attempt(s) (threshold=%d days)",
-        archived,
-        threshold_days,
-      )
-
-
-def _scan_auto_archive_candidates(
-  server_state: ServerState,
-  now: datetime,
-  threshold_days: int,
-) -> list[str]:
-  """Live attempts that are fully terminal AND whose event log
-  has been idle past the threshold (every dispatch/patch/
-  transition appends, so log mtime is 'last activity')."""
-  threshold_dt = now - timedelta(days=threshold_days)
-  scheduler = server_state.scheduler
-  out: list[str] = []
-  for aid in list(scheduler.iter_attempt_ids()):
-    if scheduler.is_archived(aid):
-      continue
-    view = scheduler.attempt_view(aid)
-    if view.pending or view.running or view.unknown or view.ghosted:
-      continue
-    log_path = event_log_path_for(scheduler.attempt_state(aid))
-    try:
-      mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=UTC)
-    except OSError:
-      continue  # never archive from thin air
-    if mtime > threshold_dt:
-      continue
-    out.append(aid)
-  return out
 
 
 # ── misc ─────────────────────────────────────────────────────────
