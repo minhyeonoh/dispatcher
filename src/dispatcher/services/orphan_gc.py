@@ -10,12 +10,11 @@ observation."""
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, PositiveFloat
 
-from dispatcher.core import labels
+from dispatcher.core import clock, labels
 from dispatcher.core.containers import (
   census_host,
   container_labels,
@@ -24,6 +23,8 @@ from dispatcher.core.containers import (
 )
 
 if TYPE_CHECKING:
+  from datetime import datetime
+
   from dispatcher.core.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class OrphanGC:
   async def sweep_once(
     self, *, min_container_age_s: float
   ) -> dict[str, int]:
-    now = datetime.now(UTC)
+    now = clock.now()
     preserved: set[str] = set()
     for _aid, tv in self._sched.iter_running():
       preserved.add(tv.trial_name)

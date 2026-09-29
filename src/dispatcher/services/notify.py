@@ -14,12 +14,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from dispatcher.core import clock
 from dispatcher.core.event_log import append_event, event_log_path_for
 
 if TYPE_CHECKING:
@@ -186,7 +186,7 @@ class NotifyManager:
     done: int,
     total: int,
   ) -> None:
-    fired_at = datetime.now(UTC).isoformat()
+    fired_at = clock.now().isoformat()
     try:
       append_event(
         event_log_path_for(state),

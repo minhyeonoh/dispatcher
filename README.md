@@ -116,6 +116,10 @@ dispatcher serve --self-host ml10 --data-dir ~/dispatcher-data \
 dispatcher monitor --server http://127.0.0.1:7200
 ```
 
+All timestamps the dispatcher mints (event logs, API responses,
+attempt ids) are timezone-aware KST (+09:00); external times
+(docker, file mtimes) are converted at the boundary.
+
 State: per-attempt event log at
 `<home_root>/.dispatcher-state.jsonl` (replayed on restart), an
 attempts index under `--data-dir`, and `settings.json` — every

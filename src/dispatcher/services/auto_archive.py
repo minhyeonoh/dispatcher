@@ -5,7 +5,7 @@ the hot serialization path. Optional — off until
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from pydantic import (
@@ -15,6 +15,7 @@ from pydantic import (
   PositiveFloat,
 )
 
+from dispatcher.core import clock
 from dispatcher.core.event_log import event_log_path_for
 from dispatcher.core.loops import LoopSkip, every
 
@@ -106,7 +107,7 @@ def scan_auto_archive_candidates(
       continue
     log_path = event_log_path_for(scheduler.attempt_state(aid))
     try:
-      mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=UTC)
+      mtime = clock.from_timestamp(log_path.stat().st_mtime)
     except OSError:
       continue  # never archive from thin air
     if mtime > threshold_dt:

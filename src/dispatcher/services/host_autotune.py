@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pydantic import (
@@ -28,6 +28,7 @@ from pydantic import (
   PositiveInt,
 )
 
+from dispatcher.core import clock
 from dispatcher.services.host_metrics import HostSample, sample_hosts
 
 if TYPE_CHECKING:
@@ -304,7 +305,7 @@ async def autotune_tick(
   advised caps. Per-host failures leave that host untouched.
   `apply_cap(host, cap)` lets the server mirror the change into
   its config; defaults to `scheduler.set_host_settings`."""
-  now = now or datetime.now(UTC)
+  now = now or clock.now()
   host_settings = scheduler.all_host_settings()
   hosts = list(host_settings.keys())
   if not hosts:

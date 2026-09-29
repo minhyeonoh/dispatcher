@@ -61,9 +61,9 @@ def test_parse_created_nanoseconds_z():
 
 
 def test_parse_created_offset_form():
-  dt = parse_created("2026-08-03T20:56:15.5+09:00")
+  dt = parse_created("2026-08-03T02:56:15.5+00:00")
   assert dt is not None
-  assert dt.hour == 11  # normalised to UTC
+  assert dt.hour == 11  # normalised to KST (+09:00)
 
 
 def test_parse_created_no_fraction():

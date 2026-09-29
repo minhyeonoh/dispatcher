@@ -36,13 +36,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import anyio
 from pydantic import BaseModel, ConfigDict, PositiveFloat, PositiveInt
 
-from dispatcher.core import labels
+from dispatcher.core import clock, labels
 from dispatcher.core.containers import container_labels, probe_trial
 from dispatcher.core.dispatch import DispatchError, docker_dispatch
 from dispatcher.core.event_log import append_event, event_log_path_for
@@ -489,7 +488,7 @@ class DispatcherRuntime:
           "attempt_id": aid,
           "task_name": task_name,
           "trial_name": trial_name,
-          "at": datetime.now(UTC).isoformat(),
+          "at": clock.now().isoformat(),
         },
       )
     if self._on_trial_completed is not None:
@@ -529,7 +528,7 @@ class DispatcherRuntime:
           "type": "pause_on_error",
           "attempt_id": aid,
           "task_name": task_name,
-          "at": datetime.now(UTC).isoformat(),
+          "at": clock.now().isoformat(),
         },
       )
     if self._event_bus is not None:

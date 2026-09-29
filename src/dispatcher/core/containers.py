@@ -17,12 +17,12 @@ import json
 import logging
 import shlex
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import anyio
 
-from dispatcher.core import labels
+from dispatcher.core import clock, labels
 from dispatcher.core.hosts import SSH_OPTS, run_on
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ def parse_created(s: str) -> datetime | None:
     return None
   if dt.tzinfo is None:
     return None
-  return dt.astimezone(UTC)
+  return clock.to_kst(dt)
 
 
 async def iter_lines(
@@ -123,9 +123,7 @@ class _HostStream:
   on_alive_change: Callable[[str, bool], Awaitable[None]]
   alive_timeout_sec: float = 30.0
 
-  last_ack_time: datetime = field(
-    default_factory=lambda: datetime.now(UTC)
-  )
+  last_ack_time: datetime = field(default_factory=clock.now)
 
   _proc: Process | None = field(default=None, init=False)
   _task: asyncio.Task[None] | None = field(default=None, init=False)
@@ -216,9 +214,7 @@ class _HostStream:
           )
         event_time = event.get("time")
         if isinstance(event_time, (int, float)):
-          self.last_ack_time = datetime.fromtimestamp(
-            float(event_time), UTC
-          )
+          self.last_ack_time = clock.from_timestamp(float(event_time))
       await proc.wait()
       rc = proc.returncode
       if rc not in (0, None):
@@ -264,7 +260,7 @@ class _HostStream:
       logger.exception("on_alive_change(%s, True) raised", self.host)
 
   async def _mark_failure(self) -> None:
-    now = datetime.now(UTC)
+    now = clock.now()
     if self._first_failure_at is None:
       self._first_failure_at = now
       return

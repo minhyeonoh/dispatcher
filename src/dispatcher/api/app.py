@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import json
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -56,6 +55,7 @@ from dispatcher.api.wire import (
   snapshot_attempt_with_metrics,
   sse,
 )
+from dispatcher.core import clock as clock_mod
 from dispatcher.core.containers import (
   DockerEventStreamManager,
   census_host,
@@ -85,6 +85,7 @@ from dispatcher.services.orphan_gc import OrphanGC, gc_loop
 
 if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
+  from datetime import datetime
   from pathlib import Path
 
   from dispatcher.core.outcome import CompletionSnapshot
@@ -110,7 +111,7 @@ def create_app(
   persisted yet (first boot). Afterwards the persisted document
   wins across restarts; `settings_overrides` (CLI-explicit flags)
   are applied on top either way and persisted."""
-  clock_fn = clock or (lambda: datetime.now(UTC))
+  clock_fn = clock or clock_mod.now
   seed = settings
 
   @contextlib.asynccontextmanager

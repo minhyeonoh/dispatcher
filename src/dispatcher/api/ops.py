@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +23,7 @@ from dispatcher.api.wire import (
   snapshot_attempt,
   snapshot_attempt_with_metrics,
 )
+from dispatcher.core import clock
 from dispatcher.core.event_log import (
   append_event,
   append_index_entry,
@@ -40,6 +40,7 @@ from dispatcher.core.scheduler import (
 if TYPE_CHECKING:
   import asyncio
   from collections.abc import Callable
+  from datetime import datetime
 
   from dispatcher.api.config import Config
   from dispatcher.api.wire import AttemptSummaryOut
@@ -140,7 +141,7 @@ def _prepare_submit(payload: dict[str, Any]) -> dict[str, Any]:
   out.setdefault(
     "attempt_id", _mk_attempt_id(payload.get("label", "attempt"))
   )
-  out.setdefault("submitted_at", datetime.now(UTC).isoformat())
+  out.setdefault("submitted_at", clock.now().isoformat())
   return out
 
 
@@ -604,6 +605,7 @@ def unarchive_attempt(
 
 
 def _mk_attempt_id(label: str) -> str:
-  return datetime.now(UTC).strftime(
-    "att-%Y%m%dT%H%M%S%fZ-"
-  ) + label.replace("/", "-").replace(" ", "-")
+  # KST timestamp; no Z suffix — these are +09:00 times.
+  return clock.now().strftime("att-%Y%m%dT%H%M%S%f-") + label.replace(
+    "/", "-"
+  ).replace(" ", "-")
