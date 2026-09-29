@@ -59,6 +59,7 @@ from dispatcher.core import clock as clock_mod
 from dispatcher.core.containers import (
   DockerEventStreamManager,
   census_host,
+  resolve_image_id,
 )
 from dispatcher.core.event_bus import EventBus
 from dispatcher.core.loops import LoopSkip, supervised
@@ -105,6 +106,7 @@ def create_app(
   dispatch: Callable[..., Any] | None = None,
   poll: Callable[[Path], CompletionSnapshot | None] | None = None,
   clock: Callable[[], datetime] | None = None,
+  resolve_image: Callable[[str], str] | None = None,
   heartbeat_interval: float = 15.0,
 ) -> FastAPI:
   """`settings` is the SEED, used only when no settings.json is
@@ -152,6 +154,13 @@ def create_app(
         on_alive_change=runtime.handle_alive_change,
       )
       runtime._docker_events = docker_events
+    # Image pinning only when the REAL dispatch path is in play —
+    # injected fake dispatch (tests) must not touch docker.
+    resolver = resolve_image
+    if resolver is None and dispatch is None:
+      resolver = lambda ref: resolve_image_id(  # noqa: E731
+        ref, self_host=config.self_host
+      )
     server_state = ServerState(
       config=config,
       settings=settings,
@@ -159,6 +168,7 @@ def create_app(
       runtime=runtime,
       metrics=metrics,
       event_bus=event_bus,
+      resolve_image=resolver,
     )
     app.state.dispatcher = server_state
     # Restore before anything can dispatch: rebuild AttemptStates

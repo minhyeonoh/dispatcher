@@ -74,6 +74,9 @@ SETTINGS_FILENAME = "settings.json"
 class Settings(BaseModel):
   max_concurrent: NonNegativeInt
   hosts: dict[str, HostSettings]
+  # Reject submissions without a frozen source archive. Off by
+  # default; labs that want the arm record guaranteed flip it.
+  require_source: bool = False
   # Whole-dict replacement on patch; {} clears all caps.
   pool_caps: dict[str, NonNegativeInt] = Field(default_factory=dict)
   state_reconciliation: StateReconciliationSettings = Field(
@@ -103,6 +106,7 @@ class SettingsPatch(BaseModel):
 
   hosts: dict[str, HostSettingsPatch] | None = None
   max_concurrent: NonNegativeInt | None = None
+  require_source: bool | None = None
   pool_caps: dict[str, NonNegativeInt] | None = None
   state_reconciliation: StateReconciliationPatch | None = None
   orphan_gc: OrphanGCPatch | None = None
@@ -115,6 +119,8 @@ def apply_patch_pure(settings: Settings, patch: SettingsPatch) -> None:
   """Merge the scheduler-independent parts of a patch into
   `settings`, in place. Scheduler side effects (host settings,
   caps) belong to `ops.apply_settings`, which calls this too."""
+  if patch.require_source is not None:
+    settings.require_source = patch.require_source
   if patch.state_reconciliation is not None:
     apply_state_reconciliation_patch(
       settings.state_reconciliation, patch.state_reconciliation

@@ -25,11 +25,19 @@ dispatch, failure detection, and state persistence.
 
 ## What a research repo provides
 
-1. **A container image** whose entrypoint runs one trial and, at
-   the end, writes the outcome envelope and exits. Use
-   `dispatcher_sdk.run(work)` — it handles the spec read, the
-   atomic envelope write, and the exit-code contract.
-2. **A submission** (`POST /attempts`, or
+1. **An ENVIRONMENT image** — deps only, no experiment code.
+   Rebuilt when dependencies change, not per submission (so
+   hosts hold a handful of env images, not one per sweep). Bake
+   `dispatcher_sdk` into it.
+2. **A frozen source archive** — the experiment code as a tar,
+   attached to the submission (`source_tar_b64`). The dispatcher
+   stores it at `<home_root>/.source.tar` (plain shared storage,
+   immune to docker prune — this file IS the arm record), mounts
+   it read-only into every trial, and
+   `dispatcher_sdk.bootstrap` unpacks it to container-local disk
+   before exec — one sequential read per trial, no per-file
+   NFS traffic. Worker code uses `dispatcher_sdk.run(work)`.
+3. **A submission** (`POST /attempts`, or
    `dispatcher_sdk.client.submit_attempt`):
 
    ```json
@@ -37,9 +45,11 @@ dispatch, failure detection, and state persistence.
      "label": "my-sweep-arm1",
      "task_list": ["task_a", "task_b"],
      "home_root": "/nfs/exp/my-sweep-arm1",
+     "source_tar_b64": "<base64 tar of the frozen code>",
      "container": {
-       "image": "myrepo-trial:abc123",
-       "command": ["python", "-m", "myrepo.trial"],
+       "image": "myrepo-env:deps-hash",
+       "command": ["python", "-m", "dispatcher_sdk.bootstrap",
+                   "--", "python", "-m", "myrepo.trial"],
        "env": {"OPENAI_API_KEY": "..."},
        "mounts": ["/nfs/datasets:/data:ro"],
        "extra_args": ["--network", "host"]
@@ -51,6 +61,12 @@ dispatch, failure detection, and state persistence.
    `home_root` must be absolute and is one-attempt-only — a
    reused home would interleave trial dirs and merge event logs,
    which is silent cross-contamination; the server 409s instead.
+   The image must exist on the launcher at submit (400
+   otherwise); it is resolved to its immutable ID there, every
+   trial runs that exact ID (a tag re-pushed mid-sweep changes
+   nothing), and the dispatcher ships the image to any dispatch
+   host that lacks it. `settings.require_source` makes the
+   source archive mandatory.
 
 ## The trial contract
 

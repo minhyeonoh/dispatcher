@@ -5,6 +5,9 @@ server maps them to status codes at the edge."""
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,6 +89,9 @@ class ServerState:
   event_bus: EventBus
   tasks: list[asyncio.Task[None]] = field(default_factory=list)
   notify_sender: TelegramSender | None = None
+  # Resolves an image ref to its immutable ID on the launcher.
+  # None in fake-dispatch (test) mode — then nothing is pinned.
+  resolve_image: Callable[[str], str] | None = None
   _seq: int = field(default=0)
 
   def next_trial_name(self, task_name: str) -> str:
@@ -181,13 +187,62 @@ def _validate_submit(st: ServerState, payload: dict[str, Any]) -> None:
     )
 
 
+SOURCE_TAR_FILENAME = ".source.tar"
+_SOURCE_TAR_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _decode_source_tar(payload: dict[str, Any]) -> bytes | None:
+  """Pop + decode `source_tar_b64`. The archive is both the code
+  DELIVERY (mounted ro into every trial) and the arm RECORD (it
+  outlives any docker prune on plain NFS)."""
+  raw = payload.pop("source_tar_b64", None)
+  if raw is None:
+    return None
+  if not isinstance(raw, str):
+    raise Invalid("source_tar_b64 must be a base64 string")
+  try:
+    blob = base64.b64decode(raw, validate=True)
+  except (binascii.Error, ValueError) as exc:
+    raise Invalid(f"source_tar_b64 is not valid base64: {exc}") from exc
+  if not blob:
+    raise Invalid("source_tar_b64 decodes to zero bytes")
+  if len(blob) > _SOURCE_TAR_MAX_BYTES:
+    raise Invalid(
+      f"source archive too large ({len(blob)} bytes > "
+      f"{_SOURCE_TAR_MAX_BYTES}); ship deps in the image, not "
+      f"in the source archive"
+    )
+  return blob
+
+
 def submit_attempt(
   st: ServerState,
   payload: dict[str, Any],
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
+  source_blob = _decode_source_tar(payload)
+  if source_blob is None and st.settings.require_source:
+    raise Invalid(
+      "this dispatcher requires source_tar_b64 (settings."
+      "require_source) — the frozen archive is the experiment's "
+      "code record"
+    )
   _validate_submit(st, payload)
   prepared = _prepare_submit(payload)
+  if source_blob is not None:
+    prepared["source_sha256"] = hashlib.sha256(source_blob).hexdigest()
+  # Pin the image to its immutable ID so a tag re-pushed
+  # mid-sweep can't change what runs. Loud 400 when the image
+  # isn't on the launcher — better than trials dying host by
+  # host later.
+  if st.resolve_image is not None and not prepared.get("image_id"):
+    container = prepared.get("container") or {}
+    ref = container.get("image") if isinstance(container, dict) else None
+    if ref:
+      try:
+        prepared["image_id"] = st.resolve_image(ref)
+      except RuntimeError as exc:
+        raise Invalid(str(exc)) from exc
   # Alias minted BEFORE the submit event so the handle the
   # operator uses lives on disk from birth.
   if not prepared.get("alias"):
@@ -203,6 +258,21 @@ def submit_attempt(
     raise Conflict(f"alias {exc.alias!r} already in use") from exc
   except ValueError as exc:
     raise Conflict(str(exc)) from exc
+  # Source archive written AFTER scheduler accepted (a 409 must
+  # leave nothing on disk) and BEFORE the event log (an attempt
+  # whose log exists must have its recorded archive). A write
+  # failure unwinds the submit — accepting an attempt without
+  # the record it promised would be a silent contract break.
+  if source_blob is not None:
+    source_path = attempt.home_root / SOURCE_TAR_FILENAME
+    try:
+      source_path.parent.mkdir(parents=True, exist_ok=True)
+      tmp = source_path.with_suffix(".tar.tmp")
+      tmp.write_bytes(source_blob)
+      tmp.replace(source_path)
+    except OSError as exc:
+      st.scheduler.cancel(attempt.attempt_id)
+      raise Internal(f"source archive write failed: {exc}") from exc
   # Log written AFTER scheduler accepted, so a 409 leaves no
   # orphan log; index after the log so a crash between the two is
   # recoverable from the log side.

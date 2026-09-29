@@ -42,7 +42,11 @@ import anyio
 from pydantic import BaseModel, ConfigDict, PositiveFloat, PositiveInt
 
 from dispatcher.core import clock, labels
-from dispatcher.core.containers import container_labels, probe_trial
+from dispatcher.core.containers import (
+  container_labels,
+  ensure_image_on_host,
+  probe_trial,
+)
 from dispatcher.core.dispatch import DispatchError, docker_dispatch
 from dispatcher.core.event_log import append_event, event_log_path_for
 from dispatcher.core.models import (
@@ -144,6 +148,10 @@ class DispatcherRuntime:
     self._on_attempt_drained = on_attempt_drained
     self._on_trial_completed = on_trial_completed
     self._docker_events = docker_event_manager
+    # (image_id, host) pairs verified present. Restart clears it;
+    # re-verification is one cheap inspect per pair.
+    self._images_ensured: set[tuple[str, str]] = set()
+    self._image_locks: dict[tuple[str, str], asyncio.Lock] = {}
     # (attempt_id, trial_name) → main-container exit code, kept
     # while the trial sits in unknown so the resolver can requeue
     # infra kills (75/137/143/255) instead of ghosting them.
@@ -260,12 +268,34 @@ class DispatcherRuntime:
   async def _default_dispatch(
     self, action: DispatchEntry, state: AttemptState
   ) -> None:
+    if state.image_id:
+      await self._ensure_image(action.host, state.image_id)
     await docker_dispatch(
       action,
       state,
       trial_home=trial_home_for(state.home_root, action.trial_name),
       self_host=self._self_host,
     )
+
+  async def _ensure_image(self, host: str, image_id: str) -> None:
+    """Once per (image, host): verify or ship. Failures raise
+    DispatchError so the normal requeue path applies. Per-pair
+    lock so parallel dispatches don't ship the same image
+    twice."""
+    key = (image_id, host)
+    if key in self._images_ensured:
+      return
+    lock = self._image_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+      if key in self._images_ensured:
+        return
+      try:
+        await ensure_image_on_host(
+          host, image_id, self_host=self._self_host
+        )
+      except (RuntimeError, TimeoutError) as exc:
+        raise DispatchError(str(exc)) from exc
+      self._images_ensured.add(key)
 
   # ── completion: poll fallback ──────────────────────────────
 

@@ -481,3 +481,79 @@ async def remove_trial_sets(
       if ln.strip()
     ]
   )
+
+
+# ── image identity + distribution ────────────────────────────────
+
+
+def resolve_image_id(ref: str, *, self_host: str) -> str:
+  """Resolve an image reference (tag or id) to its immutable ID
+  on the launcher. Runs synchronously (called from the submit
+  path; ~50ms). Raises RuntimeError when the image isn't present
+  — the submitter must build/load it on the launcher first, and
+  a loud 400 at submit beats trials failing host by host."""
+  import subprocess
+
+  r = subprocess.run(
+    ["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+    capture_output=True,
+    text=True,
+    timeout=30,
+  )
+  if r.returncode != 0:
+    raise RuntimeError(
+      f"image {ref!r} not found on {self_host} — build or "
+      f"`docker load` it on the launcher before submitting"
+    )
+  image_id = r.stdout.strip().splitlines()[0]
+  if not image_id:
+    raise RuntimeError(f"image {ref!r}: empty id from inspect")
+  return image_id
+
+
+async def ensure_image_on_host(
+  host: str,
+  image_id: str,
+  *,
+  self_host: str,
+  timeout_sec: float = 600.0,
+) -> None:
+  """Guarantee `image_id` exists on `host`, shipping it from the
+  launcher (`docker save | ssh docker load`) when missing.
+  Environment images are few and change rarely, so the transfer
+  is a once-per-(image, host) event. Raises RuntimeError on
+  failure — the dispatch path turns that into a requeue, never a
+  half-started trial."""
+  probe = await run_on(
+    host,
+    self_host,
+    "docker image inspect --format ok " + shlex.quote(image_id),
+    timeout=30,
+  )
+  if probe.returncode == 0:
+    return
+  if host == self_host:
+    # resolve_image_id already proved it exists locally; a local
+    # miss here means it was pruned since submit.
+    raise RuntimeError(
+      f"image {image_id} vanished from {self_host} (pruned?)"
+    )
+  logger.warning(
+    "shipping image %s to %s (save|load)", image_id[:19], host
+  )
+  cmd = (
+    "docker save "
+    + shlex.quote(image_id)
+    + " | ssh "
+    + " ".join(SSH_OPTS)
+    + " "
+    + shlex.quote(host)
+    + " docker load"
+  )
+  with anyio.fail_after(timeout_sec):
+    proc = await anyio.run_process(["bash", "-c", cmd], check=False)
+  if proc.returncode != 0:
+    raise RuntimeError(
+      f"image ship to {host} failed (exit {proc.returncode}): "
+      f"{proc.stderr.decode(errors='replace')[:500]}"
+    )

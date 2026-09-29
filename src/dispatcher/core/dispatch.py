@@ -37,6 +37,10 @@ ENV_TASK = "DISPATCHER_TASK"
 ENV_ATTEMPT = "DISPATCHER_ATTEMPT"
 ENV_HOME = "DISPATCHER_HOME"
 ENV_SET_LABEL = "DISPATCHER_SET_LABEL"
+ENV_SOURCE = "DISPATCHER_SOURCE"
+
+SOURCE_TAR_FILENAME = ".source.tar"
+SOURCE_MOUNT = "/dispatcher/source.tar"
 
 
 def build_remote_command(
@@ -59,6 +63,12 @@ def build_remote_command(
   ).items():
     parts += ["--label", f"{k}={v}"]
   parts += ["-v", f"{trial_home}:{spec.home_mount}"]
+  # Frozen source archive (attempt-level, ro). The SDK bootstrap
+  # untars it to container-local fs — one sequential NFS read per
+  # trial instead of per-file import traffic.
+  if state.source_sha256:
+    source_path = state.home_root / SOURCE_TAR_FILENAME
+    parts += ["-v", f"{source_path}:{SOURCE_MOUNT}:ro"]
   for mount in spec.mounts:
     parts += ["-v", mount]
   env = {
@@ -69,11 +79,14 @@ def build_remote_command(
     ENV_ATTEMPT: state.attempt_id,
     ENV_HOME: spec.home_mount,
     ENV_SET_LABEL: labels.set_label(action.trial_name),
+    **({ENV_SOURCE: SOURCE_MOUNT} if state.source_sha256 else {}),
   }
   for k, v in env.items():
     parts += ["-e", f"{k}={v}"]
   parts += spec.extra_args
-  parts.append(spec.image)
+  # Pinned ID when submit resolved one — a tag re-pushed
+  # mid-sweep can't change what runs.
+  parts.append(state.image_id or spec.image)
   parts += spec.command
   quoted = " ".join(shlex.quote(p) for p in parts)
   return f"mkdir -p {shlex.quote(str(trial_home))} && {quoted}"

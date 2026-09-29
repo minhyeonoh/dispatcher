@@ -82,6 +82,13 @@ class AttemptState(BaseModel):
   # visible on every dispatch host (shared filesystem).
   home_root: Path
   container: ContainerSpec
+  # Immutable image ID resolved on the launcher at submit — all
+  # trials run THIS, so a tag re-pushed mid-sweep cannot leak in.
+  # Empty only in tests / fake-dispatch mode.
+  image_id: str = ""
+  # sha256 of the frozen source archive at
+  # `<home_root>/.source.tar` (empty = attempt carries no source).
+  source_sha256: str = ""
   submitted_at: datetime
   # Opaque per-task payload delivered to the trial via
   # `<home>/trial.json`. Tasks absent from the map get null.

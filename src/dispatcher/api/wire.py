@@ -52,6 +52,8 @@ class AttemptSummaryOut(BaseModel):
   scope: str = ""
   tags: list[str] = Field(default_factory=list)
   pool: str = "default"
+  image_id: str = ""
+  source_sha256: str = ""
   archived_at: datetime | None = None
   archive_kind: str = ""
 
@@ -138,6 +140,8 @@ def snapshot_attempt(
     scope=state.scope,
     tags=list(state.tags),
     pool=state.pool or "default",
+    image_id=state.image_id,
+    source_sha256=state.source_sha256,
     archived_at=state.archived_at,
     archive_kind=state.archive_kind or "",
   )
