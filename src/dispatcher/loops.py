@@ -24,10 +24,11 @@ from dispatcher.host_autotune import autotune_tick
 if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
 
+  from dispatcher.config import DispatcherConfig
   from dispatcher.host_autotune import HostAutotuneState
+  from dispatcher.orphan_gc import OrphanGC
   from dispatcher.runtime import DispatcherRuntime
   from dispatcher.scheduler import Scheduler
-  from dispatcher.server import DispatcherConfig
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +107,9 @@ async def resolver_loop(
   )
 
 
-async def gc_loop(
-  runtime: DispatcherRuntime, config: DispatcherConfig
-) -> None:
+async def gc_loop(gc: OrphanGC, config: DispatcherConfig) -> None:
   async def tick() -> None:
-    removed = await runtime.gc_orphans_once(
+    removed = await gc.sweep_once(
       min_container_age_s=config.orphan_gc.min_container_age_s,
     )
     if removed:

@@ -537,7 +537,7 @@ def test_monitor_stream_mounted_and_sse_frame_shape(
   # never-ending stream is checked as: route mounted + frame
   # serializer correct. Event publication is pinned in
   # test_runtime.
-  from dispatcher.server import _sse
+  from dispatcher.wire import sse as _sse
 
   async def fake_dispatch(action, state) -> None:
     return None
