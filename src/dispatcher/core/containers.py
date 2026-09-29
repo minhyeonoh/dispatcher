@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 import shlex
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -54,50 +53,38 @@ _BACKOFF_SEQUENCE: tuple[float, ...] = (
 # ── parsing helpers ──────────────────────────────────────────────
 
 
-def extract_label(labels_str: str, key: str) -> str | None:
-  """One value out of `docker ps`'s comma-joined `Labels` string.
-  Split on commas is safe for our own label values (trial names
-  contain no commas); foreign labels that do contain commas can
-  only produce a miss, never a wrong hit, because the key match
-  is exact."""
-  for pair in labels_str.split(","):
-    if "=" not in pair:
-      continue
-    k, _, v = pair.partition("=")
-    if k.strip() == key:
-      return v.strip()
-  return None
+def container_labels(inspect_row: dict[str, Any]) -> dict[str, str]:
+  """`.Config.Labels` from a `docker inspect` row — a real dict,
+  unlike `docker ps`'s comma-joined Labels string whose parsing a
+  foreign label VALUE could poison."""
+  config = inspect_row.get("Config") or {}
+  out = config.get("Labels") or {}
+  return out if isinstance(out, dict) else {}
 
 
-def parse_exit_code(status_str: str) -> int:
-  """Exit code out of a `docker ps` Status string
-  ("Exited (N) 5 minutes ago"). Unparseable → 1: treat as error
-  rather than pretend clean."""
-  m = re.match(r"Exited \((-?\d+)\)", status_str)
-  if not m:
-    return 1
-  try:
-    return int(m.group(1))
-  except ValueError:
-    return 1
-
-
-def parse_docker_created_at(s: str) -> datetime | None:
-  """docker ps CreatedAt: "2026-08-03 20:56:15 +0900 KST" — the
-  trailing tz NAME is locale junk strptime can't eat; the numeric
-  offset suffices."""
+def parse_created(s: str) -> datetime | None:
+  """`docker inspect` `.Created`: RFC3339 with nanoseconds
+  ("2026-08-03T11:56:15.123456789Z"). fromisoformat only takes
+  microseconds, so trim the fraction; None on garbage — callers
+  err on the side of not touching the container."""
   s = s.strip()
   if not s:
     return None
-  parts = s.rsplit(" ", 1)
-  head = (
-    parts[0]
-    if len(parts) == 2 and not parts[1].startswith(("+", "-"))
-    else s
-  )
+  if s.endswith("Z"):
+    s = s[:-1] + "+00:00"
+  head, dot, tail = s.partition(".")
+  if dot:
+    frac = ""
+    i = 0
+    while i < len(tail) and tail[i].isdigit():
+      frac += tail[i]
+      i += 1
+    s = head + "." + (frac[:6] or "0") + tail[i:]
   try:
-    dt = datetime.strptime(head, "%Y-%m-%d %H:%M:%S %z")
+    dt = datetime.fromisoformat(s)
   except ValueError:
+    return None
+  if dt.tzinfo is None:
     return None
   return dt.astimezone(UTC)
 
@@ -360,23 +347,24 @@ async def census_host(
   label_filter: str | None = None,
   timeout_sec: float = 30.0,
 ) -> list[dict[str, Any]]:
-  """`docker ps -a --filter label=…` as parsed JSON rows. Default
-  filter is the managed (main-container) label; GC passes the SET
-  key to see whole trial container sets. RuntimeError on ssh /
-  docker failure — callers treat that as "no evidence this tick",
-  never as "host is empty"."""
+  """Full `docker inspect` rows for every container matching the
+  label filter (default: the managed main-container label; GC
+  passes the SET key). One ssh round trip: `ps -aq` for ids, then
+  `inspect` for REAL JSON — labels as a dict, ExitCode as an int,
+  Created as RFC3339 — instead of `docker ps`'s human-oriented
+  strings. RuntimeError on ssh / docker failure — callers treat
+  that as "no evidence this tick", never as "host is empty"."""
   flt = label_filter or f"{labels.MANAGED}={labels.MANAGED_VALUE}"
-  cmd = [
-    "docker",
-    "ps",
-    "-a",
-    "--filter",
-    f"label={flt}",
-    "--format",
-    "{{json .}}",
-  ]
+  inner = (
+    "ids=$(docker ps -aq --filter "
+    + shlex.quote(f"label={flt}")
+    + '); if [ -n "$ids" ]; then docker inspect $ids; '
+    "else echo '[]'; fi"
+  )
   argv = (
-    cmd if host == self_host else ["ssh", *SSH_OPTS, host, shlex.join(cmd)]
+    ["bash", "-c", inner]
+    if host == self_host
+    else ["ssh", *SSH_OPTS, host, inner]
   )
   stdout = b""
   stderr = b""
@@ -407,18 +395,17 @@ async def census_host(
       f"census {host} exited {return_code}: "
       f"{stderr.decode('utf-8', 'replace')[:500]}"
     )
-  out: list[dict[str, Any]] = []
-  for line in stdout.decode("utf-8", "replace").splitlines():
-    stripped = line.strip()
-    if not stripped:
-      continue
-    try:
-      out.append(json.loads(stripped))
-    except json.JSONDecodeError:
-      logger.warning(
-        "census %s: unparseable line: %r", host, stripped[:200]
-      )
-  return out
+  try:
+    rows = json.loads(stdout.decode("utf-8", "replace") or "[]")
+  except json.JSONDecodeError as exc:
+    raise RuntimeError(
+      f"census {host}: inspect output unparseable: {exc}"
+    ) from exc
+  if not isinstance(rows, list):
+    raise RuntimeError(
+      f"census {host}: inspect returned {type(rows).__name__}"
+    )
+  return [r for r in rows if isinstance(r, dict)]
 
 
 async def probe_trial(
@@ -432,14 +419,15 @@ async def probe_trial(
   or "gone" when docker has no record. Raises RuntimeError on a
   real infra problem (never guesses "gone" from a failed ssh)."""
   cmd = (
-    "docker ps -a --filter "
+    "ids=$(docker ps -aq --filter "
     + shlex.quote(f"label={labels.TRIAL}={trial_name}")
-    + " --format '{{.State}}'"
+    + '); if [ -n "$ids" ]; then '
+    "docker inspect --format '{{.State.Status}}' $ids; fi"
   )
   r = await run_on(host, self_host, cmd, timeout=timeout_sec)
   if r.returncode != 0:
     raise RuntimeError(
-      f"docker ps on {host!r} for trial {trial_name!r} exited "
+      f"docker probe on {host!r} for trial {trial_name!r} exited "
       f"{r.returncode}: {r.stderr.strip()[:500]}"
     )
   states = [s.strip() for s in r.stdout.splitlines() if s.strip()]

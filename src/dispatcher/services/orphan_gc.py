@@ -18,8 +18,8 @@ from pydantic import BaseModel, ConfigDict, PositiveFloat
 from dispatcher.core import labels
 from dispatcher.core.containers import (
   census_host,
-  extract_label,
-  parse_docker_created_at,
+  container_labels,
+  parse_created,
   remove_trial_sets,
 )
 
@@ -91,10 +91,10 @@ class OrphanGC:
 
       per_set_min_age_s: dict[str, float] = {}
       for c in containers:
-        set_name = extract_label(c.get("Labels", ""), labels.SET)
+        set_name = container_labels(c).get(labels.SET)
         if not set_name:
           continue
-        created_at = parse_docker_created_at(c.get("CreatedAt", ""))
+        created_at = parse_created(c.get("Created", ""))
         if created_at is None:
           continue  # unparseable — err on the side of caution
         age_s = (now - created_at).total_seconds()

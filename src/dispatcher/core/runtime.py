@@ -43,11 +43,7 @@ import anyio
 from pydantic import BaseModel, ConfigDict, PositiveFloat, PositiveInt
 
 from dispatcher.core import labels
-from dispatcher.core.containers import (
-  extract_label,
-  parse_exit_code,
-  probe_trial,
-)
+from dispatcher.core.containers import container_labels, probe_trial
 from dispatcher.core.dispatch import DispatchError, docker_dispatch
 from dispatcher.core.event_log import append_event, event_log_path_for
 from dispatcher.core.models import (
@@ -337,20 +333,24 @@ class DispatcherRuntime:
   async def reconcile_from_census(
     self, host: str, containers: list[dict[str, Any]]
   ) -> None:
-    """Fold a startup census into scheduler state by synthesizing
-    die events — completions during downtime run the exact same
-    code path as live ones."""
+    """Fold a startup census (docker inspect rows) into scheduler
+    state by synthesizing die events — completions during
+    downtime run the exact same code path as live ones."""
     for c in containers:
-      if (c.get("State") or "") != "exited":
+      state = c.get("State") or {}
+      if state.get("Status") != "exited":
         continue
-      trial_name = extract_label(c.get("Labels") or "", labels.TRIAL)
+      trial_name = container_labels(c).get(labels.TRIAL)
       if not trial_name:
         continue
+      exit_code = state.get("ExitCode")
+      if not isinstance(exit_code, int):
+        exit_code = 1  # never pretend clean on a missing field
       synthetic = {
         "Actor": {
           "Attributes": {
             labels.TRIAL: trial_name,
-            "exitCode": str(parse_exit_code(c.get("Status") or "")),
+            "exitCode": str(exit_code),
           }
         }
       }

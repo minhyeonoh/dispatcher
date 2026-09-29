@@ -19,13 +19,13 @@ if TYPE_CHECKING:
 
 def _census_row(set_name: str, created: str) -> dict:
   return {
-    "ID": "deadbeef",
-    "Labels": f"{labels.SET}={set_name}",
-    "CreatedAt": created,
+    "Id": "deadbeef",
+    "Config": {"Labels": {labels.SET: set_name}},
+    "Created": created,
   }
 
 
-OLD = "2026-09-28 00:00:00 +0000 UTC"
+OLD = "2026-09-28T00:00:00.000000000Z"
 
 
 def test_gc_preserves_running_trial_with_uppercase_name(
@@ -122,7 +122,7 @@ def test_gc_age_floor_protects_fresh_containers(
   from datetime import UTC, datetime
 
   sched = mk_sched(1)
-  now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S +0000 UTC")
+  now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
   async def fake_census(host, *, self_host, label_filter=None):
     return [_census_row("young__0000001", now_str)]

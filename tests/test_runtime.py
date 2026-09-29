@@ -709,11 +709,12 @@ def test_reconcile_from_census_scores_exited_container(
   )
   containers = [
     {
-      "State": "exited",
-      "Status": "Exited (0) 5 minutes ago",
-      "Labels": f"{labels.MANAGED}=1,{labels.TRIAL}={trial_name}",
+      "State": {"Status": "exited", "ExitCode": 0},
+      "Config": {
+        "Labels": {labels.MANAGED: "1", labels.TRIAL: trial_name}
+      },
     },
-    {"State": "running", "Labels": ""},
+    {"State": {"Status": "running"}, "Config": {"Labels": {}}},
   ]
   asyncio.run(runtime.reconcile_from_census("ml10", containers))
   assert set(sched.attempt_view("att-001").done_ok) == {"t1"}
@@ -729,9 +730,10 @@ def test_reconcile_remembers_infra_exit_code(
   runtime._NFS_POLL_RETRY_DELAYS = ()
   containers = [
     {
-      "State": "exited",
-      "Status": "Exited (137) 2 minutes ago",
-      "Labels": f"{labels.MANAGED}=1,{labels.TRIAL}={trial_name}",
+      "State": {"Status": "exited", "ExitCode": 137},
+      "Config": {
+        "Labels": {labels.MANAGED: "1", labels.TRIAL: trial_name}
+      },
     }
   ]
   asyncio.run(runtime.reconcile_from_census("ml10", containers))

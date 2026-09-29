@@ -14,10 +14,9 @@ from dispatcher.core import labels
 from dispatcher.core.containers import (
   DockerEventStreamManager,
   _HostStream,
-  extract_label,
+  container_labels,
   iter_lines,
-  parse_docker_created_at,
-  parse_exit_code,
+  parse_created,
   probe_trial,
 )
 
@@ -28,55 +27,53 @@ if TYPE_CHECKING:
 # ── parsing ──────────────────────────────────────────────────────
 
 
-def test_extract_label_present():
-  s = "dispatcher.managed=1,dispatcher.trial=t1__0000001"
-  assert extract_label(s, "dispatcher.trial") == "t1__0000001"
+def test_container_labels_is_a_real_dict():
+  row = {
+    "Config": {
+      "Labels": {
+        "dispatcher.trial": "t1__0000001",
+        # A foreign label whose VALUE embeds our key=value shape
+        # — poisonous to comma-string parsing, inert on a dict.
+        "foreign": "x,dispatcher.set=evil",
+      }
+    }
+  }
+  assert container_labels(row)["dispatcher.trial"] == "t1__0000001"
+  assert "dispatcher.set" not in container_labels(row)
 
 
-def test_extract_label_missing():
-  assert extract_label("a=1,b=2", "c") is None
+def test_container_labels_missing_or_null():
+  assert container_labels({}) == {}
+  assert container_labels({"Config": {"Labels": None}}) == {}
+  assert container_labels({"Config": None}) == {}
 
 
-def test_extract_label_whitespace_tolerant():
-  assert extract_label(" a = 1 , b = 2 ", "b") == "2"
+def test_container_labels_preserves_case():
+  row = {"Config": {"Labels": {"dispatcher.set": "trial_T2019__0000001"}}}
+  assert container_labels(row)["dispatcher.set"] == "trial_T2019__0000001"
 
 
-def test_extract_label_exact_key_no_prefix_hit():
-  assert extract_label("foobar=1", "foo") is None
-
-
-def test_extract_label_preserves_case_in_value():
-  s = f"{labels.SET}=trial_T2019__0000001"
-  assert extract_label(s, labels.SET) == "trial_T2019__0000001"
-
-
-def test_parse_exit_code_clean():
-  assert parse_exit_code("Exited (0) 5 minutes ago") == 0
-
-
-def test_parse_exit_code_error():
-  assert parse_exit_code("Exited (137) 2 hours ago") == 137
-
-
-def test_parse_exit_code_unparseable():
-  assert parse_exit_code("Up 3 minutes") == 1
-
-
-def test_parse_created_at_with_tz_name():
-  dt = parse_docker_created_at("2026-08-03 20:56:15 +0900 KST")
+def test_parse_created_nanoseconds_z():
+  dt = parse_created("2026-08-03T11:56:15.123456789Z")
   assert dt is not None
-  assert dt.tzinfo is UTC
-  assert dt.hour == 11  # 20:56 KST → 11:56 UTC
+  assert dt.microsecond == 123456
+  assert dt.tzinfo is not None
 
 
-def test_parse_created_at_without_tz_name():
-  dt = parse_docker_created_at("2026-08-03 20:56:15 +0000")
+def test_parse_created_offset_form():
+  dt = parse_created("2026-08-03T20:56:15.5+09:00")
   assert dt is not None
+  assert dt.hour == 11  # normalised to UTC
 
 
-def test_parse_created_at_garbage_is_none():
-  assert parse_docker_created_at("not a date") is None
-  assert parse_docker_created_at("") is None
+def test_parse_created_no_fraction():
+  assert parse_created("2026-08-03T11:56:15Z") is not None
+
+
+def test_parse_created_garbage_is_none():
+  assert parse_created("not a date") is None
+  assert parse_created("") is None
+  assert parse_created("2026-08-03T11:56:15") is None  # naive
 
 
 # ── iter_lines ───────────────────────────────────────────────────
@@ -328,9 +325,11 @@ def test_probe_queries_by_label_with_verbatim_case(monkeypatch):
     )
   )
   # Labels pass the trial name through verbatim — no lowercasing,
-  # no name conventions.
+  # no name conventions — and the state comes from inspect, not
+  # from human-oriented ps output.
   assert "trial_T20190907_004351__0081119" in seen[0]
   assert labels.TRIAL in seen[0]
+  assert "docker inspect" in seen[0]
 
 
 def test_probe_raises_on_docker_failure(monkeypatch):
@@ -345,5 +344,5 @@ def test_probe_raises_on_docker_failure(monkeypatch):
     return _R()
 
   monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
-  with pytest.raises(RuntimeError, match="docker ps"):
+  with pytest.raises(RuntimeError, match="docker probe"):
     asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))
