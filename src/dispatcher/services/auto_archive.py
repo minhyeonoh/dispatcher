@@ -8,6 +8,13 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from pydantic import (
+  BaseModel,
+  ConfigDict,
+  NonNegativeInt,
+  PositiveFloat,
+)
+
 from dispatcher.core.event_log import event_log_path_for
 from dispatcher.core.loops import LoopSkip, every
 
@@ -19,9 +26,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ArchiveSettings(BaseModel):
+  auto_after_days: NonNegativeInt = 0
+  """0 = auto-archive disabled."""
+
+  scan_interval_seconds: PositiveFloat = 3600.0
+
+
+class ArchivePatch(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  auto_after_days: NonNegativeInt | None = None
+  scan_interval_seconds: PositiveFloat | None = None
+
+
+def apply_patch(settings: ArchiveSettings, patch: ArchivePatch) -> None:
+  if patch.auto_after_days is not None:
+    settings.auto_after_days = patch.auto_after_days
+  if patch.scan_interval_seconds is not None:
+    settings.scan_interval_seconds = patch.scan_interval_seconds
+
+
 async def archive_loop(
   scheduler: Scheduler,
-  config,
+  settings: ArchiveSettings,
   clock_fn: Callable[[], datetime],
   archive_one: Callable[[str], None],
 ) -> None:
@@ -31,7 +59,7 @@ async def archive_loop(
   trial between scan and apply."""
 
   async def tick() -> None:
-    threshold_days = config.archive.auto_after_days
+    threshold_days = settings.auto_after_days
     if threshold_days <= 0:
       return
     candidates = scan_auto_archive_candidates(
@@ -55,7 +83,7 @@ async def archive_loop(
 
   await every(
     "auto_archive",
-    lambda: config.archive.scan_interval_seconds,
+    lambda: settings.scan_interval_seconds,
     tick,
   )
 

@@ -6,23 +6,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from dispatcher.api.config import (
-  ArchiveConfig,
-  DispatcherConfig,
-  OrphanGCConfig,
-  StateReconciliationConfig,
-)
+from dispatcher.api.settings import Settings
 from dispatcher.core.metrics import AttemptMetrics, MetricsCache
-from dispatcher.core.models import HostSettings, TrialView
-from dispatcher.services.host_autotune import HostAutotuneConfig
-from dispatcher.services.notify import NotifyConfig
 
 if TYPE_CHECKING:
+  from dispatcher.core.models import TrialView
   from dispatcher.core.scheduler import Scheduler
 
 
@@ -86,21 +78,13 @@ class FullAttemptOut(AttemptSummaryOut):
   unknown: dict[str, TrialViewOut] = Field(default_factory=dict)
 
 
-class ClusterConfigOut(BaseModel):
-  max_concurrent: int
-  hosts: dict[str, HostSettings]
-  self_host: str
-  data_dir: Path
-  state_reconciliation: StateReconciliationConfig
-  orphan_gc: OrphanGCConfig
-  host_autotune: HostAutotuneConfig
-  notify: NotifyConfig
-  archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
-  pool_caps: dict[str, int] = Field(default_factory=dict)
-
-
 class ClusterSnapshotOut(BaseModel):
-  config: ClusterConfigOut
+  """Boot identity + the live Settings document + running
+  counters. `settings` is the operator-tunable state verbatim —
+  what you read here is exactly what PATCH /settings edits."""
+
+  self_host: str
+  settings: Settings
   running_total: int
   running_per_host: dict[str, int]
   running_per_pool: dict[str, int] = Field(default_factory=dict)
@@ -169,10 +153,11 @@ def snapshot_attempt_with_metrics(
 
 
 def cluster_snapshot(
-  config: DispatcherConfig, scheduler: Scheduler
+  self_host: str, settings: Settings, scheduler: Scheduler
 ) -> ClusterSnapshotOut:
   return ClusterSnapshotOut(
-    config=ClusterConfigOut.model_validate(config, from_attributes=True),
+    self_host=self_host,
+    settings=settings,
     running_total=scheduler.running_total,
     running_per_host=scheduler.running_per_host(),
     running_per_pool=scheduler.pool_running_snapshot(),

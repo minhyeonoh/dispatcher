@@ -9,8 +9,8 @@ from dispatcher.core.event_log import RUN_LOG_FILENAME, read_events
 from dispatcher.core.models import HostSettings, Outcome
 from dispatcher.core.scheduler import Scheduler
 from dispatcher.services.notify import (
-  NotifyConfig,
   NotifyManager,
+  NotifySettings,
   TelegramSender,
 )
 from tests.test_runtime import mk_attempt
@@ -46,7 +46,7 @@ def _mk(
   thresholds: list[float],
   *,
   enabled: bool = True,
-) -> tuple[Scheduler, NotifyManager, _FakeSender, NotifyConfig]:
+) -> tuple[Scheduler, NotifyManager, _FakeSender, NotifySettings]:
   sched = Scheduler(
     max_concurrent=10,
     hosts={"ml10": HostSettings(max_concurrent=10)},
@@ -54,7 +54,7 @@ def _mk(
     name_gen=name_gen(),
   )
   sched.submit(mk_attempt(tmp_path, tasks))
-  config = NotifyConfig(
+  config = NotifySettings(
     enabled=enabled,
     thresholds=thresholds,
     telegram_chat_id="chat",

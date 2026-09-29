@@ -117,7 +117,11 @@ dispatcher monitor --server http://127.0.0.1:7200
 ```
 
 State: per-attempt event log at
-`<home_root>/.dispatcher-state.jsonl` (replayed on restart) plus
-an attempts index under `--data-dir`. `TELEGRAM_BOT_TOKEN` in the
-env enables progress notifications (configure thresholds via
-`PATCH /settings`).
+`<home_root>/.dispatcher-state.jsonl` (replayed on restart), an
+attempts index under `--data-dir`, and `settings.json` — every
+`PATCH /settings` persists the whole runtime-tunable document, so
+operator tuning survives restarts. `--host`/`--max-concurrent`
+are required on the first boot only; afterwards the persisted
+settings win and explicit flags act as overrides.
+`TELEGRAM_BOT_TOKEN` in the env enables progress notifications
+(configure thresholds via `PATCH /settings`).

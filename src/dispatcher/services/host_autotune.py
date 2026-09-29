@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 HOST_METRICS_FILENAME = "host-metrics.jsonl"
 
 
-class HostAutotuneConfig(BaseModel):
+class HostAutotuneSettings(BaseModel):
   enabled: bool = True
   seconds_between_ticks: PositiveFloat = 60.0
   ring_buffer_size: PositiveInt = 50
@@ -65,6 +65,23 @@ class HostAutotunePatch(BaseModel):
   bootstrap_min_samples: PositiveInt | None = None
   peak_floor_bytes: PositiveInt | None = None
   reserve_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
+
+
+def apply_patch(
+  settings: HostAutotuneSettings, patch: HostAutotunePatch
+) -> None:
+  if patch.enabled is not None:
+    settings.enabled = patch.enabled
+  if patch.seconds_between_ticks is not None:
+    settings.seconds_between_ticks = patch.seconds_between_ticks
+  if patch.ring_buffer_size is not None:
+    settings.ring_buffer_size = patch.ring_buffer_size
+  if patch.bootstrap_min_samples is not None:
+    settings.bootstrap_min_samples = patch.bootstrap_min_samples
+  if patch.peak_floor_bytes is not None:
+    settings.peak_floor_bytes = patch.peak_floor_bytes
+  if patch.reserve_fraction is not None:
+    settings.reserve_fraction = patch.reserve_fraction
 
 
 @dataclass
@@ -278,7 +295,7 @@ async def autotune_tick(
   *,
   state: HostAutotuneState,
   scheduler: Scheduler,
-  config: HostAutotuneConfig,
+  settings: HostAutotuneSettings,
   self_host: str,
   apply_cap: object | None = None,
   now: datetime | None = None,
@@ -304,7 +321,7 @@ async def autotune_tick(
     if result is None:
       continue
     completions = update_tracker(
-      state, host, result, now, config.ring_buffer_size
+      state, host, result, now, settings.ring_buffer_size
     )
     for peak in completions:
       try:
@@ -335,8 +352,8 @@ async def autotune_tick(
     est = peak_estimate(
       state.ring.get(host, []),
       global_ring,
-      config.bootstrap_min_samples,
-      config.peak_floor_bytes,
+      settings.bootstrap_min_samples,
+      settings.peak_floor_bytes,
     )
     if est is None:
       continue
@@ -345,7 +362,7 @@ async def autotune_tick(
       mem_avail_bytes=result.mem_avail_bytes,
       running_count=running_per_host.get(host, 0),
       peak_estimate_bytes=est,
-      reserve_fraction=config.reserve_fraction,
+      reserve_fraction=settings.reserve_fraction,
       operator_ceiling=ceiling,
     )
     if new_cap != current_cap:
@@ -361,20 +378,22 @@ async def autotune_tick(
 
 async def autotune_loop(
   scheduler: Scheduler,
-  config,
+  self_host: str,
+  settings: HostAutotuneSettings,
   autotune_state: HostAutotuneState,
   apply_cap: Callable[[str, int], None],
 ) -> None:
-  """`apply_cap` lets the server mirror applied caps into its
-  config so /state readback stays truthful."""
+  """`apply_cap` lets the server mirror applied caps into the
+  in-memory settings so /state readback stays truthful. It must
+  NOT persist them — see the ratchet note in api/settings.py."""
   from dispatcher.core.loops import every
 
   async def tick() -> None:
     applied = await autotune_tick(
       state=autotune_state,
       scheduler=scheduler,
-      config=config.host_autotune,
-      self_host=config.self_host,
+      settings=settings,
+      self_host=self_host,
       apply_cap=apply_cap,
     )
     if applied:
@@ -385,7 +404,7 @@ async def autotune_loop(
 
   await every(
     "host_autotune",
-    lambda: config.host_autotune.seconds_between_ticks,
+    lambda: settings.seconds_between_ticks,
     tick,
-    enabled_fn=lambda: config.host_autotune.enabled,
+    enabled_fn=lambda: settings.enabled,
   )

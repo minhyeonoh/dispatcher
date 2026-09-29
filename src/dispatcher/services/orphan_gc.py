@@ -13,6 +13,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, ConfigDict, PositiveFloat
+
 from dispatcher.core import labels
 from dispatcher.core.containers import (
   census_host,
@@ -25,6 +27,31 @@ if TYPE_CHECKING:
   from dispatcher.core.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
+
+
+class OrphanGCSettings(BaseModel):
+  enabled: bool = True
+  seconds_between_sweeps: PositiveFloat = 30.0
+  min_container_age_s: PositiveFloat = 90.0
+  """Containers younger than this are never touched — protects
+  the dispatch-race window."""
+
+
+class OrphanGCPatch(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  enabled: bool | None = None
+  seconds_between_sweeps: PositiveFloat | None = None
+  min_container_age_s: PositiveFloat | None = None
+
+
+def apply_patch(settings: OrphanGCSettings, patch: OrphanGCPatch) -> None:
+  if patch.enabled is not None:
+    settings.enabled = patch.enabled
+  if patch.seconds_between_sweeps is not None:
+    settings.seconds_between_sweeps = patch.seconds_between_sweeps
+  if patch.min_container_age_s is not None:
+    settings.min_container_age_s = patch.min_container_age_s
 
 
 class OrphanGC:
@@ -103,12 +130,12 @@ class OrphanGC:
     return per_host_removed
 
 
-async def gc_loop(gc: OrphanGC, config) -> None:
+async def gc_loop(gc: OrphanGC, settings: OrphanGCSettings) -> None:
   from dispatcher.core.loops import every
 
   async def tick() -> None:
     removed = await gc.sweep_once(
-      min_container_age_s=config.orphan_gc.min_container_age_s,
+      min_container_age_s=settings.min_container_age_s,
     )
     if removed:
       # WARNING: the dispatcher touched containers — operators
@@ -121,7 +148,7 @@ async def gc_loop(gc: OrphanGC, config) -> None:
 
   await every(
     "orphan_gc",
-    lambda: config.orphan_gc.seconds_between_sweeps,
+    lambda: settings.seconds_between_sweeps,
     tick,
-    enabled_fn=lambda: config.orphan_gc.enabled,
+    enabled_fn=lambda: settings.enabled,
   )

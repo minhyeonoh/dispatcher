@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 
 
-class NotifyConfig(BaseModel):
+class NotifySettings(BaseModel):
   """Live-patchable; the manager re-reads every field per event."""
 
   enabled: bool = True
@@ -48,6 +48,15 @@ class NotifyPatch(BaseModel):
   enabled: bool | None = None
   thresholds: list[float] | None = None
   telegram_chat_id: str | None = None
+
+
+def apply_patch(settings: NotifySettings, patch: NotifyPatch) -> None:
+  if patch.enabled is not None:
+    settings.enabled = patch.enabled
+  if patch.thresholds is not None:
+    settings.thresholds = [float(t) for t in patch.thresholds]
+  if patch.telegram_chat_id is not None:
+    settings.telegram_chat_id = patch.telegram_chat_id
 
 
 class TelegramSender:
@@ -105,7 +114,7 @@ class NotifyManager:
     *,
     bus: EventBus,
     scheduler: Scheduler,
-    config: NotifyConfig,
+    config: NotifySettings,
     sender: TelegramSender,
     metrics: MetricsCache | None = None,
   ) -> None:

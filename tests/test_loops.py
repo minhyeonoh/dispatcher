@@ -194,15 +194,10 @@ def test_every_rereads_interval_each_iteration():
 # ── archive loop ─────────────────────────────────────────────────
 
 
-class _ArchiveConfig:
-  def __init__(self, days: int) -> None:
-    self.auto_after_days = days
-    self.scan_interval_seconds = 0.0
+def _archive_settings(days: int):
+  from dispatcher.services.auto_archive import ArchiveSettings
 
-
-class _Config:
-  def __init__(self, days: int) -> None:
-    self.archive = _ArchiveConfig(days)
+  return ArchiveSettings(auto_after_days=days, scan_interval_seconds=0.001)
 
 
 def test_archive_loop_applies_and_skips(monkeypatch, tmp_path: Path):
@@ -227,7 +222,7 @@ def test_archive_loop_applies_and_skips(monkeypatch, tmp_path: Path):
     task = asyncio.ensure_future(
       archive_loop(
         scheduler=None,  # type: ignore[arg-type] — scan is stubbed
-        config=_Config(days=7),  # type: ignore[arg-type]
+        settings=_archive_settings(7),
         clock_fn=lambda: datetime.now(UTC),
         archive_one=archive_one,
       )
@@ -258,7 +253,7 @@ def test_archive_loop_disabled_at_zero_days(monkeypatch):
     task = asyncio.ensure_future(
       archive_loop(
         scheduler=None,  # type: ignore[arg-type]
-        config=_Config(days=0),  # type: ignore[arg-type]
+        settings=_archive_settings(0),
         clock_fn=lambda: datetime.now(UTC),
         archive_one=lambda aid: None,
       )

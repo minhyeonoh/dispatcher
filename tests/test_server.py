@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi.testclient import TestClient
 
 from dispatcher.api.app import create_app
-from dispatcher.api.config import DispatcherConfig
+from dispatcher.api.config import Config
+from dispatcher.api.settings import Settings
 from dispatcher.core.models import HostSettings
 
 if TYPE_CHECKING:
@@ -17,16 +18,21 @@ if TYPE_CHECKING:
   from dispatcher.core.models import DispatchEntry
 
 
-def mk_config(tmp_path: Path) -> DispatcherConfig:
-  return DispatcherConfig(
-    max_concurrent=4,
-    hosts={"ml10": HostSettings(max_concurrent=4)},
+def mk_config(tmp_path: Path) -> Config:
+  return Config(
     self_host="ml10",
     data_dir=tmp_path / "dispatcher-data",
     tick_interval=0.01,
     # Tests drive completion themselves; a real events stream
     # would ssh out.
     use_docker_events=False,
+  )
+
+
+def mk_settings() -> Settings:
+  return Settings(
+    max_concurrent=4,
+    hosts={"ml10": HostSettings(max_concurrent=4)},
   )
 
 
@@ -42,6 +48,7 @@ def mk_client(
 
   app = create_app(
     mk_config(tmp_path),
+    settings=mk_settings(),
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )
@@ -492,7 +499,53 @@ def test_patch_settings_hosts_and_caps(tmp_path: Path):
   # pool_caps persist across restart.
   with mk_client(tmp_path) as client2:
     state = client2.get("/state").json()
-    assert state["config"]["pool_caps"] == {"gpu": 2}
+    assert state["settings"]["pool_caps"] == {"gpu": 2}
+
+
+def test_all_settings_persist_across_restart(tmp_path: Path):
+  # The old router persisted only pool caps; every other PATCH
+  # silently reverted on restart. Now the whole document survives
+  # and beats the seed.
+  with mk_client(tmp_path) as client:
+    resp = client.patch(
+      "/settings",
+      json={
+        "max_concurrent": 9,
+        "orphan_gc": {"min_container_age_s": 5.0},
+        "notify": {"telegram_chat_id": "chat-1"},
+      },
+    )
+    assert resp.status_code == 200
+  with mk_client(tmp_path) as client2:
+    st = client2.get("/state").json()["settings"]
+    assert st["max_concurrent"] == 9  # seed said 4
+    assert st["orphan_gc"]["min_container_age_s"] == 5.0
+    assert st["notify"]["telegram_chat_id"] == "chat-1"
+
+
+def test_boot_overrides_beat_persisted(tmp_path: Path):
+  from dispatcher.api.settings import SettingsPatch
+
+  with mk_client(tmp_path) as client:
+    client.patch("/settings", json={"max_concurrent": 9})
+
+  async def fake_dispatch(action, state) -> None:
+    return None
+
+  app = create_app(
+    mk_config(tmp_path),
+    settings=mk_settings(),
+    settings_overrides=SettingsPatch(max_concurrent=2),
+    dispatch=fake_dispatch,
+    poll=lambda _p: None,
+  )
+  with TestClient(app) as client2:
+    st = client2.get("/state").json()["settings"]
+    assert st["max_concurrent"] == 2  # explicit flag wins
+  # And the override itself persisted.
+  with mk_client(tmp_path) as client3:
+    st = client3.get("/state").json()["settings"]
+    assert st["max_concurrent"] == 2
 
 
 def test_patch_settings_unknown_key_rejected(tmp_path: Path):
@@ -545,6 +598,7 @@ def test_monitor_stream_mounted_and_sse_frame_shape(
 
   app = create_app(
     mk_config(tmp_path),
+    settings=mk_settings(),
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )

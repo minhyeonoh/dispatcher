@@ -5,13 +5,18 @@ server maps them to status codes at the edge."""
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dispatcher.api.settings import (
+  Settings,
+  SettingsPatch,
+  apply_patch_pure,
+  save_settings,
+)
 from dispatcher.api.wire import (
   RetryDoneErrRequest,
   attempt_counts,
@@ -36,7 +41,7 @@ if TYPE_CHECKING:
   import asyncio
   from collections.abc import Callable
 
-  from dispatcher.api.config import DispatcherConfig, SettingsPatch
+  from dispatcher.api.config import Config
   from dispatcher.api.wire import AttemptSummaryOut
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.metrics import MetricsCache
@@ -72,7 +77,8 @@ class Internal(OpError):
 
 @dataclass
 class ServerState:
-  config: DispatcherConfig
+  config: Config
+  settings: Settings
   scheduler: Scheduler
   runtime: DispatcherRuntime
   metrics: MetricsCache
@@ -94,45 +100,15 @@ class ServerState:
     self._seq = max(self._seq, seq)
 
 
-def filter_presets_path(config: DispatcherConfig) -> Path:
+def filter_presets_path(config: Config) -> Path:
   return config.data_dir / "filter-presets.json"
 
 
-def pool_caps_path(config: DispatcherConfig) -> Path:
-  return config.data_dir / "pool-caps.json"
-
-
-def load_pool_caps(config: DispatcherConfig) -> dict[str, int]:
-  """Corrupt/missing blob → {} (never blocks startup)."""
-  path = pool_caps_path(config)
-  if not path.is_file():
-    return {}
-  try:
-    raw = json.loads(path.read_text())
-  except (OSError, ValueError):
-    logger.warning("pool_caps blob at %s unreadable; ignoring", path)
-    return {}
-  if not isinstance(raw, dict):
-    return {}
-  return {
-    k: int(v)
-    for k, v in raw.items()
-    if isinstance(k, str) and isinstance(v, (int, float)) and v >= 0
-  }
-
-
-def save_pool_caps(config: DispatcherConfig, caps: dict[str, int]) -> None:
-  path = pool_caps_path(config)
-  path.parent.mkdir(parents=True, exist_ok=True)
-  tmp = path.with_suffix(path.suffix + ".tmp")
-  try:
-    tmp.write_text(json.dumps(caps, indent=2, sort_keys=True))
-    tmp.replace(path)
-  except OSError as exc:
-    logger.warning("pool_caps blob write failed path=%s err=%s", path, exc)
-
-
 def apply_settings(st: ServerState, patch: SettingsPatch) -> None:
+  """Scheduler side effects + pure settings merge + persist.
+  This is the ONLY path that saves settings to disk — autotune's
+  in-memory cap mirroring must never persist (ratchet; see
+  api/settings.py)."""
   if patch.hosts is not None:
     for host, host_patch in patch.hosts.items():
       new = st.scheduler.set_host_settings(
@@ -141,8 +117,8 @@ def apply_settings(st: ServerState, patch: SettingsPatch) -> None:
         active=host_patch.active,
         alive=host_patch.alive,
       )
-      # Mirror into config so /state readback stays truthful.
-      st.config.hosts[host] = new.model_copy()
+      # Mirror into settings so /state readback stays truthful.
+      st.settings.hosts[host] = new.model_copy()
       docker_events = st.runtime._docker_events
       if docker_events is not None:
         # Streams stay up for inactive hosts too: trials already
@@ -150,64 +126,13 @@ def apply_settings(st: ServerState, patch: SettingsPatch) -> None:
         docker_events.ensure_host(host)
   if patch.max_concurrent is not None:
     st.scheduler.set_max_concurrent(patch.max_concurrent)
-    st.config.max_concurrent = patch.max_concurrent
-  if patch.state_reconciliation is not None:
-    recon = patch.state_reconciliation
-    if recon.max_concurrent_probes is not None:
-      st.config.state_reconciliation.max_concurrent_probes = (
-        recon.max_concurrent_probes
-      )
-    if recon.seconds_between_probes is not None:
-      st.config.state_reconciliation.seconds_between_probes = (
-        recon.seconds_between_probes
-      )
-  if patch.orphan_gc is not None:
-    gc = patch.orphan_gc
-    if gc.enabled is not None:
-      st.config.orphan_gc.enabled = gc.enabled
-    if gc.seconds_between_sweeps is not None:
-      st.config.orphan_gc.seconds_between_sweeps = (
-        gc.seconds_between_sweeps
-      )
-    if gc.min_container_age_s is not None:
-      st.config.orphan_gc.min_container_age_s = gc.min_container_age_s
-  if patch.host_autotune is not None:
-    at = patch.host_autotune
-    if at.enabled is not None:
-      st.config.host_autotune.enabled = at.enabled
-    if at.seconds_between_ticks is not None:
-      st.config.host_autotune.seconds_between_ticks = (
-        at.seconds_between_ticks
-      )
-    if at.ring_buffer_size is not None:
-      st.config.host_autotune.ring_buffer_size = at.ring_buffer_size
-    if at.bootstrap_min_samples is not None:
-      st.config.host_autotune.bootstrap_min_samples = (
-        at.bootstrap_min_samples
-      )
-    if at.peak_floor_bytes is not None:
-      st.config.host_autotune.peak_floor_bytes = at.peak_floor_bytes
-    if at.reserve_fraction is not None:
-      st.config.host_autotune.reserve_fraction = at.reserve_fraction
+    st.settings.max_concurrent = patch.max_concurrent
   if patch.pool_caps is not None:
     normalised = {name: int(cap) for name, cap in patch.pool_caps.items()}
     st.scheduler.set_pool_caps(normalised)
-    st.config.pool_caps = dict(normalised)
-    save_pool_caps(st.config, normalised)
-  if patch.notify is not None:
-    nf = patch.notify
-    if nf.enabled is not None:
-      st.config.notify.enabled = nf.enabled
-    if nf.thresholds is not None:
-      st.config.notify.thresholds = [float(t) for t in nf.thresholds]
-    if nf.telegram_chat_id is not None:
-      st.config.notify.telegram_chat_id = nf.telegram_chat_id
-  if patch.archive is not None:
-    av = patch.archive
-    if av.auto_after_days is not None:
-      st.config.archive.auto_after_days = av.auto_after_days
-    if av.scan_interval_seconds is not None:
-      st.config.archive.scan_interval_seconds = av.scan_interval_seconds
+    st.settings.pool_caps = dict(normalised)
+  apply_patch_pure(st.settings, patch)
+  save_settings(st.config.data_dir, st.settings)
 
 
 def _prepare_submit(payload: dict[str, Any]) -> dict[str, Any]:

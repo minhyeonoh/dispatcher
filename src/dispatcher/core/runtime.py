@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import anyio
+from pydantic import BaseModel, ConfigDict, PositiveFloat, PositiveInt
 
 from dispatcher.core import labels
 from dispatcher.core.containers import (
@@ -83,6 +84,30 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class StateReconciliationSettings(BaseModel):
+  """Resolver knobs (periodic unknown/ghosted sweep)."""
+
+  max_concurrent_probes: PositiveInt = 16
+  seconds_between_probes: PositiveFloat = 30.0
+
+
+class StateReconciliationPatch(BaseModel):
+  model_config = ConfigDict(extra="forbid")
+
+  max_concurrent_probes: PositiveInt | None = None
+  seconds_between_probes: PositiveFloat | None = None
+
+
+def apply_state_reconciliation_patch(
+  settings: StateReconciliationSettings,
+  patch: StateReconciliationPatch,
+) -> None:
+  if patch.max_concurrent_probes is not None:
+    settings.max_concurrent_probes = patch.max_concurrent_probes
+  if patch.seconds_between_probes is not None:
+    settings.seconds_between_probes = patch.seconds_between_probes
 
 
 def classify(snapshot: CompletionSnapshot | None) -> TrialViewState:
@@ -768,18 +793,15 @@ class DispatcherRuntime:
 
 
 async def resolver_loop(
-  runtime: DispatcherRuntime, settings: object
+  runtime: DispatcherRuntime,
+  settings: StateReconciliationSettings,
 ) -> None:
-  """Periodic reconciliation. `settings` carries
-  `state_reconciliation.{seconds_between_probes,
-  max_concurrent_probes}`, re-read each tick."""
+  """Periodic reconciliation; knobs re-read each tick."""
   from dispatcher.core.loops import every
 
   async def tick() -> None:
     outcomes = await runtime.resolve_state_once(
-      max_concurrent_probes=(
-        settings.state_reconciliation.max_concurrent_probes  # type: ignore[attr-defined]
-      ),
+      max_concurrent_probes=settings.max_concurrent_probes,
     )
     if any(v > 0 for v in outcomes.values()):
       logger.info(
@@ -789,6 +811,6 @@ async def resolver_loop(
 
   await every(
     "resolver",
-    lambda: settings.state_reconciliation.seconds_between_probes,  # type: ignore[attr-defined]
+    lambda: settings.seconds_between_probes,
     tick,
   )

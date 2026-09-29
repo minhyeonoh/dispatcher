@@ -28,9 +28,13 @@ def main(argv: list[str] | None = None) -> int:
     action="append",
     default=[],
     metavar="NAME=CAP",
-    help="dispatch host and its max concurrent trials; repeatable",
+    help=(
+      "dispatch host and its max concurrent trials; repeatable. "
+      "Required on first boot; later boots reuse the persisted "
+      "settings.json and flags act as explicit overrides"
+    ),
   )
-  serve.add_argument("--max-concurrent", type=int, required=True)
+  serve.add_argument("--max-concurrent", type=int, default=None)
   serve.add_argument("--port", type=int, default=7200)
   serve.add_argument("--bind", default="127.0.0.1")
   serve.add_argument(
@@ -68,7 +72,13 @@ def main(argv: list[str] | None = None) -> int:
 
   import uvicorn
 
-  from dispatcher.api.app import DispatcherConfig, create_app
+  from dispatcher.api.app import create_app
+  from dispatcher.api.config import Config
+  from dispatcher.api.settings import (
+    HostSettingsPatch,
+    Settings,
+    SettingsPatch,
+  )
   from dispatcher.core.models import HostSettings
 
   hosts: dict[str, HostSettings] = {}
@@ -77,18 +87,31 @@ def main(argv: list[str] | None = None) -> int:
     if not sep or not cap.isdigit():
       ap.error(f"--host expects NAME=CAP, got {spec!r}")
     hosts[name] = HostSettings(max_concurrent=int(cap))
-  if not hosts:
-    ap.error("at least one --host NAME=CAP is required")
 
-  config = DispatcherConfig(
-    max_concurrent=args.max_concurrent,
-    hosts=hosts,
+  config = Config(
     self_host=args.self_host,
     data_dir=args.data_dir.expanduser(),
     use_docker_events=not args.no_docker_events,
     ui_dist=args.ui_dist,
   )
-  app = create_app(config)
+  # First boot needs a full seed (--host + --max-concurrent);
+  # later boots reuse the persisted settings.json, with any
+  # explicitly-passed flags applied on top as overrides.
+  seed: Settings | None = None
+  if hosts and args.max_concurrent is not None:
+    seed = Settings(max_concurrent=args.max_concurrent, hosts=hosts)
+  overrides = SettingsPatch(
+    hosts=(
+      {
+        name: HostSettingsPatch(max_concurrent=hs.max_concurrent)
+        for name, hs in hosts.items()
+      }
+      if hosts
+      else None
+    ),
+    max_concurrent=args.max_concurrent,
+  )
+  app = create_app(config, settings=seed, settings_overrides=overrides)
   uvicorn.run(app, host=args.bind, port=args.port)
   return 0
 

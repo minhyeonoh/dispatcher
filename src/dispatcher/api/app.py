@@ -32,15 +32,18 @@ from dispatcher.api import ops
 
 # FastAPI resolves endpoint annotations at runtime, so these
 # must stay runtime imports.
-from dispatcher.api.config import (  # noqa: TC001
-  DispatcherConfig,
-  SettingsPatch,
-)
+from dispatcher.api.config import Config  # noqa: TC001
 from dispatcher.api.ops import ServerState
 from dispatcher.api.restore import restore_attempts_from_disk
+from dispatcher.api.settings import (
+  Settings,
+  SettingsPatch,
+  apply_patch_pure,
+  load_settings,
+  save_settings,
+)
 from dispatcher.api.wire import (
   AttemptSummaryOut,
-  ClusterConfigOut,
   FullAttemptOut,
   HealthOut,
   MonitorOut,
@@ -60,7 +63,10 @@ from dispatcher.core.containers import (
 from dispatcher.core.event_bus import EventBus
 from dispatcher.core.loops import LoopSkip, supervised
 from dispatcher.core.metrics import MetricsCache
-from dispatcher.core.runtime import DispatcherRuntime, resolver_loop
+from dispatcher.core.runtime import (
+  DispatcherRuntime,
+  resolver_loop,
+)
 from dispatcher.core.scheduler import Scheduler
 from dispatcher.services.auto_archive import archive_loop
 from dispatcher.services.host_autotune import (
@@ -91,31 +97,42 @@ def _get_state(app: FastAPI) -> ServerState:
 
 
 def create_app(
-  config: DispatcherConfig,
+  config: Config,
   *,
+  settings: Settings | None = None,
+  settings_overrides: SettingsPatch | None = None,
   dispatch: Callable[..., Any] | None = None,
   poll: Callable[[Path], CompletionSnapshot | None] | None = None,
   clock: Callable[[], datetime] | None = None,
   heartbeat_interval: float = 15.0,
 ) -> FastAPI:
+  """`settings` is the SEED, used only when no settings.json is
+  persisted yet (first boot). Afterwards the persisted document
+  wins across restarts; `settings_overrides` (CLI-explicit flags)
+  are applied on top either way and persisted."""
   clock_fn = clock or (lambda: datetime.now(UTC))
+  seed = settings
 
   @contextlib.asynccontextmanager
   async def lifespan(app: FastAPI):
     metrics = MetricsCache()
     event_bus = EventBus()
-    persisted_caps = ops.load_pool_caps(config)
-    if persisted_caps:
-      config.pool_caps = {
-        **dict(config.pool_caps),
-        **persisted_caps,
-      }
+    persisted = load_settings(config.data_dir)
+    settings = persisted if persisted is not None else seed
+    if settings is None:
+      raise RuntimeError(
+        "no persisted settings and no seed supplied — first boot "
+        "needs --host/--max-concurrent (or a Settings object)"
+      )
+    if settings_overrides is not None:
+      _apply_boot_overrides(settings, settings_overrides)
+    save_settings(config.data_dir, settings)
     scheduler = Scheduler(
-      max_concurrent=config.max_concurrent,
-      hosts=config.hosts,
+      max_concurrent=settings.max_concurrent,
+      hosts=settings.hosts,
       clock=clock_fn,
       name_gen=lambda task: server_state.next_trial_name(task),
-      pool_caps=dict(config.pool_caps),
+      pool_caps=dict(settings.pool_caps),
     )
     docker_events: DockerEventStreamManager | None = None
     runtime = DispatcherRuntime(
@@ -136,6 +153,7 @@ def create_app(
       runtime._docker_events = docker_events
     server_state = ServerState(
       config=config,
+      settings=settings,
       scheduler=scheduler,
       runtime=runtime,
       metrics=metrics,
@@ -151,13 +169,13 @@ def create_app(
     if docker_events is not None:
       # Census BEFORE the stream: docker's event buffer may have
       # rolled past completions that fired during downtime.
-      await _run_startup_census(runtime, config)
-      docker_events.start(list(config.hosts.keys()))
+      await _run_startup_census(runtime, config, settings)
+      docker_events.start(list(settings.hosts.keys()))
     # Blocking resolver pass so restart-adopted running trials
     # re-book their slots before the dispatch loop reads them.
     startup_outcomes = await runtime.resolve_state_once(
       max_concurrent_probes=(
-        config.state_reconciliation.max_concurrent_probes
+        settings.state_reconciliation.max_concurrent_probes
       ),
     )
     if any(v > 0 for v in startup_outcomes.values()):
@@ -169,7 +187,7 @@ def create_app(
       )
     metrics_file = config.data_dir / HOST_METRICS_FILENAME
     initial_ring = load_ring(
-      metrics_file, config.host_autotune.ring_buffer_size
+      metrics_file, settings.host_autotune.ring_buffer_size
     )
     try:
       truncate_ring_file(metrics_file, initial_ring)
@@ -184,9 +202,11 @@ def create_app(
     orphan_gc = OrphanGC(scheduler, self_host=config.self_host)
 
     def _apply_autotune_cap(host: str, cap: int) -> None:
-      # Mirror into config so /state readback stays truthful.
+      # Mirror into settings so /state readback stays truthful.
+      # Deliberately NOT persisted — see the ratchet note in
+      # api/settings.py.
       new = scheduler.set_host_settings(host, max_concurrent=cap)
-      config.hosts[host] = new.model_copy()
+      settings.hosts[host] = new.model_copy()
 
     def _auto_archive_one(aid: str) -> None:
       try:
@@ -202,24 +222,37 @@ def create_app(
     notify_manager = NotifyManager(
       bus=event_bus,
       scheduler=scheduler,
-      config=config.notify,
+      config=settings.notify,
       sender=server_state.notify_sender,
       metrics=metrics,
     )
     loops: list[tuple[str, Callable[[], Awaitable[None]]]] = [
       ("runtime", runtime.run_forever),
-      ("resolver", lambda: resolver_loop(runtime, config)),
-      ("orphan_gc", lambda: gc_loop(orphan_gc, config)),
+      (
+        "resolver",
+        lambda: resolver_loop(runtime, settings.state_reconciliation),
+      ),
+      (
+        "orphan_gc",
+        lambda: gc_loop(orphan_gc, settings.orphan_gc),
+      ),
       (
         "host_autotune",
         lambda: autotune_loop(
-          scheduler, config, autotune_state, _apply_autotune_cap
+          scheduler,
+          config.self_host,
+          settings.host_autotune,
+          autotune_state,
+          _apply_autotune_cap,
         ),
       ),
       (
         "auto_archive",
         lambda: archive_loop(
-          scheduler, config, clock_fn, _auto_archive_one
+          scheduler,
+          settings.archive,
+          clock_fn,
+          _auto_archive_one,
         ),
       ),
       ("notify", notify_manager.run),
@@ -258,7 +291,9 @@ def create_app(
   @app.get("/state")
   async def get_state() -> StateOut:
     st = _get_state(app)
-    cluster = cluster_snapshot(st.config, st.scheduler)
+    cluster = cluster_snapshot(
+      st.config.self_host, st.settings, st.scheduler
+    )
     return StateOut(
       **cluster.model_dump(),
       attempts=[
@@ -270,7 +305,9 @@ def create_app(
   @app.get("/monitor")
   async def get_monitor() -> MonitorOut:
     st = _get_state(app)
-    cluster = cluster_snapshot(st.config, st.scheduler)
+    cluster = cluster_snapshot(
+      st.config.self_host, st.settings, st.scheduler
+    )
     return MonitorOut(
       **cluster.model_dump(),
       attempts=[
@@ -304,7 +341,10 @@ def create_app(
 
     async def gen():
       try:
-        yield sse("snapshot", cluster_snapshot(st.config, st.scheduler))
+        yield sse(
+          "snapshot",
+          cluster_snapshot(st.config.self_host, st.settings, st.scheduler),
+        )
         for aid in list(st.scheduler.all_attempt_ids()):
           yield sse(
             "attempt_updated",
@@ -328,7 +368,9 @@ def create_app(
               )
             yield sse(
               "cluster_updated",
-              cluster_snapshot(st.config, st.scheduler),
+              cluster_snapshot(
+                st.config.self_host, st.settings, st.scheduler
+              ),
             )
           yield sse(ev.type, ev.payload)
       finally:
@@ -423,12 +465,10 @@ def create_app(
     return ops.unarchive_attempt(_get_state(app), attempt_id, clock_fn)
 
   @app.patch("/settings")
-  async def patch_settings(
-    payload: SettingsPatch,
-  ) -> ClusterConfigOut:
+  async def patch_settings(payload: SettingsPatch) -> Settings:
     st = _get_state(app)
     ops.apply_settings(st, payload)
-    return cluster_snapshot(st.config, st.scheduler).config
+    return st.settings
 
   @app.get("/filter-presets")
   async def get_filter_presets() -> dict[str, Any]:
@@ -460,10 +500,45 @@ def create_app(
   return app
 
 
-async def _run_startup_census(
-  runtime: DispatcherRuntime, config: DispatcherConfig
+def _apply_boot_overrides(
+  settings: Settings, overrides: SettingsPatch
 ) -> None:
-  for host in config.hosts:
+  """CLI-explicit flags win over the persisted document at boot.
+  Same merge rules as PATCH /settings, minus scheduler side
+  effects (the scheduler is built after this)."""
+  if overrides.hosts is not None:
+    for host, hp in overrides.hosts.items():
+      existing = settings.hosts.get(host)
+      if existing is None:
+        from dispatcher.core.models import HostSettings
+
+        settings.hosts[host] = HostSettings(
+          max_concurrent=hp.max_concurrent or 0,
+          active=hp.active if hp.active is not None else True,
+          alive=hp.alive if hp.alive is not None else True,
+        )
+      else:
+        if hp.max_concurrent is not None:
+          existing.max_concurrent = hp.max_concurrent
+        if hp.active is not None:
+          existing.active = hp.active
+        if hp.alive is not None:
+          existing.alive = hp.alive
+  if overrides.max_concurrent is not None:
+    settings.max_concurrent = overrides.max_concurrent
+  if overrides.pool_caps is not None:
+    settings.pool_caps = {
+      k: int(v) for k, v in overrides.pool_caps.items()
+    }
+  apply_patch_pure(settings, overrides)
+
+
+async def _run_startup_census(
+  runtime: DispatcherRuntime,
+  config: Config,
+  settings: Settings,
+) -> None:
+  for host in settings.hosts:
     try:
       containers = await census_host(host, self_host=config.self_host)
     except Exception:

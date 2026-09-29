@@ -159,8 +159,8 @@ def _attempt_label(attempt: dict[str, Any]) -> Text:
 
 
 def render_compact(state: MonitorState):
-  cfg = state.cluster.get("config", {}) or {}
-  self_host = cfg.get("self_host", "?")
+  cfg = state.cluster.get("settings", {}) or {}
+  self_host = state.cluster.get("self_host", "?")
   cap = cfg.get("max_concurrent", "?")
   running_total = state.cluster.get("running_total", 0)
   per_host = state.cluster.get("running_per_host", {}) or {}
