@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field, computed_field
 
 if TYPE_CHECKING:
-  from dispatcher.outcome import CompletionSnapshot
+  from dispatcher.core.outcome import CompletionSnapshot
 
 
 class AttemptMetrics(BaseModel):

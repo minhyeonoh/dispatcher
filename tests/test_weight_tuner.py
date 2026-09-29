@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dispatcher.weight_tuner import plan_weights
+from dispatcher.tools.weight_tuner import plan_weights
 
 
 def _attempt(

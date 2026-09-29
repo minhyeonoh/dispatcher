@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from coolname import generate_slug
 
-from dispatcher.models import (
+from dispatcher.core.models import (
   AttemptState,
   AttemptView,
   DispatchEntry,
@@ -32,7 +32,7 @@ from dispatcher.models import (
   TrialView,
   TrialViewState,
 )
-from dispatcher.pick_host import pick_host
+from dispatcher.core.pick_host import pick_host
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ if TYPE_CHECKING:
   from collections.abc import Callable, Iterator
   from datetime import datetime
 
-  from dispatcher.models import Outcome
+  from dispatcher.core.models import Outcome
 
 
 @dataclass

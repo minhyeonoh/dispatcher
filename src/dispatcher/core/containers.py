@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 
-from dispatcher import labels
-from dispatcher.hosts import SSH_OPTS, run_on
+from dispatcher.core import labels
+from dispatcher.core.hosts import SSH_OPTS, run_on
 
 if TYPE_CHECKING:
   from collections.abc import (

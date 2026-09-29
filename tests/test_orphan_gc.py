@@ -6,8 +6,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from dispatcher import labels
-from dispatcher.orphan_gc import OrphanGC
+from dispatcher.core import labels
+from dispatcher.services.orphan_gc import OrphanGC
 from tests.test_runtime import _seed_unknown, mk_attempt, mk_sched
 
 if TYPE_CHECKING:
@@ -50,9 +50,11 @@ def test_gc_preserves_running_trial_with_uppercase_name(
     removed.extend(names)
     return len(names)
 
-  monkeypatch.setattr("dispatcher.orphan_gc.census_host", fake_census)
   monkeypatch.setattr(
-    "dispatcher.orphan_gc.remove_trial_sets", fake_remove
+    "dispatcher.services.orphan_gc.census_host", fake_census
+  )
+  monkeypatch.setattr(
+    "dispatcher.services.orphan_gc.remove_trial_sets", fake_remove
   )
   gc = OrphanGC(sched, self_host="ml10")
   asyncio.run(gc.sweep_once(min_container_age_s=0))
@@ -75,9 +77,11 @@ def test_gc_preserves_unknown_trials(tmp_path: Path, monkeypatch):
     removed.extend(names)
     return len(names)
 
-  monkeypatch.setattr("dispatcher.orphan_gc.census_host", fake_census)
   monkeypatch.setattr(
-    "dispatcher.orphan_gc.remove_trial_sets", fake_remove
+    "dispatcher.services.orphan_gc.census_host", fake_census
+  )
+  monkeypatch.setattr(
+    "dispatcher.services.orphan_gc.remove_trial_sets", fake_remove
   )
   gc = OrphanGC(sched, self_host="ml10")
   asyncio.run(gc.sweep_once(min_container_age_s=0))
@@ -99,9 +103,11 @@ def test_gc_removes_orphan_only_on_second_tick(
     removed.extend(names)
     return len(names)
 
-  monkeypatch.setattr("dispatcher.orphan_gc.census_host", fake_census)
   monkeypatch.setattr(
-    "dispatcher.orphan_gc.remove_trial_sets", fake_remove
+    "dispatcher.services.orphan_gc.census_host", fake_census
+  )
+  monkeypatch.setattr(
+    "dispatcher.services.orphan_gc.remove_trial_sets", fake_remove
   )
   gc = OrphanGC(sched, self_host="ml10")
   asyncio.run(gc.sweep_once(min_container_age_s=0))
@@ -127,9 +133,11 @@ def test_gc_age_floor_protects_fresh_containers(
     removed.extend(names)
     return len(names)
 
-  monkeypatch.setattr("dispatcher.orphan_gc.census_host", fake_census)
   monkeypatch.setattr(
-    "dispatcher.orphan_gc.remove_trial_sets", fake_remove
+    "dispatcher.services.orphan_gc.census_host", fake_census
+  )
+  monkeypatch.setattr(
+    "dispatcher.services.orphan_gc.remove_trial_sets", fake_remove
   )
   gc = OrphanGC(sched, self_host="ml10")
   for _ in range(3):
@@ -155,9 +163,11 @@ def test_gc_failed_census_does_not_advance_suspects(
     removed.extend(names)
     return len(names)
 
-  monkeypatch.setattr("dispatcher.orphan_gc.census_host", flaky_census)
   monkeypatch.setattr(
-    "dispatcher.orphan_gc.remove_trial_sets", fake_remove
+    "dispatcher.services.orphan_gc.census_host", flaky_census
+  )
+  monkeypatch.setattr(
+    "dispatcher.services.orphan_gc.remove_trial_sets", fake_remove
   )
   gc = OrphanGC(sched, self_host="ml10")
   asyncio.run(gc.sweep_once(min_container_age_s=0))
@@ -182,9 +192,11 @@ def test_gc_unparseable_created_at_is_skipped(tmp_path: Path, monkeypatch):
     removed.extend(names)
     return len(names)
 
-  monkeypatch.setattr("dispatcher.orphan_gc.census_host", fake_census)
   monkeypatch.setattr(
-    "dispatcher.orphan_gc.remove_trial_sets", fake_remove
+    "dispatcher.services.orphan_gc.census_host", fake_census
+  )
+  monkeypatch.setattr(
+    "dispatcher.services.orphan_gc.remove_trial_sets", fake_remove
   )
   gc = OrphanGC(sched, self_host="ml10")
   asyncio.run(gc.sweep_once(min_container_age_s=0))

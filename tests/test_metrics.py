@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dispatcher.metrics import MetricsCache
-from dispatcher.outcome import CompletionSnapshot
+from dispatcher.core.metrics import MetricsCache
+from dispatcher.core.outcome import CompletionSnapshot
 
 
 def snap(

@@ -7,6 +7,6 @@ selection, concurrency caps (global / pool / host / attempt),
 dispatch, failure detection, and state persistence. What a trial
 computes — and what its outcome means — stays on the research-repo
 side; the only contract is the outcome envelope
-(`dispatcher.models.Outcome`) and the container labels
-(`dispatcher.labels`).
+(`dispatcher.core.models.Outcome`) and the container labels
+(`dispatcher.core.labels`).
 """

@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dispatcher.event_log import replay_events
-from dispatcher.models import HostSettings
-from dispatcher.scheduler import (
+from dispatcher.core.event_log import replay_events
+from dispatcher.core.models import HostSettings
+from dispatcher.core.scheduler import (
   AliasCollisionError,
   AliasFormatError,
   Scheduler,
@@ -24,7 +24,7 @@ from dispatcher.scheduler import (
 if TYPE_CHECKING:
   from collections.abc import Callable, Iterable
 
-  from dispatcher.models import AttemptState, DispatchEntry
+  from dispatcher.core.models import AttemptState, DispatchEntry
 
 # ── helpers ──────────────────────────────────────────────────────
 

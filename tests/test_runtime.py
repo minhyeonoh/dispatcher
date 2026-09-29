@@ -9,19 +9,19 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dispatcher import labels
-from dispatcher.dispatch import DispatchError
-from dispatcher.metrics import MetricsCache
-from dispatcher.models import HostSettings
-from dispatcher.outcome import CompletionSnapshot
-from dispatcher.runtime import DispatcherRuntime
-from dispatcher.scheduler import Scheduler
+from dispatcher.core import labels
+from dispatcher.core.dispatch import DispatchError
+from dispatcher.core.metrics import MetricsCache
+from dispatcher.core.models import HostSettings
+from dispatcher.core.outcome import CompletionSnapshot
+from dispatcher.core.runtime import DispatcherRuntime
+from dispatcher.core.scheduler import Scheduler
 from tests.test_scheduler import clock_from, name_gen
 
 if TYPE_CHECKING:
   from pathlib import Path
 
-  from dispatcher.models import AttemptState, DispatchEntry
+  from dispatcher.core.models import AttemptState, DispatchEntry
 
 
 def mk_attempt(
@@ -32,7 +32,7 @@ def mk_attempt(
   max_concurrent: int | None = None,
   payloads: dict | None = None,
 ) -> AttemptState:
-  from dispatcher.event_log import replay_events
+  from dispatcher.core.event_log import replay_events
 
   events: list[dict] = [
     {
@@ -349,7 +349,7 @@ def test_resolver_promotes_definitively_dead_to_ghosted(
   async def fake_probe(host, trial_name, *, self_host, **kw):
     return status
 
-  monkeypatch.setattr("dispatcher.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -374,7 +374,7 @@ def test_resolver_leaves_transient_states_in_unknown(
   async def fake_probe(host, trial_name, *, self_host, **kw):
     return status
 
-  monkeypatch.setattr("dispatcher.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -394,7 +394,7 @@ def test_resolver_adopts_still_running_container(
   async def fake_probe(host, trial_name, *, self_host, **kw):
     return "running"
 
-  monkeypatch.setattr("dispatcher.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -600,7 +600,7 @@ def test_infra_exit_without_outcome_requeues_at_ghost_promotion(
   async def fake_probe(host, tn, *, self_host, **kw):
     return "gone"
 
-  monkeypatch.setattr("dispatcher.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
@@ -625,7 +625,7 @@ def test_non_infra_exit_without_outcome_ghosts(
   async def fake_probe(host, tn, *, self_host, **kw):
     return "gone"
 
-  monkeypatch.setattr("dispatcher.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
@@ -679,7 +679,7 @@ def test_dispatch_failure_requeues(tmp_path: Path):
 def test_dispatch_failure_does_not_log_phantom_dispatch(
   tmp_path: Path,
 ):
-  from dispatcher.event_log import RUN_LOG_FILENAME, read_events
+  from dispatcher.core.event_log import RUN_LOG_FILENAME, read_events
 
   sched = mk_sched(1)
   sched.submit(mk_attempt(tmp_path, ["t1"]))
@@ -740,7 +740,7 @@ def test_reconcile_remembers_infra_exit_code(
   async def fake_probe(host, tn, *, self_host, **kw):
     return "exited"
 
-  monkeypatch.setattr("dispatcher.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )

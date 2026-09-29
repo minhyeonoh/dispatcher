@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
-from dispatcher.models import HostSettings
-from dispatcher.server import DispatcherConfig, create_app
+from dispatcher.api.app import create_app
+from dispatcher.api.config import DispatcherConfig
+from dispatcher.core.models import HostSettings
 
 if TYPE_CHECKING:
   from pathlib import Path
 
-  from dispatcher.models import DispatchEntry
+  from dispatcher.core.models import DispatchEntry
 
 
 def mk_config(tmp_path: Path) -> DispatcherConfig:
@@ -196,7 +197,7 @@ def test_get_attempt_missing_returns_404(tmp_path: Path):
 
 
 def test_full_view_partitions_tasks(tmp_path: Path):
-  from dispatcher.models import Outcome
+  from dispatcher.core.models import Outcome
 
   with mk_client(tmp_path) as client:
     aid = client.post(
@@ -262,7 +263,7 @@ def test_list_attempts_matches_state_and_scope_filter(
 
 
 def test_patch_knobs_and_persistence(tmp_path: Path):
-  from dispatcher.event_log import RUN_LOG_FILENAME, read_events
+  from dispatcher.core.event_log import RUN_LOG_FILENAME, read_events
 
   with mk_client(tmp_path) as client:
     aid = client.post(
@@ -388,7 +389,7 @@ def test_reclaim_returns_running_tasks_to_pending(tmp_path: Path):
 
 
 def test_retry_done_err_moves_back_to_pending(tmp_path: Path):
-  from dispatcher.models import Outcome
+  from dispatcher.core.models import Outcome
 
   with mk_client(tmp_path) as client:
     aid = client.post(
@@ -413,7 +414,7 @@ def test_retry_done_err_moves_back_to_pending(tmp_path: Path):
     st.metrics.record_completion(
       aid,
       __import__(
-        "dispatcher.outcome", fromlist=["CompletionSnapshot"]
+        "dispatcher.core.outcome", fromlist=["CompletionSnapshot"]
       ).CompletionSnapshot(outcome_exists=True, error_present=True),
     )
     sched.patch(aid, paused=True)
@@ -430,7 +431,7 @@ def test_retry_done_err_moves_back_to_pending(tmp_path: Path):
 
 
 def test_archive_roundtrip_and_guards(tmp_path: Path):
-  from dispatcher.models import Outcome
+  from dispatcher.core.models import Outcome
 
   with mk_client(tmp_path) as client:
     aid = client.post(
@@ -504,7 +505,7 @@ def test_patch_settings_unknown_key_rejected(tmp_path: Path):
 
 
 def test_monitor_reports_metrics(tmp_path: Path):
-  from dispatcher.outcome import CompletionSnapshot
+  from dispatcher.core.outcome import CompletionSnapshot
 
   with mk_client(tmp_path) as client:
     aid = client.post(
@@ -537,7 +538,7 @@ def test_monitor_stream_mounted_and_sse_frame_shape(
   # never-ending stream is checked as: route mounted + frame
   # serializer correct. Event publication is pinned in
   # test_runtime.
-  from dispatcher.wire import sse as _sse
+  from dispatcher.api.wire import sse as _sse
 
   async def fake_dispatch(action, state) -> None:
     return None
@@ -566,7 +567,7 @@ def _write_log_and_index(
   home: Path,
   events: list[dict],
 ) -> None:
-  from dispatcher.event_log import (
+  from dispatcher.core.event_log import (
     append_event,
     append_index_entry,
   )

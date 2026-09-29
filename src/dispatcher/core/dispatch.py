@@ -14,13 +14,13 @@ import asyncio
 import shlex
 from typing import TYPE_CHECKING
 
-from dispatcher import labels
-from dispatcher.hosts import SSH_OPTS
+from dispatcher.core import labels
+from dispatcher.core.hosts import SSH_OPTS
 
 if TYPE_CHECKING:
   from pathlib import Path
 
-  from dispatcher.models import AttemptState, DispatchEntry
+  from dispatcher.core.models import AttemptState, DispatchEntry
 
 
 class DispatchError(RuntimeError):

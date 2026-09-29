@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dispatcher.event_bus import EventBus
-from dispatcher.event_log import RUN_LOG_FILENAME, read_events
-from dispatcher.models import HostSettings, Outcome
-from dispatcher.notify import (
+from dispatcher.core.event_bus import EventBus
+from dispatcher.core.event_log import RUN_LOG_FILENAME, read_events
+from dispatcher.core.models import HostSettings, Outcome
+from dispatcher.core.scheduler import Scheduler
+from dispatcher.services.notify import (
   NotifyConfig,
   NotifyManager,
   TelegramSender,
 )
-from dispatcher.scheduler import Scheduler
 from tests.test_runtime import mk_attempt
 from tests.test_scheduler import clock_from, name_gen
 
@@ -161,8 +161,8 @@ def test_cancelled_attempt_check_is_noop(tmp_path: Path):
 
 
 def test_message_carries_value_means(tmp_path: Path):
-  from dispatcher.metrics import MetricsCache
-  from dispatcher.outcome import CompletionSnapshot
+  from dispatcher.core.metrics import MetricsCache
+  from dispatcher.core.outcome import CompletionSnapshot
 
   sched, _, sender, config = _mk(tmp_path, ["t1"], [1.0])
   metrics = MetricsCache()

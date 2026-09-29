@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from dispatcher.models import OUTCOME_FILENAME, Outcome
+from dispatcher.core.models import OUTCOME_FILENAME, Outcome
 
 if TYPE_CHECKING:
   from pathlib import Path

@@ -13,12 +13,12 @@ from pydantic import (
   PositiveInt,
 )
 
-from dispatcher.host_autotune import (
+from dispatcher.core.models import HostSettings
+from dispatcher.services.host_autotune import (
   HostAutotuneConfig,
   HostAutotunePatch,
 )
-from dispatcher.models import HostSettings
-from dispatcher.notify import NotifyConfig, NotifyPatch
+from dispatcher.services.notify import NotifyConfig, NotifyPatch
 
 
 class StateReconciliationConfig(BaseModel):

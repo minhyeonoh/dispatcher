@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dispatcher.models import HostSettings
-from dispatcher.pick_host import pick_host
+from dispatcher.core.models import HostSettings
+from dispatcher.core.pick_host import pick_host
 
 
 def _h(cap: int, active: bool = True, alive: bool = True):

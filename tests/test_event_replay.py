@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from dispatcher.event_log import ReplayError, replay_events
+from dispatcher.core.event_log import ReplayError, replay_events
 
 
 def submit_event(attempt_id: str = "A", **extra: Any) -> dict:

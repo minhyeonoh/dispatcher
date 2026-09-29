@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import anyio
 
-from dispatcher.event_bus import EventBus
+from dispatcher.core.event_bus import EventBus
 
 
 def test_subscribe_then_publish_delivers_to_that_sub():

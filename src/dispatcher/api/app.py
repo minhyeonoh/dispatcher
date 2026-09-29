@@ -1,5 +1,5 @@
 """FastAPI edge: app factory, lifespan (startup sequence + loop
-wiring), endpoints as thin translators over `dispatcher.ops`.
+wiring), endpoints as thin translators over `dispatcher.api.ops`.
 
 Layer map:
   config.py   configuration + PATCH /settings shapes
@@ -28,45 +28,17 @@ from fastapi.responses import (
   StreamingResponse,
 )
 
-from dispatcher import ops
+from dispatcher.api import ops
 
 # FastAPI resolves endpoint annotations at runtime, so these
 # must stay runtime imports.
-from dispatcher.config import (  # noqa: TC001
+from dispatcher.api.config import (  # noqa: TC001
   DispatcherConfig,
   SettingsPatch,
 )
-from dispatcher.containers import (
-  DockerEventStreamManager,
-  census_host,
-)
-from dispatcher.event_bus import EventBus
-from dispatcher.host_autotune import (
-  HOST_METRICS_FILENAME,
-  HostAutotuneState,
-  load_ring,
-  truncate_ring_file,
-)
-from dispatcher.loops import (
-  LoopSkip,
-  archive_loop,
-  autotune_loop,
-  gc_loop,
-  resolver_loop,
-  supervised,
-)
-from dispatcher.metrics import MetricsCache
-from dispatcher.notify import (
-  NotifyManager,
-  TelegramSender,
-  telegram_bot_token_from_env,
-)
-from dispatcher.ops import ServerState
-from dispatcher.orphan_gc import OrphanGC
-from dispatcher.restore import restore_attempts_from_disk
-from dispatcher.runtime import DispatcherRuntime
-from dispatcher.scheduler import Scheduler
-from dispatcher.wire import (
+from dispatcher.api.ops import ServerState
+from dispatcher.api.restore import restore_attempts_from_disk
+from dispatcher.api.wire import (
   AttemptSummaryOut,
   ClusterConfigOut,
   FullAttemptOut,
@@ -81,12 +53,35 @@ from dispatcher.wire import (
   snapshot_attempt_with_metrics,
   sse,
 )
+from dispatcher.core.containers import (
+  DockerEventStreamManager,
+  census_host,
+)
+from dispatcher.core.event_bus import EventBus
+from dispatcher.core.loops import LoopSkip, supervised
+from dispatcher.core.metrics import MetricsCache
+from dispatcher.core.runtime import DispatcherRuntime, resolver_loop
+from dispatcher.core.scheduler import Scheduler
+from dispatcher.services.auto_archive import archive_loop
+from dispatcher.services.host_autotune import (
+  HOST_METRICS_FILENAME,
+  HostAutotuneState,
+  autotune_loop,
+  load_ring,
+  truncate_ring_file,
+)
+from dispatcher.services.notify import (
+  NotifyManager,
+  TelegramSender,
+  telegram_bot_token_from_env,
+)
+from dispatcher.services.orphan_gc import OrphanGC, gc_loop
 
 if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
   from pathlib import Path
 
-  from dispatcher.outcome import CompletionSnapshot
+  from dispatcher.core.outcome import CompletionSnapshot
 
 logger = logging.getLogger(__name__)
 

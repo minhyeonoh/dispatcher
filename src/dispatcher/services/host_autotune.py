@@ -28,12 +28,13 @@ from pydantic import (
   PositiveInt,
 )
 
-from dispatcher.host_metrics import HostSample, sample_hosts
+from dispatcher.services.host_metrics import HostSample, sample_hosts
 
 if TYPE_CHECKING:
+  from collections.abc import Callable
   from pathlib import Path
 
-  from dispatcher.scheduler import Scheduler
+  from dispatcher.core.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -356,3 +357,35 @@ async def autotune_tick(
     state.last_advised[host] = new_cap
 
   return applied
+
+
+async def autotune_loop(
+  scheduler: Scheduler,
+  config,
+  autotune_state: HostAutotuneState,
+  apply_cap: Callable[[str, int], None],
+) -> None:
+  """`apply_cap` lets the server mirror applied caps into its
+  config so /state readback stays truthful."""
+  from dispatcher.core.loops import every
+
+  async def tick() -> None:
+    applied = await autotune_tick(
+      state=autotune_state,
+      scheduler=scheduler,
+      config=config.host_autotune,
+      self_host=config.self_host,
+      apply_cap=apply_cap,
+    )
+    if applied:
+      logger.warning(
+        "host_autotune: %s",
+        ", ".join(f"{h}={cap}" for h, cap in applied.items()),
+      )
+
+  await every(
+    "host_autotune",
+    lambda: config.host_autotune.seconds_between_ticks,
+    tick,
+    enabled_fn=lambda: config.host_autotune.enabled,
+  )

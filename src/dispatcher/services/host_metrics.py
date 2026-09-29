@@ -11,8 +11,8 @@ from dataclasses import dataclass
 
 import anyio
 
-from dispatcher import labels
-from dispatcher.hosts import run_on
+from dispatcher.core import labels
+from dispatcher.core.hosts import run_on
 
 logger = logging.getLogger(__name__)
 

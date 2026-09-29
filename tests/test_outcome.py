@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from dispatcher.outcome import read_completion, trial_home_for
+from dispatcher.core.outcome import read_completion, trial_home_for
 
 if TYPE_CHECKING:
   from pathlib import Path

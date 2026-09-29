@@ -82,7 +82,7 @@ def test_load_trial_missing_spec_raises_infra(tmp_path: Path):
 def test_ok_result_roundtrips_through_dispatcher_reader(
   tmp_path: Path,
 ):
-  from dispatcher.outcome import read_completion
+  from dispatcher.core.outcome import read_completion
 
   _spec(tmp_path)
   code, outcome = _run(
@@ -109,7 +109,7 @@ def test_plain_return_becomes_data(tmp_path: Path):
 
 
 def test_exception_writes_error_and_exits_1(tmp_path: Path):
-  from dispatcher.outcome import read_completion
+  from dispatcher.core.outcome import read_completion
 
   _spec(tmp_path)
 
@@ -129,7 +129,7 @@ def test_exception_writes_error_and_exits_1(tmp_path: Path):
 
 
 def test_infra_failure_writes_infra_and_exits_75(tmp_path: Path):
-  from dispatcher.outcome import read_completion
+  from dispatcher.core.outcome import read_completion
 
   _spec(tmp_path)
 

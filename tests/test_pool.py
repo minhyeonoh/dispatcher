@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from dispatcher.event_log import replay_events
-from dispatcher.models import HostSettings
+from dispatcher.core.event_log import replay_events
+from dispatcher.core.models import HostSettings
 from tests.test_scheduler import (
   complete_ok,
   die_without_outcome,
@@ -203,7 +203,7 @@ def test_retry_from_done_err_does_not_touch_pool():
 def test_restore_bumps_pool_for_preexisting_running():
   from datetime import UTC, datetime
 
-  from dispatcher.models import TrialView
+  from dispatcher.core.models import TrialView
 
   sched = mk_sched(
     max_concurrent=10,

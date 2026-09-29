@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
   if args.cmd == "monitor":
     from rich.console import Console
 
-    from dispatcher.monitor_ui import run_monitor
+    from dispatcher.tools.monitor_ui import run_monitor
 
     run_monitor(
       server=args.server,
@@ -68,8 +68,8 @@ def main(argv: list[str] | None = None) -> int:
 
   import uvicorn
 
-  from dispatcher.models import HostSettings
-  from dispatcher.server import DispatcherConfig, create_app
+  from dispatcher.api.app import DispatcherConfig, create_app
+  from dispatcher.core.models import HostSettings
 
   hosts: dict[str, HostSettings] = {}
   for spec in args.host:

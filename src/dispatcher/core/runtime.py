@@ -41,19 +41,19 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 
-from dispatcher import labels
-from dispatcher.containers import (
+from dispatcher.core import labels
+from dispatcher.core.containers import (
   extract_label,
   parse_exit_code,
   probe_trial,
 )
-from dispatcher.dispatch import DispatchError, docker_dispatch
-from dispatcher.event_log import append_event, event_log_path_for
-from dispatcher.models import (
+from dispatcher.core.dispatch import DispatchError, docker_dispatch
+from dispatcher.core.event_log import append_event, event_log_path_for
+from dispatcher.core.models import (
   INFRA_EXIT_CODES,
   TRIAL_SPEC_FILENAME,
 )
-from dispatcher.outcome import (
+from dispatcher.core.outcome import (
   CompletionSnapshot,
   read_completion,
   trial_home_for,
@@ -63,17 +63,17 @@ if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
   from pathlib import Path
 
-  from dispatcher.containers import DockerEventStreamManager
-  from dispatcher.event_bus import EventBus
-  from dispatcher.metrics import MetricsCache
-  from dispatcher.models import (
+  from dispatcher.core.containers import DockerEventStreamManager
+  from dispatcher.core.event_bus import EventBus
+  from dispatcher.core.metrics import MetricsCache
+  from dispatcher.core.models import (
     AttemptState,
     DispatchEntry,
     Outcome,
     TrialView,
     TrialViewState,
   )
-  from dispatcher.scheduler import Scheduler
+  from dispatcher.core.scheduler import Scheduler
 
   DispatchCallable = Callable[
     [DispatchEntry, AttemptState], Awaitable[None]
@@ -765,3 +765,30 @@ class DispatcherRuntime:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
       )
+
+
+async def resolver_loop(
+  runtime: DispatcherRuntime, settings: object
+) -> None:
+  """Periodic reconciliation. `settings` carries
+  `state_reconciliation.{seconds_between_probes,
+  max_concurrent_probes}`, re-read each tick."""
+  from dispatcher.core.loops import every
+
+  async def tick() -> None:
+    outcomes = await runtime.resolve_state_once(
+      max_concurrent_probes=(
+        settings.state_reconciliation.max_concurrent_probes  # type: ignore[attr-defined]
+      ),
+    )
+    if any(v > 0 for v in outcomes.values()):
+      logger.info(
+        "resolver: %s",
+        ", ".join(f"{k}={v}" for k, v in outcomes.items() if v > 0),
+      )
+
+  await every(
+    "resolver",
+    lambda: settings.state_reconciliation.seconds_between_probes,  # type: ignore[attr-defined]
+    tick,
+  )

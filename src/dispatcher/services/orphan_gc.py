@@ -13,8 +13,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from dispatcher import labels
-from dispatcher.containers import (
+from dispatcher.core import labels
+from dispatcher.core.containers import (
   census_host,
   extract_label,
   parse_docker_created_at,
@@ -22,7 +22,7 @@ from dispatcher.containers import (
 )
 
 if TYPE_CHECKING:
-  from dispatcher.scheduler import Scheduler
+  from dispatcher.core.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -101,3 +101,27 @@ class OrphanGC:
           per_host_removed[host] = removed
 
     return per_host_removed
+
+
+async def gc_loop(gc: OrphanGC, config) -> None:
+  from dispatcher.core.loops import every
+
+  async def tick() -> None:
+    removed = await gc.sweep_once(
+      min_container_age_s=config.orphan_gc.min_container_age_s,
+    )
+    if removed:
+      # WARNING: the dispatcher touched containers — operators
+      # must see this even at quiet log levels.
+      logger.warning(
+        "orphan_gc: removed %s container(s) — %s",
+        sum(removed.values()),
+        ", ".join(f"{h}={n}" for h, n in removed.items()),
+      )
+
+  await every(
+    "orphan_gc",
+    lambda: config.orphan_gc.seconds_between_sweeps,
+    tick,
+    enabled_fn=lambda: config.orphan_gc.enabled,
+  )

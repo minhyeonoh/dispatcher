@@ -11,19 +11,19 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from dispatcher.config import (
+from dispatcher.api.config import (
   ArchiveConfig,
   DispatcherConfig,
   OrphanGCConfig,
   StateReconciliationConfig,
 )
-from dispatcher.host_autotune import HostAutotuneConfig
-from dispatcher.metrics import AttemptMetrics, MetricsCache
-from dispatcher.models import HostSettings, TrialView
-from dispatcher.notify import NotifyConfig
+from dispatcher.core.metrics import AttemptMetrics, MetricsCache
+from dispatcher.core.models import HostSettings, TrialView
+from dispatcher.services.host_autotune import HostAutotuneConfig
+from dispatcher.services.notify import NotifyConfig
 
 if TYPE_CHECKING:
-  from dispatcher.scheduler import Scheduler
+  from dispatcher.core.scheduler import Scheduler
 
 
 class RetryDoneErrRequest(BaseModel):

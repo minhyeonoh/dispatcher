@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dispatcher.monitor_client import (
+from dispatcher.tools.monitor_client import (
   MonitorState,
   parse_sse_lines,
   primary_metric,

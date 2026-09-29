@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dispatcher.host_metrics import _parse_probe, _parse_size
+from dispatcher.services.host_metrics import _parse_probe, _parse_size
 
 PROBE_OUT = """\
 MemTotal:       263856792 kB

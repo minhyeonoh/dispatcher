@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import httpx
 from rich.live import Live
 
-from dispatcher.monitor_client import (
+from dispatcher.tools.monitor_client import (
   MonitorState,
   parse_sse_lines,
   render_compact,

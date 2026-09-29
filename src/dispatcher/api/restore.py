@@ -6,7 +6,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from dispatcher.event_log import (
+from dispatcher.api.wire import full_attempt_view
+from dispatcher.core.event_log import (
   ReplayError,
   append_event,
   find_event_logs,
@@ -15,19 +16,18 @@ from dispatcher.event_log import (
   scan_outcomes,
   seq_in_trial_name,
 )
-from dispatcher.models import TrialView
-from dispatcher.outcome import CompletionSnapshot
-from dispatcher.scheduler import (
+from dispatcher.core.models import TrialView
+from dispatcher.core.outcome import CompletionSnapshot
+from dispatcher.core.scheduler import (
   AliasCollisionError,
   NotArchivableError,
 )
-from dispatcher.wire import full_attempt_view
 
 if TYPE_CHECKING:
   from pathlib import Path
 
-  from dispatcher.metrics import MetricsCache
-  from dispatcher.scheduler import Scheduler
+  from dispatcher.core.metrics import MetricsCache
+  from dispatcher.core.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 

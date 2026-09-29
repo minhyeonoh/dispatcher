@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from dispatcher.loops import (
-  LoopSkip,
+from dispatcher.core.loops import LoopSkip, every, supervised
+from dispatcher.services.auto_archive import (
   archive_loop,
-  every,
   scan_auto_archive_candidates,
-  supervised,
 )
 
 if TYPE_CHECKING:
@@ -210,7 +208,7 @@ class _Config:
 def test_archive_loop_applies_and_skips(monkeypatch, tmp_path: Path):
   from datetime import UTC, datetime
 
-  import dispatcher.loops as loops_mod
+  import dispatcher.services.auto_archive as loops_mod
 
   applied: list[str] = []
 
@@ -247,7 +245,7 @@ def test_archive_loop_applies_and_skips(monkeypatch, tmp_path: Path):
 def test_archive_loop_disabled_at_zero_days(monkeypatch):
   from datetime import UTC, datetime
 
-  import dispatcher.loops as loops_mod
+  import dispatcher.services.auto_archive as loops_mod
 
   scanned = []
   monkeypatch.setattr(
@@ -279,7 +277,7 @@ def test_scan_candidates_terminal_and_idle_only(tmp_path: Path):
   import os
   from datetime import UTC, datetime
 
-  from dispatcher.models import Outcome
+  from dispatcher.core.models import Outcome
   from tests.test_runtime import mk_attempt, mk_sched
   from tests.test_scheduler import complete_ok
 

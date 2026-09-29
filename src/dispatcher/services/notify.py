@@ -20,13 +20,13 @@ from typing import TYPE_CHECKING
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from dispatcher.event_log import append_event, event_log_path_for
+from dispatcher.core.event_log import append_event, event_log_path_for
 
 if TYPE_CHECKING:
-  from dispatcher.event_bus import EventBus
-  from dispatcher.metrics import MetricsCache
-  from dispatcher.models import AttemptState, AttemptView
-  from dispatcher.scheduler import Scheduler
+  from dispatcher.core.event_bus import EventBus
+  from dispatcher.core.metrics import MetricsCache
+  from dispatcher.core.models import AttemptState, AttemptView
+  from dispatcher.core.scheduler import Scheduler
 
 
 logger = logging.getLogger(__name__)

@@ -6,12 +6,12 @@ import shlex
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from dispatcher import labels
-from dispatcher.dispatch import (
+from dispatcher.core import labels
+from dispatcher.core.dispatch import (
   build_argv,
   build_remote_command,
 )
-from dispatcher.models import DispatchEntry
+from dispatcher.core.models import DispatchEntry
 from tests.test_runtime import mk_attempt
 
 if TYPE_CHECKING:

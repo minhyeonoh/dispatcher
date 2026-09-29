@@ -10,8 +10,8 @@ import stat
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from dispatcher import labels
-from dispatcher.containers import (
+from dispatcher.core import labels
+from dispatcher.core.containers import (
   DockerEventStreamManager,
   _HostStream,
   extract_label,
@@ -288,7 +288,7 @@ def test_probe_gone_when_no_records(monkeypatch):
   async def fake_run_on(host, self_host, cmd, timeout=None):
     return _R()
 
-  monkeypatch.setattr("dispatcher.containers.run_on", fake_run_on)
+  monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
   status = asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))
   assert status == "gone"
 
@@ -302,7 +302,7 @@ def test_probe_running_wins_over_exited(monkeypatch):
   async def fake_run_on(host, self_host, cmd, timeout=None):
     return _R()
 
-  monkeypatch.setattr("dispatcher.containers.run_on", fake_run_on)
+  monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
   status = asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))
   assert status == "running"
 
@@ -319,7 +319,7 @@ def test_probe_queries_by_label_with_verbatim_case(monkeypatch):
     seen.append(cmd)
     return _R()
 
-  monkeypatch.setattr("dispatcher.containers.run_on", fake_run_on)
+  monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
   asyncio.run(
     probe_trial(
       "ml9",
@@ -344,6 +344,6 @@ def test_probe_raises_on_docker_failure(monkeypatch):
   async def fake_run_on(host, self_host, cmd, timeout=None):
     return _R()
 
-  monkeypatch.setattr("dispatcher.containers.run_on", fake_run_on)
+  monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
   with pytest.raises(RuntimeError, match="docker ps"):
     asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))

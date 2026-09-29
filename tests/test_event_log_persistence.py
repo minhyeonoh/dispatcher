@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dispatcher.event_log import (
+from dispatcher.core.event_log import (
   append_event,
   append_index_entry,
   find_event_logs,
@@ -95,7 +95,7 @@ def test_find_event_logs_skips_malformed_lines(tmp_path: Path):
     tmp_path,
     {"event": "submit", "attempt_id": "A", "log_path": "/x/a.jsonl"},
   )
-  from dispatcher.event_log import index_path
+  from dispatcher.core.event_log import index_path
 
   with index_path(tmp_path).open("a") as f:
     f.write("not-json\n")

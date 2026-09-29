@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dispatcher.host_autotune import (
+from dispatcher.services.host_autotune import (
   HostAutotuneState,
   TrialPeak,
   advised_cap,
@@ -18,7 +18,7 @@ from dispatcher.host_autotune import (
   truncate_ring_file,
   update_tracker,
 )
-from dispatcher.host_metrics import HostSample, TrialStat
+from dispatcher.services.host_metrics import HostSample, TrialStat
 
 if TYPE_CHECKING:
   from pathlib import Path

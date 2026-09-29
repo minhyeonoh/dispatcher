@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from dispatcher.models import (
+from dispatcher.core.models import (
   OUTCOME_FILENAME,
   AttemptState,
   DispatchEntry,

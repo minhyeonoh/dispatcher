@@ -12,38 +12,38 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dispatcher.event_log import (
-  append_event,
-  append_index_entry,
-  event_log_path_for,
-  replay_events,
-)
-from dispatcher.scheduler import (
-  AliasCollisionError,
-  AliasFormatError,
-  NotArchivableError,
-  NotArchivedError,
-)
-from dispatcher.wire import (
+from dispatcher.api.wire import (
   RetryDoneErrRequest,
   attempt_counts,
   full_attempt_view,
   snapshot_attempt,
   snapshot_attempt_with_metrics,
 )
+from dispatcher.core.event_log import (
+  append_event,
+  append_index_entry,
+  event_log_path_for,
+  replay_events,
+)
+from dispatcher.core.scheduler import (
+  AliasCollisionError,
+  AliasFormatError,
+  NotArchivableError,
+  NotArchivedError,
+)
 
 if TYPE_CHECKING:
   import asyncio
   from collections.abc import Callable
 
-  from dispatcher.config import DispatcherConfig, SettingsPatch
-  from dispatcher.event_bus import EventBus
-  from dispatcher.metrics import MetricsCache
-  from dispatcher.models import AttemptState, TrialView
-  from dispatcher.notify import TelegramSender
-  from dispatcher.runtime import DispatcherRuntime
-  from dispatcher.scheduler import Scheduler
-  from dispatcher.wire import AttemptSummaryOut
+  from dispatcher.api.config import DispatcherConfig, SettingsPatch
+  from dispatcher.api.wire import AttemptSummaryOut
+  from dispatcher.core.event_bus import EventBus
+  from dispatcher.core.metrics import MetricsCache
+  from dispatcher.core.models import AttemptState, TrialView
+  from dispatcher.core.runtime import DispatcherRuntime
+  from dispatcher.core.scheduler import Scheduler
+  from dispatcher.services.notify import TelegramSender
 
 logger = logging.getLogger(__name__)
 
