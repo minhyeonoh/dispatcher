@@ -570,8 +570,7 @@ class ReadoutService:
     specs = self._registry.for_arena(state.arena)
     if not specs:
       return ReadoutJobSummary(lag=0)
-    view = self._scheduler.job_view(job_id)
-    terminal = len(view.done_ok) + len(view.done_err)
+    terminal = self._scheduler.terminal_count(job_id)
     index = self._values.get(job_id, {})
     aggregates: dict[str, ReadoutAggregate] = {}
     lag = 0

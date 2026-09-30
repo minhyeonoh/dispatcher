@@ -717,6 +717,15 @@ class Scheduler:
       unknown=dict(runtime.unknown),
     )
 
+  def terminal_count(self, job_id: str) -> int:
+    """done_ok + done_err, without building a JobView.
+
+    `job_view` copies six dicts, which on a 1300-instance job is
+    real work to repeat inside a row projection that already called
+    it once. Readout lag needs only this number."""
+    runtime = self._jobs[job_id]
+    return len(runtime.done_ok) + len(runtime.done_err)
+
   def job_state(self, job_id: str) -> JobState:
     return self._jobs[job_id].state
 
