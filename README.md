@@ -14,11 +14,16 @@ dispatch, failure detection, and state persistence.
   pause_on_error, pool) and an operator alias.
 - **arena** — the long-lived group a job belongs to (`"arena"`
   at submit, movable via PATCH). Derived state: an arena exists
-  iff a job names it. `GET /arenas` lists groups with aggregated
-  counts; `POST /arenas/{name}/pause|resume|reclaim` fan out the
-  per-job op over members; `/arenas/{name}/cancel` refuses
-  without `{"confirm": true}`. Submitting many jobs at once (a
-  sweep) is a client convenience
+  iff a job names it. Names are slash paths
+  (`bench/v7/front5`) and a path addresses its SUBTREE — the
+  tree is a naming convention, segment meaning is yours, the
+  server never pre-defines structure. `GET /arenas` lists the
+  paths jobs actually name, with aggregated counts;
+  `GET /arenas/{path}` aggregates the subtree;
+  `POST /arenas/{path}/pause|resume|reclaim` fan the per-job op
+  out over subtree members; `/arenas/{path}/cancel` refuses
+  without `{"confirm": true}`, naming every job that would die.
+  Submitting many jobs at once (a sweep) is a client convenience
   (`dispatcher_sdk.client.submit_jobs`), not a server concept —
   membership is by reference, whenever the job was submitted.
   Orthogonal to `pool` (capacity axis).
@@ -53,7 +58,7 @@ dispatch, failure detection, and state persistence.
    ```json
    {
      "label": "my-sweep-arm1",
-     "arena": "my-sweep",
+     "arena": "myrepo/my-sweep",
      "task_ids": ["task_a", "task_b"],
      "home_root": "/nfs/exp/my-sweep-arm1",
      "source_tar_b64": "<base64 tar of the frozen code>",

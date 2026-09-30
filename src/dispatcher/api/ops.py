@@ -147,12 +147,27 @@ def _prepare_submit(payload: dict[str, Any]) -> dict[str, Any]:
   return out
 
 
+def normalize_arena(raw: Any) -> str:
+  """Arena names are paths (`bench/v7/front5`); the tree is a
+  naming convention, not server structure — depth and segment
+  meaning are the operator's. Normalisation is deliberately
+  minimal: trim, drop outer slashes, refuse empty segments (the
+  `a//b` typo would silently mint a sibling tree)."""
+  if not isinstance(raw, str):
+    raise Invalid("arena must be a string")
+  name = raw.strip().strip("/")
+  if not name:
+    return ""
+  segments = [s.strip() for s in name.split("/")]
+  if any(not s for s in segments):
+    raise Invalid(f"arena path {raw!r} has an empty segment")
+  return "/".join(segments)
+
+
 def _validate_submit(st: ServerState, payload: dict[str, Any]) -> None:
   arena = payload.get("arena")
   if arena is not None:
-    if not isinstance(arena, str):
-      raise Invalid("arena must be a string")
-    payload["arena"] = arena.strip()
+    payload["arena"] = normalize_arena(arena)
   home_root = payload.get("home_root")
   if not isinstance(home_root, str) or not home_root:
     raise Invalid("home_root must be a non-empty string")
@@ -370,10 +385,8 @@ async def patch_job(
       raise Invalid("pool must be a string")
     payload["pool"] = raw_pool.strip() or "default"
   if "arena" in payload:
-    raw_arena = payload["arena"]
-    if not isinstance(raw_arena, str):
-      raise Invalid("arena must be a string (empty = leave)")
-    payload["arena"] = raw_arena.strip()
+    # Empty (after normalisation) = leave the arena.
+    payload["arena"] = normalize_arena(payload["arena"])
   try:
     if payload:
       st.scheduler.patch(job_id, **payload)
@@ -752,7 +765,7 @@ async def unarchive_job(
 
 
 def _arena_member_ids(st: ServerState, arena: str) -> list[str]:
-  name = arena.strip()
+  name = normalize_arena(arena)
   if not name:
     raise Invalid("arena name must be non-empty")
   members = arena_members(st.scheduler, name)
@@ -767,7 +780,8 @@ async def arena_set_paused(
   paused: bool,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  members = _arena_member_ids(st, arena)
+  name = normalize_arena(arena)
+  members = _arena_member_ids(st, name)
   changed: list[str] = []
   skipped: list[dict[str, str]] = []
   for aid in members:
@@ -778,7 +792,7 @@ async def arena_set_paused(
       # Archived members etc. — the rest of the arena still moves.
       skipped.append({"job_id": aid, "reason": str(exc)})
   return {
-    "arena": arena.strip(),
+    "arena": name,
     "paused": paused,
     "changed": changed,
     "skipped": skipped,
@@ -790,7 +804,8 @@ async def arena_reclaim(
   arena: str,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  members = _arena_member_ids(st, arena)
+  name = normalize_arena(arena)
+  members = _arena_member_ids(st, name)
   reclaimed: dict[str, list[str]] = {}
   skipped: list[dict[str, str]] = []
   for aid in members:
@@ -802,7 +817,7 @@ async def arena_reclaim(
       # paused → skipped, stated, never silently forced.
       skipped.append({"job_id": aid, "reason": str(exc)})
   return {
-    "arena": arena.strip(),
+    "arena": name,
     "reclaimed": reclaimed,
     "skipped": skipped,
   }
@@ -814,12 +829,13 @@ async def arena_cancel(
   confirm: bool,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  members = _arena_member_ids(st, arena)
+  name = normalize_arena(arena)
+  members = _arena_member_ids(st, name)
   if not confirm:
     # Destructive fan-out keeps friction: name what would die,
     # do nothing.
     raise Conflict(
-      f"arena {arena.strip()!r} cancel would drop "
+      f"arena {name!r} cancel would drop "
       f"{len(members)} job(s): {members} — resend with "
       f'{{"confirm": true}}'
     )
@@ -827,7 +843,7 @@ async def arena_cancel(
   for aid in members:
     await cancel_job(st, aid, clock_fn)
     cancelled.append(aid)
-  return {"arena": arena.strip(), "cancelled": cancelled}
+  return {"arena": name, "cancelled": cancelled}
 
 
 def _mk_job_id(label: str) -> str:

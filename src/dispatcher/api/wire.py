@@ -147,11 +147,18 @@ def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
 def arena_members(scheduler: Scheduler, arena: str) -> list[str]:
   """Membership is derived per read — submission order, live and
   archived alike (an arena spans weeks; hiding archived members
-  would silently shrink the comparison set)."""
+  would silently shrink the comparison set).
+
+  Arena names are paths, and a path names its SUBTREE: members
+  of `bench/v7` are jobs at `bench/v7` and below. The prefix
+  check is segment-aware — `bench/v7` must not match
+  `bench/v70`."""
+  prefix = arena + "/"
   return [
     aid
     for aid in scheduler.all_job_ids()
-    if scheduler.job_state(aid).arena == arena
+    if (a := scheduler.job_state(aid).arena) == arena
+    or a.startswith(prefix)
   ]
 
 

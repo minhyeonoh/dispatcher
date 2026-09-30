@@ -123,6 +123,69 @@ def test_arena_reclaim_respects_per_job_pause_gate(tmp_path: Path):
     assert "not paused" in out["skipped"][0]["reason"]
 
 
+def _paused(client, job_id: str) -> bool:
+  return client.get(f"/jobs/{job_id}").json()["paused"]
+
+
+# ── hierarchy: path names address subtrees ───────────────────────
+
+
+def test_interior_path_aggregates_subtree(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    _submit(client, tmp_path, "A", arena="bench/v7/front5")
+    _submit(client, tmp_path, "B", arena="bench/v7/tail15")
+    _submit(client, tmp_path, "C", arena="bench/v6")
+    # `bench/v7` names no job directly, yet is an arena view.
+    detail = client.get("/arenas/bench/v7").json()
+    assert {m["job_id"] for m in detail["members"]} == {"A", "B"}
+    assert detail["counts"]["total"] == 4
+    root = client.get("/arenas/bench").json()
+    assert {m["job_id"] for m in root["members"]} == {"A", "B", "C"}
+    # The flat list still shows only paths jobs actually name.
+    rows = {r["arena"] for r in client.get("/arenas").json()}
+    assert rows == {"bench/v7/front5", "bench/v7/tail15", "bench/v6"}
+
+
+def test_prefix_match_is_segment_aware(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    _submit(client, tmp_path, "A", arena="bench/v7")
+    _submit(client, tmp_path, "B", arena="bench/v70")
+    detail = client.get("/arenas/bench/v7").json()
+    assert [m["job_id"] for m in detail["members"]] == ["A"]
+
+
+def test_group_ops_fan_out_over_subtree(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    _submit(client, tmp_path, "A", arena="bench/v7/front5")
+    _submit(client, tmp_path, "B", arena="bench/v7/tail15")
+    _submit(client, tmp_path, "C", arena="bench/v6")
+    out = client.post("/arenas/bench/v7/resume").json()
+    assert set(out["changed"]) == {"A", "B"}
+    assert _paused(client, "C") is True
+    resp = client.post("/arenas/bench/cancel", json={})
+    assert resp.status_code == 409  # names all three
+    for j in ("A", "B", "C"):
+      assert j in resp.json()["detail"]
+
+
+def test_arena_path_normalisation(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    # Outer slashes/space trimmed at submit.
+    _submit(client, tmp_path, "A", arena=" /bench/v7/ ")
+    assert client.get("/jobs/A").json()["arena"] == "bench/v7"
+    # Empty segment refused — would silently mint a sibling tree.
+    resp = client.post(
+      "/jobs",
+      json=payload(
+        task_ids=["t1"],
+        home_root=tmp_path / "bad",
+        extra={"arena": "bench//v7", "paused": True},
+      ),
+    )
+    assert resp.status_code == 400
+    assert "empty segment" in resp.json()["detail"]
+
+
 def test_arena_cancel_requires_confirm(tmp_path: Path):
   with mk_client(tmp_path) as client:
     _submit(client, tmp_path, "A")

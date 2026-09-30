@@ -418,35 +418,42 @@ def create_app(
     st = _get_state(app)
     return await asyncio.to_thread(snapshot_arenas, st.scheduler)
 
-  @app.get("/arenas/{arena}")
+  # `{arena:path}` — arena names are slash paths and a name
+  # addresses its subtree. The action-suffix routes still match:
+  # the greedy path segment backtracks over the trailing verb.
+
+  @app.get("/arenas/{arena:path}")
   async def get_arena(arena: str) -> ArenaDetailOut:
     st = _get_state(app)
-    members = arena_members(st.scheduler, arena)
+    name = ops.normalize_arena(arena)
+    if not name:
+      raise HTTPException(status_code=404, detail="empty arena path")
+    members = arena_members(st.scheduler, name)
     if not members:
       raise HTTPException(
-        status_code=404, detail=f"arena {arena!r} has no jobs"
+        status_code=404, detail=f"arena {name!r} has no jobs"
       )
     return await asyncio.to_thread(
-      snapshot_arena, st.scheduler, arena, members
+      snapshot_arena, st.scheduler, name, members
     )
 
-  @app.post("/arenas/{arena}/pause")
+  @app.post("/arenas/{arena:path}/pause")
   async def arena_pause(arena: str) -> dict[str, Any]:
     return await ops.arena_set_paused(
       _get_state(app), arena, True, clock_fn
     )
 
-  @app.post("/arenas/{arena}/resume")
+  @app.post("/arenas/{arena:path}/resume")
   async def arena_resume(arena: str) -> dict[str, Any]:
     return await ops.arena_set_paused(
       _get_state(app), arena, False, clock_fn
     )
 
-  @app.post("/arenas/{arena}/reclaim")
+  @app.post("/arenas/{arena:path}/reclaim")
   async def arena_reclaim(arena: str) -> dict[str, Any]:
     return await ops.arena_reclaim(_get_state(app), arena, clock_fn)
 
-  @app.post("/arenas/{arena}/cancel")
+  @app.post("/arenas/{arena:path}/cancel")
   async def arena_cancel(
     arena: str, payload: dict[str, Any] | None = None
   ) -> dict[str, Any]:
