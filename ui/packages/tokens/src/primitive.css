@@ -1,0 +1,59 @@
+/* @lab/tokens — primitive layer: raw material only.
+ * Components and utilities must never reference these directly;
+ * they exist to be assigned into semantic tokens. */
+
+:root {
+  /* neutral ramp (slightly cool) */
+  --gray-0: oklch(99% 0.002 260);
+  --gray-1: oklch(97.5% 0.003 260);
+  --gray-2: oklch(94% 0.004 260);
+  --gray-3: oklch(89% 0.005 260);
+  --gray-4: oklch(80% 0.006 260);
+  --gray-5: oklch(68% 0.008 260);
+  --gray-6: oklch(55% 0.01 260);
+  --gray-7: oklch(42% 0.012 260);
+  --gray-8: oklch(30% 0.012 260);
+  --gray-9: oklch(21% 0.012 260);
+  --gray-10: oklch(15% 0.012 260);
+
+  /* accent — indigo */
+  --accent-1: oklch(95% 0.03 265);
+  --accent-2: oklch(89% 0.055 265);
+  --accent-3: oklch(80% 0.1 265);
+  --accent-4: oklch(71% 0.14 265);
+  --accent-5: oklch(62% 0.17 265);
+  --accent-6: oklch(53% 0.19 265);
+  --accent-7: oklch(45% 0.18 265);
+
+  /* status hues */
+  --green-1: oklch(95% 0.045 152);
+  --green-4: oklch(72% 0.13 152);
+  --green-6: oklch(52% 0.13 152);
+  --red-1: oklch(95.5% 0.025 25);
+  --red-4: oklch(70% 0.15 25);
+  --red-6: oklch(53% 0.19 25);
+  --amber-1: oklch(96% 0.05 90);
+  --amber-4: oklch(80% 0.13 85);
+  --amber-6: oklch(66% 0.13 70);
+
+  /* shape */
+  --radius-0: 2px;
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --radius-4: 16px;
+  --radius-full: 9999px;
+
+  /* type */
+  --font-sans:
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+    monospace;
+
+  /* elevation */
+  --shadow-1: 0 1px 2px oklch(0% 0 0 / 0.06);
+  --shadow-2:
+    0 1px 2px oklch(0% 0 0 / 0.06), 0 4px 12px oklch(0% 0 0 / 0.08);
+}

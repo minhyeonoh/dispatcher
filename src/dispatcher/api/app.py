@@ -595,10 +595,31 @@ def _mount_ui(app: FastAPI, ui_dist: Path | None) -> None:
   if ui_dist is None or not ui_dist.is_dir():
     return
   from fastapi.staticfiles import StaticFiles
+  from starlette.exceptions import (
+    HTTPException as StarletteHTTPException,
+  )
+
+  class _SpaStaticFiles(StaticFiles):
+    """Missing path → index.html: the SPA owns routing under
+    /ui, so a deep link (/ui/jobs/x) must load the app, not
+    404. Starlette signals the miss either way depending on
+    version — as a 404 response or a (starlette-level, NOT the
+    fastapi subclass) HTTPException."""
+
+    async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
+      try:
+        response = await super().get_response(path, scope)
+      except StarletteHTTPException as exc:
+        if exc.status_code != 404:
+          raise
+        return await super().get_response("index.html", scope)
+      if response.status_code == 404:
+        return await super().get_response("index.html", scope)
+      return response
 
   app.mount(
     "/ui",
-    StaticFiles(directory=str(ui_dist), html=True),
+    _SpaStaticFiles(directory=str(ui_dist), html=True),
     name="ui",
   )
 

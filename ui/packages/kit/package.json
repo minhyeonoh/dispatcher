@@ -1,0 +1,29 @@
+{
+  "name": "@lab/kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React components over @lab/tokens + the Tailwind binding of the tokens.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./theme.css": "./src/theme.css"
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "true"
+  },
+  "dependencies": {
+    "@lab/tokens": "workspace:*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "react": "^19.2.0",
+    "typescript": "^5.9.0"
+  }
+}

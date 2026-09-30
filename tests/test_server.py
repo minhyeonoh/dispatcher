@@ -573,6 +573,43 @@ def test_monitor_stream_mounted_and_sse_frame_shape(
   }
 
 
+def test_ui_mount_serves_spa_with_deep_link_fallback(
+  tmp_path: Path,
+):
+  from fastapi.testclient import TestClient
+
+  dist = tmp_path / "dist"
+  dist.mkdir()
+  (dist / "index.html").write_text("<div id='root'></div>")
+  (dist / "assets").mkdir()
+  (dist / "assets" / "app.js").write_text("//js")
+
+  async def fake_dispatch(action, state) -> None:
+    return None
+
+  config = mk_config(tmp_path)
+  config.ui_dist = dist
+  app = create_app(
+    config,
+    settings=mk_settings(),
+    dispatch=fake_dispatch,
+    poll=lambda _p: None,
+  )
+  with TestClient(app) as client:
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == "/ui/"
+    assert client.get("/ui/").text == "<div id='root'></div>"
+    assert client.get("/ui/assets/app.js").status_code == 200
+    # Deep link: the SPA owns routing under /ui — refresh must
+    # load the app, not 404.
+    deep = client.get("/ui/jobs/whatever")
+    assert deep.status_code == 200
+    assert deep.text == "<div id='root'></div>"
+    # API routes are not shadowed by the mount.
+    assert client.get("/health").json() == {"status": "ok"}
+
+
 # ── restore ──────────────────────────────────────────────────────
 
 

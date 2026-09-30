@@ -1,0 +1,10 @@
+@import "@lab/tokens/base.css";
+@import "tailwindcss";
+@import "@lab/kit/theme.css";
+@source "../../../packages/kit/src";
+
+body {
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+}

@@ -1,0 +1,75 @@
+/* @lab/kit — the Tailwind side of the token contract.
+ *
+ * Import order in an app's entry CSS:
+ *
+ *   @import "@lab/tokens/base.css";
+ *   @import "tailwindcss";
+ *   @import "@lab/kit/theme.css";
+ *   @source "../../../packages/kit/src";
+ *
+ * `@theme inline` maps semantic tokens to utility names, so
+ * classes stay theme-blind: `bg-surface`, `text-fg-muted`,
+ * `border-strong`, `rounded-control`. The shadcn names
+ * (background/foreground/primary/…) are bound to the same
+ * tokens, so generated shadcn components arrive themed. */
+
+@theme inline {
+  /* kill Tailwind's static palette: semantic tokens are the only
+   * colors an app can name — a hardcoded `bg-blue-500` becomes a
+   * build error, which is the design system enforcing itself. */
+  --color-*: initial;
+
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-overlay: var(--overlay);
+
+  --color-line: var(--border);
+  --color-strong: var(--border-strong);
+
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-surface: var(--accent-surface);
+
+  --color-ok: var(--ok);
+  --color-ok-surface: var(--ok-surface);
+  --color-danger: var(--danger);
+  --color-danger-surface: var(--danger-surface);
+  --color-warn: var(--warn);
+  --color-warn-surface: var(--warn-surface);
+
+  --color-focus: var(--focus);
+
+  /* shadcn compatibility aliases */
+  --color-background: var(--surface);
+  --color-foreground: var(--fg);
+  --color-card: var(--raised);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--raised);
+  --color-popover-foreground: var(--fg);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-fg);
+  --color-secondary: var(--sunken);
+  --color-secondary-foreground: var(--fg);
+  --color-muted: var(--sunken);
+  --color-muted-foreground: var(--fg-muted);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--accent-fg);
+  --color-border: var(--border);
+  --color-input: var(--border-strong);
+  --color-ring: var(--focus);
+
+  --radius-control: var(--radius-control);
+  --radius-panel: var(--radius-panel);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --shadow-raised: var(--shadow-raised);
+  --shadow-floating: var(--shadow-floating);
+}

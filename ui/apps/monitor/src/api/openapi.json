@@ -1,0 +1,1804 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "dispatcher",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/state": {
+      "get": {
+        "summary": "Get State",
+        "operationId": "get_state_state_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/monitor/stream": {
+      "get": {
+        "summary": "Monitor Stream",
+        "operationId": "monitor_stream_monitor_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "summary": "List Jobs",
+        "operationId": "list_jobs_jobs_get",
+        "parameters": [
+          {
+            "name": "full",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Full"
+            }
+          },
+          {
+            "name": "arena",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Arena"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Submit Job",
+        "operationId": "submit_job_jobs_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Submit Job Jobs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}": {
+      "get": {
+        "summary": "Get Job",
+        "operationId": "get_job_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch Job",
+        "operationId": "patch_job_jobs__job_id__patch",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSummaryOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel Job",
+        "operationId": "cancel_job_jobs__job_id__delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cancel Job Jobs  Job Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/arenas": {
+      "get": {
+        "summary": "List Arenas",
+        "operationId": "list_arenas_arenas_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ArenaSummaryOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Arenas Arenas Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/arenas/{arena}": {
+      "get": {
+        "summary": "Get Arena",
+        "operationId": "get_arena_arenas__arena__get",
+        "parameters": [
+          {
+            "name": "arena",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Arena"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArenaDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/arenas/{arena}/pause": {
+      "post": {
+        "summary": "Arena Pause",
+        "operationId": "arena_pause_arenas__arena__pause_post",
+        "parameters": [
+          {
+            "name": "arena",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Arena"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Arena Pause Arenas  Arena  Pause Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/arenas/{arena}/resume": {
+      "post": {
+        "summary": "Arena Resume",
+        "operationId": "arena_resume_arenas__arena__resume_post",
+        "parameters": [
+          {
+            "name": "arena",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Arena"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Arena Resume Arenas  Arena  Resume Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/arenas/{arena}/reclaim": {
+      "post": {
+        "summary": "Arena Reclaim",
+        "operationId": "arena_reclaim_arenas__arena__reclaim_post",
+        "parameters": [
+          {
+            "name": "arena",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Arena"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Arena Reclaim Arenas  Arena  Reclaim Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/arenas/{arena}/cancel": {
+      "post": {
+        "summary": "Arena Cancel",
+        "operationId": "arena_cancel_arenas__arena__cancel_post",
+        "parameters": [
+          {
+            "name": "arena",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Arena"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Arena Cancel Arenas  Arena  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/reclaim": {
+      "post": {
+        "summary": "Reclaim Job",
+        "operationId": "reclaim_job_jobs__job_id__reclaim_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Reclaim Job Jobs  Job Id  Reclaim Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/instances/{instance_id}/reclaim": {
+      "post": {
+        "summary": "Reclaim Instance",
+        "operationId": "reclaim_instance_jobs__job_id__instances__instance_id__reclaim_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "instance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Instance Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Reclaim Instance Jobs  Job Id  Instances  Instance Id  Reclaim Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/retry-done-err": {
+      "post": {
+        "summary": "Retry Done Err",
+        "operationId": "retry_done_err_jobs__job_id__retry_done_err_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RetryDoneErrRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retry Done Err Jobs  Job Id  Retry Done Err Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/archive": {
+      "post": {
+        "summary": "Archive Job Ep",
+        "operationId": "archive_job_ep_jobs__job_id__archive_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Archive Job Ep Jobs  Job Id  Archive Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/unarchive": {
+      "post": {
+        "summary": "Unarchive Job Ep",
+        "operationId": "unarchive_job_ep_jobs__job_id__unarchive_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Unarchive Job Ep Jobs  Job Id  Unarchive Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings": {
+      "patch": {
+        "summary": "Patch Settings",
+        "operationId": "patch_settings_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/filter-presets": {
+      "get": {
+        "summary": "Get Filter Presets",
+        "operationId": "get_filter_presets_filter_presets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Filter Presets Filter Presets Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Filter Presets",
+        "description": "Opaque UI blob; whole-document last-write-wins. Atomic\nwrite so a crash can't corrupt it.",
+        "operationId": "put_filter_presets_filter_presets_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Put Filter Presets Filter Presets Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ArchivePatch": {
+        "properties": {
+          "auto_after_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto After Days"
+          },
+          "scan_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Interval Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ArchivePatch"
+      },
+      "ArchiveSettings": {
+        "properties": {
+          "auto_after_days": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Auto After Days",
+            "default": 0
+          },
+          "scan_interval_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Scan Interval Seconds",
+            "default": 3600.0
+          }
+        },
+        "type": "object",
+        "title": "ArchiveSettings"
+      },
+      "ArenaDetailOut": {
+        "properties": {
+          "arena": {
+            "type": "string",
+            "title": "Arena"
+          },
+          "jobs": {
+            "type": "integer",
+            "title": "Jobs"
+          },
+          "paused_jobs": {
+            "type": "integer",
+            "title": "Paused Jobs"
+          },
+          "archived_jobs": {
+            "type": "integer",
+            "title": "Archived Jobs"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/JobCountsOut"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/JobSummaryOut"
+            },
+            "type": "array",
+            "title": "Members"
+          }
+        },
+        "type": "object",
+        "required": [
+          "arena",
+          "jobs",
+          "paused_jobs",
+          "archived_jobs",
+          "counts",
+          "members"
+        ],
+        "title": "ArenaDetailOut"
+      },
+      "ArenaSummaryOut": {
+        "properties": {
+          "arena": {
+            "type": "string",
+            "title": "Arena"
+          },
+          "jobs": {
+            "type": "integer",
+            "title": "Jobs"
+          },
+          "paused_jobs": {
+            "type": "integer",
+            "title": "Paused Jobs"
+          },
+          "archived_jobs": {
+            "type": "integer",
+            "title": "Archived Jobs"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/JobCountsOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "arena",
+          "jobs",
+          "paused_jobs",
+          "archived_jobs",
+          "counts"
+        ],
+        "title": "ArenaSummaryOut",
+        "description": "One derived group row: an arena exists iff a job names it,\nso there is nothing to create or delete \u2014 only to read."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthOut": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HealthOut"
+      },
+      "HostAutotunePatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "seconds_between_ticks": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds Between Ticks"
+          },
+          "ring_buffer_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ring Buffer Size"
+          },
+          "bootstrap_min_samples": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bootstrap Min Samples"
+          },
+          "peak_floor_bytes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Floor Bytes"
+          },
+          "reserve_fraction": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserve Fraction"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "HostAutotunePatch"
+      },
+      "HostAutotuneSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "seconds_between_ticks": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Seconds Between Ticks",
+            "default": 60.0
+          },
+          "ring_buffer_size": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Ring Buffer Size",
+            "default": 50
+          },
+          "bootstrap_min_samples": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Bootstrap Min Samples",
+            "default": 8
+          },
+          "peak_floor_bytes": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Peak Floor Bytes",
+            "default": 1073741824
+          },
+          "reserve_fraction": {
+            "type": "number",
+            "exclusiveMaximum": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Reserve Fraction",
+            "default": 0.15
+          }
+        },
+        "type": "object",
+        "title": "HostAutotuneSettings"
+      },
+      "HostSettings": {
+        "properties": {
+          "max_concurrent": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Concurrent"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "default": true
+          },
+          "alive": {
+            "type": "boolean",
+            "title": "Alive",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "max_concurrent"
+        ],
+        "title": "HostSettings",
+        "description": "Per-host scheduling settings.\n\n`active` is operator intent (set via PATCH /settings); `alive`\nis an infrastructure fact auto-flipped by the docker-events\nstream. Dispatch requires both."
+      },
+      "HostSettingsPatch": {
+        "properties": {
+          "max_concurrent": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "alive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alive"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "HostSettingsPatch"
+      },
+      "JobCountsOut": {
+        "properties": {
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "running": {
+            "type": "integer",
+            "title": "Running"
+          },
+          "done_ok": {
+            "type": "integer",
+            "title": "Done Ok"
+          },
+          "done_err": {
+            "type": "integer",
+            "title": "Done Err"
+          },
+          "ghosted": {
+            "type": "integer",
+            "title": "Ghosted"
+          },
+          "unknown": {
+            "type": "integer",
+            "title": "Unknown"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pending",
+          "running",
+          "done_ok",
+          "done_err",
+          "ghosted",
+          "unknown",
+          "total"
+        ],
+        "title": "JobCountsOut"
+      },
+      "JobSummaryOut": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "weight": {
+            "type": "integer",
+            "title": "Weight"
+          },
+          "max_concurrent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent"
+          },
+          "pause_on_error": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause On Error"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/JobCountsOut"
+          },
+          "home_root": {
+            "type": "string",
+            "title": "Home Root"
+          },
+          "alias": {
+            "type": "string",
+            "title": "Alias"
+          },
+          "arena": {
+            "type": "string",
+            "title": "Arena",
+            "default": ""
+          },
+          "pool": {
+            "type": "string",
+            "title": "Pool",
+            "default": "default"
+          },
+          "image_id": {
+            "type": "string",
+            "title": "Image Id",
+            "default": ""
+          },
+          "source_sha256": {
+            "type": "string",
+            "title": "Source Sha256",
+            "default": ""
+          },
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "archive_kind": {
+            "type": "string",
+            "title": "Archive Kind",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "label",
+          "weight",
+          "max_concurrent",
+          "pause_on_error",
+          "paused",
+          "counts",
+          "home_root",
+          "alias"
+        ],
+        "title": "JobSummaryOut"
+      },
+      "NotifyPatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "thresholds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thresholds"
+          },
+          "telegram_chat_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Chat Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NotifyPatch"
+      },
+      "NotifySettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "thresholds": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Thresholds"
+          },
+          "telegram_chat_id": {
+            "type": "string",
+            "title": "Telegram Chat Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "NotifySettings",
+        "description": "Live-patchable; the manager re-reads every field per event."
+      },
+      "OrphanGCPatch": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "seconds_between_sweeps": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds Between Sweeps"
+          },
+          "min_container_age_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Container Age S"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "OrphanGCPatch"
+      },
+      "OrphanGCSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "seconds_between_sweeps": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Seconds Between Sweeps",
+            "default": 30.0
+          },
+          "min_container_age_s": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Min Container Age S",
+            "default": 90.0
+          }
+        },
+        "type": "object",
+        "title": "OrphanGCSettings"
+      },
+      "RetryDoneErrRequest": {
+        "properties": {
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "since_iso": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since Iso"
+          },
+          "instance_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RetryDoneErrRequest",
+        "description": "Empty body = retry every done_err instance. `instance_ids`\noverrides the host/since filters."
+      },
+      "Settings": {
+        "properties": {
+          "max_concurrent": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Max Concurrent"
+          },
+          "hosts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/HostSettings"
+            },
+            "type": "object",
+            "title": "Hosts"
+          },
+          "require_source": {
+            "type": "boolean",
+            "title": "Require Source",
+            "default": false
+          },
+          "pool_caps": {
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0.0
+            },
+            "type": "object",
+            "title": "Pool Caps"
+          },
+          "state_reconciliation": {
+            "$ref": "#/components/schemas/StateReconciliationSettings"
+          },
+          "orphan_gc": {
+            "$ref": "#/components/schemas/OrphanGCSettings"
+          },
+          "host_autotune": {
+            "$ref": "#/components/schemas/HostAutotuneSettings"
+          },
+          "notify": {
+            "$ref": "#/components/schemas/NotifySettings"
+          },
+          "archive": {
+            "$ref": "#/components/schemas/ArchiveSettings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "max_concurrent",
+          "hosts"
+        ],
+        "title": "Settings"
+      },
+      "SettingsPatch": {
+        "properties": {
+          "hosts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/HostSettingsPatch"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hosts"
+          },
+          "max_concurrent": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent"
+          },
+          "require_source": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Require Source"
+          },
+          "pool_caps": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0.0
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Caps"
+          },
+          "state_reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StateReconciliationPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "orphan_gc": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrphanGCPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host_autotune": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostAutotunePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotifyPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archive": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchivePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SettingsPatch",
+        "description": "Partial update; unknown fields are rejected, not dropped \u2014\na typo'd knob must 422, not silently no-op."
+      },
+      "StateOut": {
+        "properties": {
+          "self_host": {
+            "type": "string",
+            "title": "Self Host"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "running_total": {
+            "type": "integer",
+            "title": "Running Total"
+          },
+          "running_per_host": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Running Per Host"
+          },
+          "running_per_pool": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Running Per Pool"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/JobSummaryOut"
+            },
+            "type": "array",
+            "title": "Jobs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "self_host",
+          "settings",
+          "running_total",
+          "running_per_host",
+          "jobs"
+        ],
+        "title": "StateOut"
+      },
+      "StateReconciliationPatch": {
+        "properties": {
+          "max_concurrent_probes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Probes"
+          },
+          "seconds_between_probes": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds Between Probes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StateReconciliationPatch"
+      },
+      "StateReconciliationSettings": {
+        "properties": {
+          "max_concurrent_probes": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Max Concurrent Probes",
+            "default": 16
+          },
+          "seconds_between_probes": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Seconds Between Probes",
+            "default": 30.0
+          }
+        },
+        "type": "object",
+        "title": "StateReconciliationSettings",
+        "description": "Resolver knobs (periodic unknown/ghosted sweep)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@lab/tokens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Design tokens as CSS custom properties. Framework-agnostic.",
+  "exports": {
+    "./base.css": "./src/base.css",
+    "./primitive.css": "./src/primitive.css",
+    "./semantic.css": "./src/semantic.css"
+  },
+  "scripts": {
+    "typecheck": "true",
+    "test": "true"
+  }
+}

@@ -1,0 +1,6 @@
+/* @lab/tokens — single entry: primitive ramps + the default
+ * semantic theme. Sites import this and (optionally) one more
+ * CSS file that overrides semantic tokens. */
+
+@import "./primitive.css";
+@import "./semantic.css";

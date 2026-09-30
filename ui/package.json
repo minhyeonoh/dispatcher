@@ -1,0 +1,12 @@
+{
+  "name": "lab-ui-workspace",
+  "private": true,
+  "packageManager": "pnpm@12.8.1",
+  "scripts": {
+    "dev": "pnpm --filter monitor dev",
+    "build": "pnpm --filter monitor build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "gen:api": "pnpm --filter monitor gen:api"
+  }
+}

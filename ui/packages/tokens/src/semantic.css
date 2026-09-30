@@ -1,0 +1,62 @@
+/* @lab/tokens — semantic layer: the ONLY tokens components and
+ * utilities may reference. A theme is a set of values for this
+ * layer.
+ *
+ * Colors are defined once with light-dark(); the active side is
+ * chosen by `color-scheme`, driven by data-theme on <html>:
+ * absent = follow the OS, "light"/"dark" = forced. Retheming a
+ * site = one CSS file overriding these tokens. */
+
+:root {
+  color-scheme: light dark;
+}
+[data-theme="light"] {
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root {
+  /* ground */
+  --surface: light-dark(var(--gray-1), var(--gray-10));
+  --raised: light-dark(var(--gray-0), var(--gray-9));
+  --sunken: light-dark(var(--gray-2), oklch(12% 0.012 260));
+  --overlay: light-dark(
+    oklch(20% 0.01 260 / 0.45),
+    oklch(5% 0.01 260 / 0.6)
+  );
+
+  /* lines */
+  --border: light-dark(var(--gray-3), var(--gray-8));
+  --border-strong: light-dark(var(--gray-4), var(--gray-7));
+
+  /* ink */
+  --fg: light-dark(var(--gray-10), var(--gray-1));
+  --fg-muted: light-dark(var(--gray-6), var(--gray-4));
+  --fg-faint: light-dark(var(--gray-5), var(--gray-6));
+
+  /* accent */
+  --accent: light-dark(var(--accent-6), var(--accent-4));
+  --accent-hover: light-dark(var(--accent-7), var(--accent-3));
+  --accent-fg: light-dark(var(--gray-0), var(--gray-10));
+  --accent-surface: light-dark(var(--accent-1), oklch(28% 0.07 265));
+
+  /* status */
+  --ok: light-dark(var(--green-6), var(--green-4));
+  --ok-surface: light-dark(var(--green-1), oklch(26% 0.05 152));
+  --danger: light-dark(var(--red-6), var(--red-4));
+  --danger-surface: light-dark(var(--red-1), oklch(26% 0.06 25));
+  --warn: light-dark(var(--amber-6), var(--amber-4));
+  --warn-surface: light-dark(var(--amber-1), oklch(27% 0.05 85));
+
+  /* interaction */
+  --focus: var(--accent-5);
+
+  /* shape & type (not themed by light/dark, still semantic —
+   * a theme may override the feel, not just the colors) */
+  --radius-control: var(--radius-2);
+  --radius-panel: var(--radius-3);
+  --shadow-raised: var(--shadow-1);
+  --shadow-floating: var(--shadow-2);
+}
