@@ -493,6 +493,11 @@ export interface components {
             /** Paused */
             paused: boolean;
             counts: components["schemas"]["JobCountsOut"];
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
             /** Home Root */
             home_root: string;
             /** Alias */

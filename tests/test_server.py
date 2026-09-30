@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
@@ -268,6 +269,26 @@ def test_list_jobs_matches_state_and_arena_filter(
     full = client.get("/jobs", params={"full": 1}).json()
     assert {a["job_id"] for a in full} == {"A", "B"}
     assert "pending" in full[0]
+
+
+def test_summary_carries_submit_time(tmp_path: Path):
+  # The UI sorts and ages jobs by this; JobState always had it, the
+  # wire shape did not.
+  with mk_client(tmp_path) as client:
+    aid = client.post(
+      "/jobs",
+      json=payload(
+        task_ids=["t1"],
+        home_root=tmp_path / "a",
+        extra={"paused": True},
+      ),
+    ).json()["job_id"]
+    row = next(a for a in client.get("/jobs").json() if a["job_id"] == aid)
+    submitted = datetime.fromisoformat(row["submitted_at"])
+    assert submitted.tzinfo is not None  # KST-aware, like every
+    # timestamp the dispatcher mints
+    detail = client.get(f"/jobs/{aid}").json()
+    assert detail["submitted_at"] == row["submitted_at"]
 
 
 # ── patch ────────────────────────────────────────────────────────

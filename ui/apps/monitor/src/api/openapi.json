@@ -1267,6 +1267,11 @@
           "counts": {
             "$ref": "#/components/schemas/JobCountsOut"
           },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Submitted At"
+          },
           "home_root": {
             "type": "string",
             "title": "Home Root"
@@ -1342,6 +1347,7 @@
           "pause_on_error",
           "paused",
           "counts",
+          "submitted_at",
           "home_root",
           "alias"
         ],

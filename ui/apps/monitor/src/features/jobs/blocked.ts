@@ -92,22 +92,3 @@ function hostDetail(cluster: ClusterSnapshot | null): string {
     });
   return `all capacity in use — ${full.join(", ")}`;
 }
-
-/** Seconds an instance ran, or has been running. */
-export function durationSeconds(
-  dispatchedAt: string,
-  finishedAt: string | null | undefined,
-  now: number,
-): number {
-  const start = Date.parse(dispatchedAt);
-  const end = finishedAt ? Date.parse(finishedAt) : now;
-  return Math.max(0, (end - start) / 1000);
-}
-
-export function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const m = Math.floor(seconds / 60);
-  if (m < 60) return `${m}m ${Math.round(seconds % 60)}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}

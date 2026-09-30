@@ -19,6 +19,7 @@ function job(id: string, extra: Partial<JobSummary> = {}): JobSummary {
       unknown: 0,
       total: 1,
     },
+    submitted_at: "2026-09-30T13:00:00+09:00",
     home_root: `/data/${id}`,
     alias: `${id}-alias`,
     arena: "",

@@ -9,6 +9,7 @@ import { Badge, SegmentBar } from "@lab/kit";
 import { Link } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { JobRow } from "../../live/fold";
+import { formatAge, formatExact } from "../../lib/time";
 import { describeBlocked } from "./blocked";
 import { jobSubtitle, jobTitle } from "./naming";
 
@@ -212,6 +213,20 @@ export function jobColumns(
           <Badge tone={tone} title={detail}>
             {label}
           </Badge>
+        );
+      },
+    },
+    {
+      id: "submitted",
+      header: "submitted",
+      // Sort on the instant, render the age: "2h ago" scans, the
+      // exact stamp is one hover away.
+      accessorFn: (job) => Date.parse(job.submitted_at),
+      meta: { align: "right", numeric: true, title: "submitted" },
+      cell: ({ row }) => {
+        const iso = row.original.submitted_at;
+        return (
+          <span title={formatExact(iso)}>{formatAge(iso, Date.now())}</span>
         );
       },
     },

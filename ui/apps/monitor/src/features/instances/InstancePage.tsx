@@ -3,6 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { api } from "../../api/client";
 import type { FullJob, InstanceView } from "../../api/types";
+import {
+  durationSeconds,
+  formatDuration,
+  formatExact,
+} from "../../lib/time";
 import { jobTitle } from "../jobs/naming";
 
 type Bucket = "running" | "unknown" | "ghosted" | "done_err" | "done_ok";
@@ -113,7 +118,23 @@ export function InstancePage() {
               </Row>
               <Row label="host">{found.view.host}</Row>
               <Row label="dispatched">
-                {new Date(found.view.dispatched_at).toLocaleString()}
+                {formatExact(found.view.dispatched_at)}
+              </Row>
+              <Row
+                label={found.view.finished_at ? "finished" : "still running"}
+              >
+                {found.view.finished_at
+                  ? formatExact(found.view.finished_at)
+                  : "—"}
+              </Row>
+              <Row label="took">
+                {formatDuration(
+                  durationSeconds(
+                    found.view.dispatched_at,
+                    found.view.finished_at,
+                    Date.now(),
+                  ),
+                )}
               </Row>
               <Row label="home">
                 <span className="font-mono text-xs break-all">

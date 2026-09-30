@@ -16,11 +16,8 @@ import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { FullJob, InstanceView } from "../../api/types";
 import { useLive } from "../../live/store";
-import {
-  describeBlocked,
-  durationSeconds,
-  formatDuration,
-} from "./blocked";
+import { durationSeconds, formatDuration } from "../../lib/time";
+import { describeBlocked } from "./blocked";
 import { jobSubtitle, jobTitle } from "./naming";
 import { resolveJobKey } from "./resolve";
 

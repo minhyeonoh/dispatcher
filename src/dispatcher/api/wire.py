@@ -47,6 +47,7 @@ class JobSummaryOut(BaseModel):
   pause_on_error: bool | None
   paused: bool
   counts: JobCountsOut
+  submitted_at: datetime
   home_root: str
   alias: str
   arena: str = ""
@@ -141,6 +142,7 @@ def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
     pause_on_error=state.pause_on_error,
     paused=state.paused,
     counts=job_counts(scheduler, job_id),
+    submitted_at=state.submitted_at,
     home_root=str(state.home_root),
     alias=state.alias,
     arena=state.arena,

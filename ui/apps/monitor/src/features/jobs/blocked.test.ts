@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ClusterSnapshot, JobSummary } from "../../api/types";
-import {
-  describeBlocked,
-  durationSeconds,
-  formatDuration,
-} from "./blocked";
+import { describeBlocked } from "./blocked";
 
 const job = {
   pool: "gpu",
@@ -87,32 +83,5 @@ describe("describeBlocked", () => {
     ] as const) {
       expect(describeBlocked(reason, job, null).label).toBeTruthy();
     }
-  });
-});
-
-describe("durations", () => {
-  const start = "2026-09-30T13:00:00+09:00";
-
-  it("measures a finished instance from its own timestamps", () => {
-    expect(
-      durationSeconds(start, "2026-09-30T13:02:30+09:00", 0),
-    ).toBe(150);
-  });
-
-  it("measures a running instance against now", () => {
-    const now = Date.parse(start) + 90_000;
-    expect(durationSeconds(start, null, now)).toBe(90);
-  });
-
-  it("never goes negative on clock skew", () => {
-    expect(durationSeconds(start, null, Date.parse(start) - 5000)).toBe(
-      0,
-    );
-  });
-
-  it("formats across the units", () => {
-    expect(formatDuration(45)).toBe("45s");
-    expect(formatDuration(150)).toBe("2m 30s");
-    expect(formatDuration(7260)).toBe("2h 1m");
   });
 });
