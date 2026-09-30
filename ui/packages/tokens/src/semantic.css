@@ -25,14 +25,17 @@
 }
 
 :root {
-  /* ground */
-  --surface: light-dark(var(--gray-0), var(--gray-11));
-  --raised: light-dark(var(--gray-0), var(--gray-10));
-  --sunken: light-dark(var(--gray-2), var(--gray-9));
-  /* app chrome (header, sidebar) — a step AWAY from the content
-   * plane so the shell recedes. In light that is the only thing
-   * distinguishing chrome from a white page. */
+  /* ground — four steps, and in dark they are four LIGHTNESS steps
+   * off pure black: page → card → chrome → filled.
+   *   light   #fff        #fff        zinc-50     zinc-100
+   *   dark    #000        zinc-950    zinc-900    zinc-800 */
+  --surface: light-dark(var(--gray-0), var(--gray-12));
+  --raised: light-dark(var(--gray-0), var(--gray-11));
+  /* app chrome (header, sidebar) — off the content plane so the
+   * shell recedes. In light it is the only thing distinguishing
+   * chrome from a white page. */
   --chrome: light-dark(var(--gray-1), var(--gray-10));
+  --sunken: light-dark(var(--gray-2), var(--gray-9));
   --overlay: light-dark(
     oklch(21% 0.006 285.885 / 0.4),
     oklch(0% 0 0 / 0.7)

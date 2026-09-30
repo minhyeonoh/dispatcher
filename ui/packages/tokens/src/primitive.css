@@ -24,6 +24,9 @@
   --gray-9: oklch(27.4% 0.006 286.033);
   --gray-10: oklch(21% 0.006 285.885);
   --gray-11: oklch(14.1% 0.005 285.823);
+  /* Pure black is its own step past the ramp: the dark page sits
+   * here so every surface above it can lift by lightness alone. */
+  --gray-12: #000;
 
   /* accent ramp — blue */
   --accent-1: oklch(97% 0.014 254.604);
