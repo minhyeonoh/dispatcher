@@ -4,6 +4,7 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   useReactTable,
+  type Column,
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
@@ -17,13 +18,31 @@ import {
   jobColumns,
   type ColumnMeta,
 } from "./columns";
+import { filterJobs, type JobFilter } from "./filter";
+import { JobsToolbar } from "./JobsToolbar";
 import { loadPrefs, savePrefs } from "./tablePrefs";
+
+/** Nineteen columns means horizontal scrolling, and scrolling away
+ * from the job name leaves rows unidentifiable — so the name column
+ * is pinned. It carries its own opaque background (rows are
+ * transparent over the panel) or the scrolled cells would show
+ * through it. */
+function pinnedClass(column: Column<JobRow, unknown>): string | false {
+  return (
+    column.getIsPinned() === "left" &&
+    "sticky left-0 z-10 bg-raised group-hover:bg-sunken border-r border-line"
+  );
+}
 
 export function JobsTable({
   jobs,
+  filter,
+  onFilterChange,
   tableId = "jobs",
 }: {
   jobs: JobRow[];
+  filter: JobFilter;
+  onFilterChange: (next: JobFilter) => void;
   /** Prefs are stored per table id, so the arena view and the
    * all-jobs view can carry different column sets. */
   tableId?: string;
@@ -31,6 +50,7 @@ export function JobsTable({
   const cluster = useLive((s) => s.cluster);
   const columns = useMemo(() => jobColumns(cluster), [cluster]);
   const defaults = useMemo(() => defaultVisibility(columns), [columns]);
+  const rows = useMemo(() => filterJobs(jobs, filter), [jobs, filter]);
 
   // Read once — later renders must not clobber the operator's edits.
   const [initial] = useState(() => loadPrefs(tableId, defaults));
@@ -44,9 +64,13 @@ export function JobsTable({
   }, [tableId, visibility, sorting]);
 
   const table = useReactTable({
-    data: jobs,
+    data: rows,
     columns,
-    state: { columnVisibility: visibility, sorting },
+    state: {
+      columnVisibility: visibility,
+      sorting,
+      columnPinning: { left: ["job"], right: [] },
+    },
     onColumnVisibilityChange: setVisibility,
     onSortingChange: setSorting,
     getRowId: (job) => job.job_id,
@@ -56,18 +80,20 @@ export function JobsTable({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-fg-faint">
-          {jobs.length} job{jobs.length === 1 ? "" : "s"}
-        </span>
+      <JobsToolbar
+        filter={filter}
+        onChange={onFilterChange}
+        total={jobs.length}
+        shown={rows.length}
+      >
         <ColumnPicker table={table} columns={columns} />
-      </div>
-      {jobs.length === 0 ? (
+      </JobsToolbar>
+      {rows.length === 0 ? (
         <div className="rounded-panel border border-line p-4 text-sm text-fg-faint">
-          no jobs
+          {jobs.length === 0 ? "no jobs" : "no jobs match this filter"}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-panel border border-line">
+        <div className="overflow-x-auto rounded-panel border border-line bg-raised">
           <Table>
             <THead>
               {table.getHeaderGroups().map((group) => (
@@ -84,6 +110,8 @@ export function JobsTable({
                         className={cn(
                           meta?.align === "right" && "text-right",
                           sortable && "cursor-pointer select-none",
+                          header.column.getIsPinned() === "left" &&
+                            "sticky left-0 z-10 bg-raised border-r border-line",
                         )}
                         onClick={
                           sortable
@@ -115,7 +143,7 @@ export function JobsTable({
             </THead>
             <tbody>
               {table.getRowModel().rows.map((row) => (
-                <TR key={row.id} className="hover:bg-sunken/50">
+                <TR key={row.id} className="group hover:bg-sunken">
                   {row.getVisibleCells().map((cell) => {
                     const meta = cell.column.columnDef.meta as
                       | ColumnMeta
@@ -126,6 +154,7 @@ export function JobsTable({
                         className={cn(
                           meta?.align === "right" && "text-right",
                           meta?.numeric && "tabular-nums",
+                          pinnedClass(cell.column),
                         )}
                       >
                         {flexRender(

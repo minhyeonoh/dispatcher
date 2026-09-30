@@ -159,9 +159,11 @@ export function JobPage() {
     }
   }, [resolution, navigate]);
 
-  const live = jobs[jobKey];
   const query = useQuery({
-    queryKey: ["job", jobKey, live?.counts],
+    // Stable key: the SSE stream invalidates it when this job
+    // changes (see live/invalidate.ts), so the cache entry is
+    // reused instead of a new one per count change.
+    queryKey: ["job", jobKey],
     queryFn: () => api.job(jobKey),
     enabled: resolution.kind !== "alias",
     placeholderData: (prev) => prev,

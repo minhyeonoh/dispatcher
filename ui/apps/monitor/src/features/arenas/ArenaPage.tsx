@@ -1,11 +1,24 @@
 import { Badge } from "@lab/kit";
-import { useParams } from "@tanstack/react-router";
+import {
+  useNavigate,
+  useParams,
+  useSearch,
+} from "@tanstack/react-router";
 import { inSubtree } from "./tree";
+import {
+  filterToSearch,
+  toFilter,
+  type JobFilter,
+} from "../jobs/filter";
 import { JobsTable } from "../jobs/JobsTable";
 import { useOrderedJobs } from "../jobs/useJobs";
 
 export function ArenaPage() {
   const { _splat = "" } = useParams({ from: "/arenas/$" });
+  const filter = toFilter(useSearch({ from: "/arenas/$" }));
+  const navigate = useNavigate({ from: "/arenas/$" });
+  const setFilter = (next: JobFilter) =>
+    void navigate({ search: filterToSearch(next), replace: true });
   const rows = useOrderedJobs().filter((j) =>
     inSubtree(j.arena ?? "", _splat),
   );
@@ -32,7 +45,12 @@ export function ArenaPage() {
       <p className="text-xs text-fg-faint">
         includes every job in this subtree
       </p>
-      <JobsTable jobs={rows} tableId="arena-jobs" />
+      <JobsTable
+        jobs={rows}
+        filter={filter}
+        onFilterChange={setFilter}
+        tableId="arena-jobs"
+      />
     </div>
   );
 }

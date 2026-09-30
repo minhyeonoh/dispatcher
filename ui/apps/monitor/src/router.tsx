@@ -17,6 +17,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
+import { parseJobFilter } from "./features/jobs/filter";
 import { ArenaPage } from "./features/arenas/ArenaPage";
 import { HostsPage } from "./features/hosts/HostsPage";
 import { InstancePage } from "./features/instances/InstancePage";
@@ -34,9 +35,13 @@ const indexRoute = createRoute({
   component: OverviewPage,
 });
 
+// Filters ride in the url so a filtered view is a link someone can
+// send. `validateSearch` is also the sanitiser: a hand-edited or
+// stale link falls back to defaults instead of erroring.
 const jobsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/jobs",
+  validateSearch: parseJobFilter,
   component: JobsPage,
 });
 
@@ -55,6 +60,7 @@ const instanceRoute = createRoute({
 const arenaRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/arenas/$",
+  validateSearch: parseJobFilter,
   component: ArenaPage,
 });
 
