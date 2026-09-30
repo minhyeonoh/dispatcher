@@ -455,6 +455,14 @@ def create_app(
   async def reclaim_attempt(attempt_id: str) -> dict[str, Any]:
     return await ops.reclaim_attempt(_get_state(app), attempt_id, clock_fn)
 
+  @app.post("/attempts/{attempt_id}/trials/{trial_name}/reclaim")
+  async def reclaim_trial(
+    attempt_id: str, trial_name: str
+  ) -> dict[str, Any]:
+    return await ops.reclaim_trial(
+      _get_state(app), attempt_id, trial_name, clock_fn
+    )
+
   @app.post("/attempts/{attempt_id}/retry-done-err")
   async def retry_done_err(
     attempt_id: str, payload: RetryDoneErrRequest | None = None

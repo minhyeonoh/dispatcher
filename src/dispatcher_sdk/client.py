@@ -91,6 +91,19 @@ def reclaim_attempt(server: str, attempt_id: str) -> dict[str, Any]:
   return _request(server, "POST", f"/attempts/{attempt_id}/reclaim", {})
 
 
+def reclaim_trial(
+  server: str, attempt_id: str, trial_name: str
+) -> dict[str, Any]:
+  """Kill one running trial; its task re-queues with a fresh
+  trial. No pause needed."""
+  return _request(
+    server,
+    "POST",
+    f"/attempts/{attempt_id}/trials/{trial_name}/reclaim",
+    {},
+  )
+
+
 def retry_done_err(
   server: str,
   attempt_id: str,

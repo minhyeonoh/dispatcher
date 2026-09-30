@@ -841,3 +841,135 @@ def test_restore_archived_attempt_stays_archived(tmp_path: Path):
     detail = client.get("/attempts/att-restore").json()
     assert detail["archive_kind"] == "manual"
     assert detail["archived_at"] is not None
+
+
+# ── per-trial reclaim ────────────────────────────────────────────
+
+
+def test_reclaim_single_trial_spares_the_rest(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    aid = client.post(
+      "/attempts",
+      json=payload(
+        task_list=["t1", "t2", "t3"],
+        home_root=tmp_path / "a",
+        extra={"paused": True},
+      ),
+    ).json()["attempt_id"]
+    st = client.app.state.dispatcher  # type: ignore[union-attr]
+    sched = st.scheduler
+    sched.patch(aid, paused=False)
+    a1 = sched.dispatch_one()
+    a2 = sched.dispatch_one()
+    assert a1 is not None and a2 is not None
+    sched.patch(aid, paused=True)  # freeze so we can assert
+    kills: list[dict] = []
+    st.runtime.fire_kill_trials = kills.append  # type: ignore[method-assign]
+    resp = client.post(f"/attempts/{aid}/trials/{a1.trial_name}/reclaim")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["task_name"] == a1.task_name
+    # ONLY the zombie's container set was killed.
+    assert len(kills) == 1
+    assert list(kills[0]) == [a1.task_name]
+    detail = client.get(f"/attempts/{aid}").json()
+    # Victim back at its task_list position; the healthy trial
+    # untouched.
+    assert detail["pending"] == [a1.task_name, "t3"]
+    assert set(detail["running"]) == {a2.task_name}
+
+
+def test_reclaim_single_trial_no_pause_needed_and_redispatches(
+  tmp_path: Path,
+):
+  with mk_client(tmp_path) as client:
+    aid = client.post(
+      "/attempts",
+      json=payload(
+        task_list=["t1"],
+        home_root=tmp_path / "a",
+        extra={"paused": True},
+      ),
+    ).json()["attempt_id"]
+    st = client.app.state.dispatcher  # type: ignore[union-attr]
+    sched = st.scheduler
+    sched.patch(aid, paused=False)
+    first = sched.dispatch_one()
+    assert first is not None
+    st.runtime.fire_kill_trials = lambda r: None  # type: ignore[method-assign]
+    resp = client.post(
+      f"/attempts/{aid}/trials/{first.trial_name}/reclaim"
+    )
+    assert resp.status_code == 200  # attempt NOT paused — allowed
+    second = sched.dispatch_one()
+    assert second is not None
+    assert second.task_name == "t1"
+    assert second.trial_name != first.trial_name
+
+
+def test_reclaim_trial_wrong_states(tmp_path: Path):
+  from dispatcher.core.models import Outcome
+
+  with mk_client(tmp_path) as client:
+    aid = client.post(
+      "/attempts",
+      json=payload(
+        task_list=["t1"],
+        home_root=tmp_path / "a",
+        extra={"paused": True},
+      ),
+    ).json()["attempt_id"]
+    st = client.app.state.dispatcher  # type: ignore[union-attr]
+    sched = st.scheduler
+    sched.patch(aid, paused=False)
+    action = sched.dispatch_one()
+    assert action is not None
+    sched.transition_trial(
+      attempt_id=aid,
+      task_name="t1",
+      from_state="running",
+      to_state="done_ok",
+      outcome=Outcome(ok=True),
+    )
+    resp = client.post(
+      f"/attempts/{aid}/trials/{action.trial_name}/reclaim"
+    )
+    assert resp.status_code == 409
+    assert "done_ok" in resp.json()["detail"]
+    assert (
+      client.post(
+        f"/attempts/{aid}/trials/nope__0000001/reclaim"
+      ).status_code
+      == 404
+    )
+    assert (
+      client.post("/attempts/ghost/trials/x__0000001/reclaim").status_code
+      == 404
+    )
+
+
+def test_reclaim_trial_event_survives_restart(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    aid = client.post(
+      "/attempts",
+      json=payload(
+        task_list=["t1"],
+        home_root=tmp_path / "a",
+        attempt_id="A",
+        extra={"paused": True},
+      ),
+    ).json()["attempt_id"]
+    st = client.app.state.dispatcher  # type: ignore[union-attr]
+    sched = st.scheduler
+    sched.patch(aid, paused=False)
+    action = sched.dispatch_one()
+    assert action is not None
+    st.runtime.fire_kill_trials = lambda r: None  # type: ignore[method-assign]
+    client.post(f"/attempts/{aid}/trials/{action.trial_name}/reclaim")
+    sched.patch(aid, paused=True)
+  # Restart: the reclaim event erased the dispatch, so the task
+  # restores as pending — not as unknown-needing-resolution.
+  with mk_client(tmp_path) as client2:
+    detail = client2.get("/attempts/A").json()
+    assert detail["pending"] == ["t1"]
+    assert detail["unknown"] == {}

@@ -481,6 +481,88 @@ def _require_paused_live(
   return state
 
 
+async def reclaim_trial(
+  st: ServerState,
+  attempt_id: str,
+  trial_name: str,
+  clock_fn: Callable[[], datetime],
+) -> dict[str, Any]:
+  """Kill ONE running trial and put its task back on pending —
+  the surgical version of /reclaim, for a zombie sitting on a
+  slot without taking the attempt's healthy trials down with it.
+
+  No pause required: the freed task may re-dispatch on the next
+  tick with a fresh trial name and home, which is usually the
+  point ("kill it and run it again"). The old container's late
+  die event / outcome cannot touch the successor — the
+  stale-observation guard drops signals whose trial_name no
+  longer occupies the bucket."""
+  try:
+    state = st.scheduler.attempt_state(attempt_id)
+  except KeyError as exc:
+    raise NotFound(f"attempt {attempt_id!r} not found") from exc
+  if st.scheduler.is_archived(attempt_id):
+    raise Conflict(
+      f"attempt {attempt_id!r} is archived; POST "
+      f"/attempts/{attempt_id}/unarchive first"
+    )
+  view = st.scheduler.attempt_view(attempt_id)
+  match: tuple[str, TrialView] | None = None
+  for task_name, tv in view.running.items():
+    if tv.trial_name == trial_name:
+      match = (task_name, tv)
+      break
+  if match is None:
+    # Say where it actually is — "already finished" and "typo"
+    # need different operator reactions.
+    for bucket in ("done_ok", "done_err", "unknown", "ghosted"):
+      if any(
+        tv.trial_name == trial_name
+        for tv in getattr(view, bucket).values()
+      ):
+        raise Conflict(
+          f"trial {trial_name!r} is not running (state={bucket})"
+        )
+    raise NotFound(
+      f"trial {trial_name!r} not found in attempt {attempt_id!r}"
+    )
+  task_name, tv = match
+  # Kill first, then reclaim — same order as attempt-level
+  # reclaim, so the container set is already being torn down
+  # when the task becomes dispatchable again.
+  st.runtime.fire_kill_trials({task_name: tv})
+  reclaimed = st.scheduler.reclaim_from_running(attempt_id, task_name)
+  if not reclaimed:
+    # Natural completion won the race between snapshot and now.
+    raise Conflict(
+      f"trial {trial_name!r} completed before it could be reclaimed"
+    )
+  await append_event_async(
+    event_log_path_for(state),
+    {
+      "type": "reclaim",
+      "attempt_id": attempt_id,
+      "task_name": task_name,
+      "trial_name": trial_name,
+      "at": clock_fn().isoformat(),
+    },
+  )
+  st.event_bus.publish(
+    "attempt_reclaimed",
+    {
+      "attempt_id": attempt_id,
+      "reclaimed": [task_name],
+      "skipped_completed": [],
+    },
+  )
+  return {
+    "attempt_id": attempt_id,
+    "task_name": task_name,
+    "trial_name": trial_name,
+    "status": "reclaimed",
+  }
+
+
 async def reclaim_attempt(
   st: ServerState,
   attempt_id: str,
