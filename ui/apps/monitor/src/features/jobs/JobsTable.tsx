@@ -9,12 +9,29 @@ import {
 } from "@lab/kit";
 import { Link } from "@tanstack/react-router";
 import type { JobRow } from "../../live/fold";
+import { useLive } from "../../live/store";
+import { describeBlocked } from "./blocked";
 
 function StateBadge({ job }: { job: JobRow }) {
   if (job.cancelled) return <Badge tone="danger">cancelled</Badge>;
   if (job.archived_at) return <Badge tone="neutral">archived</Badge>;
   if (job.paused) return <Badge tone="warn">paused</Badge>;
   return <Badge tone="ok">active</Badge>;
+}
+
+function Blocked({ job }: { job: JobRow }) {
+  const cluster = useLive((s) => s.cluster);
+  if (!job.blocked) return <span className="text-fg-faint">–</span>;
+  const { label, detail, tone } = describeBlocked(
+    job.blocked,
+    job,
+    cluster,
+  );
+  return (
+    <Badge tone={tone} title={detail}>
+      {label}
+    </Badge>
+  );
 }
 
 export function JobsTable({ jobs }: { jobs: JobRow[] }) {
@@ -32,6 +49,7 @@ export function JobsTable({ jobs }: { jobs: JobRow[] }) {
           <TH className="text-right">pnd</TH>
           <TH className="text-right">tot</TH>
           <TH className="w-40">progress</TH>
+          <TH>blocked</TH>
         </TR>
       </THead>
       <tbody>
@@ -77,6 +95,9 @@ export function JobsTable({ jobs }: { jobs: JobRow[] }) {
                     { value: c.pending, tone: "muted" },
                   ]}
                 />
+              </TD>
+              <TD className="text-xs">
+                <Blocked job={job} />
               </TD>
             </TR>
           );

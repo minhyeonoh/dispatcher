@@ -20,6 +20,8 @@ export interface InstanceView {
   instance_id: string;
   host: string;
   dispatched_at: string;
+  /** null while running, and for instances adopted at startup */
+  finished_at: string | null;
 }
 
 export interface FullJob extends JobSummary {

@@ -34,10 +34,18 @@ describe("attentionRows", () => {
     expect(rows[0]?.kind).toBe("paused_with_errors");
   });
 
-  it("flags work with nothing running", () => {
-    const rows = attentionRows([job("stalled", { pending: 3 })]);
+  it("flags stalled work WITH the scheduler's reason", () => {
+    const rows = attentionRows([
+      job("stalled", { pending: 3 }, { blocked: "no_host" }),
+    ]);
     expect(rows[0]?.kind).toBe("stalled");
-    expect(rows[0]?.detail).toContain("none running");
+    expect(rows[0]?.detail).toContain("no_host");
+  });
+
+  it("stays quiet when pending work is merely awaiting its turn", () => {
+    // blocked=null means the scheduler WOULD dispatch it — that
+    // resolves within a tick and is not attention-worthy.
+    expect(attentionRows([job("turn", { pending: 3 })])).toEqual([]);
   });
 
   it("stays quiet for a healthy job", () => {

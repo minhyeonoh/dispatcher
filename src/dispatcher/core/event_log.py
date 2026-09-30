@@ -27,8 +27,9 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
+from dispatcher.core import clock
 from dispatcher.core.models import (
   OUTCOME_FILENAME,
   DispatchEntry,
@@ -322,7 +323,26 @@ def scan_outcomes(home_root: Path) -> dict[str, Outcome]:
   with a parseable outcome.json. Missing / malformed files are
   omitted — same non-answer as the live poll, so restore and the
   resolver classify them identically (unknown)."""
-  out: dict[str, Outcome] = {}
+  return {
+    instance_id: found.outcome
+    for instance_id, found in scan_outcomes_with_mtime(home_root).items()
+  }
+
+
+class FoundOutcome(NamedTuple):
+  outcome: Outcome
+  finished_at: datetime
+  """The envelope's mtime. The worker writes it immediately before
+  exiting, so it is when the instance finished — within the
+  filesystem's clock. Restore uses this to recover `finished_at`,
+  which lives only in memory otherwise; without it every duration
+  in the record would vanish on the first restart."""
+
+
+def scan_outcomes_with_mtime(
+  home_root: Path,
+) -> dict[str, FoundOutcome]:
+  out: dict[str, FoundOutcome] = {}
   if not home_root.is_dir():
     return out
   for instance_dir in home_root.iterdir():
@@ -332,11 +352,16 @@ def scan_outcomes(home_root: Path) -> dict[str, Outcome]:
     if not path.is_file():
       continue
     try:
-      out[instance_dir.name] = Outcome.model_validate_json(
+      # One stat on a file we are opening anyway.
+      mtime = path.stat().st_mtime
+      parsed = Outcome.model_validate_json(
         path.read_text(encoding="utf-8")
       )
     except Exception:
       continue
+    out[instance_dir.name] = FoundOutcome(
+      outcome=parsed, finished_at=clock.from_timestamp(mtime)
+    )
   return out
 
 

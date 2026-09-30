@@ -134,6 +134,21 @@ InstanceViewState = Literal[
   "done_ok", "done_err", "running", "ghosted", "unknown", "pending"
 ]
 
+BlockReason = Literal[
+  # the job itself
+  "paused",
+  "no_pending",
+  "job_cap",  # its own max_concurrent is full
+  "pool_cap",  # its pool's cap is full
+  "awaiting_resolution",  # pause_on_error, unknown/ghosted pending
+  # the cluster around it
+  "global_cap",
+  "no_host",  # every host full, inactive, or dead
+]
+"""Why a job's pending work is not dispatching. Reported, never
+decided, here — `Scheduler.block_reason` is the authority and is
+the same code path the cursor uses."""
+
 
 class InstanceView(BaseModel):
   """One dispatched instance's snapshot. Pending tasks are plain
@@ -144,6 +159,13 @@ class InstanceView(BaseModel):
   instance_id: str
   host: str
   dispatched_at: datetime
+  # Stamped the first time the instance leaves `running`, so
+  # `finished_at - dispatched_at` is how long it actually ran. Null
+  # while running. In-memory state (like the buckets), but restore
+  # recovers it from the outcome file's mtime — see
+  # `event_log.FoundOutcome` — so durations survive a restart;
+  # an instance with no readable outcome has none to recover.
+  finished_at: datetime | None = None
 
 
 class JobView(BaseModel):

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from coolname import generate_slug
 
 from dispatcher.core.models import (
+  BlockReason,
   DispatchEntry,
   HostSettings,
   InstanceView,
@@ -536,6 +537,17 @@ class Scheduler:
       )
       self._pool_bump(job_id, -1)
 
+    finished_at = instance_view.finished_at
+    if to_state == "running":
+      # unknown→running: the resolver found the container alive, so
+      # it never finished.
+      finished_at = None
+    elif from_state == "running" and finished_at is None:
+      # First exit from running is when it stopped running; a later
+      # unknown→done_ok reclassification must not restamp it, or
+      # every duration would grow by the resolver's lag.
+      finished_at = self._clock()
+
     destination = getattr(runtime, to_state)
     destination[task_id] = InstanceView(
       task_id=task_id,
@@ -543,6 +555,7 @@ class Scheduler:
       instance_id=instance_view.instance_id,
       host=host,
       dispatched_at=instance_view.dispatched_at,
+      finished_at=finished_at,
     )
     if to_state == "running":
       self._host_running[host] = self._host_running.get(host, 0) + 1
@@ -763,25 +776,52 @@ class Scheduler:
     return None
 
   def _job_dispatchable(self, runtime: _JobRuntime) -> bool:
+    return self._job_block_reason(runtime) is None
+
+  def _job_block_reason(self, runtime: _JobRuntime) -> BlockReason | None:
+    """Why the cursor skips this job, or None if it would dispatch.
+
+    `_job_dispatchable` is defined as "no reason", so the answer the
+    operator reads can never drift from the decision the scheduler
+    made — they are one function."""
     if runtime.state.paused:
-      return False
+      return "paused"
     if not runtime.pending:
-      return False
+      return "no_pending"
     if runtime.state.max_concurrent is not None:
       if len(runtime.running) >= runtime.state.max_concurrent:
-        return False
+        return "job_cap"
     pool = runtime.state.pool or "default"
     pool_cap = self._pool_caps.get(pool)
     if pool_cap is not None:
       if self._pool_running.get(pool, 0) >= pool_cap:
-        return False
+        return "pool_cap"
     # Unresolved instances might still become done_err; dispatching
     # ahead of that resolution would race the pause the operator
     # asked for.
     if self._effective_pause_on_error(runtime.state):
       if runtime.unknown or runtime.ghosted:
-        return False
-    return True
+        return "awaiting_resolution"
+    return None
+
+  def block_reason(self, job_id: str) -> BlockReason | None:
+    """What holds this job's pending work back right now, or None
+    when it is simply waiting its turn in the rotation.
+
+    Layered in the order `dispatch_one` checks them, so the reason
+    is the one that would actually stop this job: the global cap is
+    read before any job is picked, the host fleet after."""
+    runtime = self._jobs[job_id]
+    if not runtime.pending:
+      return None
+    if self.running_total >= self._max_concurrent:
+      return "global_cap"
+    own = self._job_block_reason(runtime)
+    if own is not None:
+      return None if own == "no_pending" else own
+    if pick_host(self._hosts, self._host_running) is None:
+      return "no_host"
+    return None
 
   def _advance_cursor(self) -> None:
     if not self._active_order:

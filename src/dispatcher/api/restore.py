@@ -13,7 +13,7 @@ from dispatcher.core.event_log import (
   find_event_logs,
   read_events,
   replay_events,
-  scan_outcomes,
+  scan_outcomes_with_mtime,
   seq_in_instance_id,
 )
 from dispatcher.core.models import InstanceView
@@ -52,7 +52,7 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
     if result is None:
       continue  # cancelled — log stays as audit trail
     job, dispatch_log = result
-    completed = scan_outcomes(job.home_root)
+    completed = scan_outcomes_with_mtime(job.home_root)
     done_ok: dict[str, InstanceView] = {}
     done_err: dict[str, InstanceView] = {}
     unknown: dict[str, InstanceView] = {}
@@ -70,8 +70,9 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
       done_err.pop(entry.task_id, None)
       unknown.pop(entry.task_id, None)
       latest_instance[entry.task_id] = entry.instance_id
-      outcome = completed.get(entry.instance_id)
-      if outcome is not None:
+      found = completed.get(entry.instance_id)
+      if found is not None:
+        outcome = found.outcome
         error_present = (not outcome.ok) or outcome.error is not None
         if error_present and outcome.infra:
           # The same requeue rule the live path applies — an instance
@@ -90,6 +91,10 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
           instance_id=entry.instance_id,
           host=entry.host,
           dispatched_at=entry.dispatched_at,
+          # Recovered from the envelope's mtime: the field is
+          # in-memory state otherwise, so without this every
+          # duration in the record dies with the process.
+          finished_at=found.finished_at,
         )
         (done_err if error_present else done_ok)[entry.task_id] = tv
       else:
@@ -142,14 +147,14 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
     instance_to_task = {
       instance: task for task, instance in latest_instance.items()
     }
-    for instance_id, outcome in completed.items():
+    for instance_id, found in completed.items():
       task_id = instance_to_task.get(instance_id)
       if task_id is None:
         continue
       # Skip outcomes routed back to pending by the infra rule.
       if task_id not in done_ok and task_id not in done_err:
         continue
-      scheduler.seed_outcome(job.job_id, task_id, outcome)
+      scheduler.seed_outcome(job.job_id, task_id, found.outcome)
     # Re-archive: replay left the marks set; buckets + caches are
     # rebuilt, so the bytes regenerate. A precondition failure
     # (something reclassified to unknown) leaves it live.

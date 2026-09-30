@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher.api.settings import Settings
+from dispatcher.core.models import BlockReason
 
 if TYPE_CHECKING:
   from dispatcher.core.models import InstanceView
@@ -50,6 +51,10 @@ class JobSummaryOut(BaseModel):
   alias: str
   arena: str = ""
   pool: str = "default"
+  # What holds this job's pending work back right now; null when it
+  # is simply waiting its turn (or has nothing pending). Straight
+  # from the scheduler's own decision — see models.BlockReason.
+  blocked: BlockReason | None = None
   image_id: str = ""
   source_sha256: str = ""
   archived_at: datetime | None = None
@@ -60,6 +65,9 @@ class InstanceViewOut(BaseModel):
   instance_id: str
   host: str
   dispatched_at: datetime
+  # Null while running, or when nothing on disk dates the finish
+  # (an instance parked in unknown after a restart).
+  finished_at: datetime | None = None
 
 
 class FullJobOut(JobSummaryOut):
@@ -137,6 +145,7 @@ def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
     alias=state.alias,
     arena=state.arena,
     pool=state.pool or "default",
+    blocked=scheduler.block_reason(job_id),
     image_id=state.image_id,
     source_sha256=state.source_sha256,
     archived_at=state.archived_at,
@@ -240,6 +249,7 @@ def full_job_view(scheduler: Scheduler, job_id: str) -> FullJobOut:
         instance_id=tv.instance_id,
         host=tv.host,
         dispatched_at=tv.dispatched_at,
+        finished_at=tv.finished_at,
       )
       for tn, tv in d.items()
     }

@@ -12,10 +12,15 @@ import {
 } from "@lab/kit";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../../api/client";
-import type { InstanceView } from "../../api/types";
+import type { FullJob, InstanceView } from "../../api/types";
 import { useLive } from "../../live/store";
+import {
+  describeBlocked,
+  durationSeconds,
+  formatDuration,
+} from "./blocked";
 import { resolveJobKey } from "./resolve";
 
 const BUCKETS = [
@@ -33,6 +38,24 @@ const BUCKET_TONE = {
   done_err: "danger",
   done_ok: "ok",
 } as const;
+
+/** Ticks for a running instance (its elapsed time is live), static
+ * once the instance has a finished_at. */
+function Elapsed({ view }: { view: InstanceView }) {
+  const running = !view.finished_at;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  const seconds = durationSeconds(
+    view.dispatched_at,
+    view.finished_at,
+    now,
+  );
+  return <>{formatDuration(seconds)}</>;
+}
 
 function BucketCard({
   name,
@@ -60,6 +83,9 @@ function BucketCard({
             <TH>instance</TH>
             <TH>host</TH>
             <TH>dispatched</TH>
+            <TH className="text-right">
+              {name === "running" ? "running for" : "took"}
+            </TH>
           </TR>
         </THead>
         <tbody>
@@ -79,11 +105,37 @@ function BucketCard({
               <TD className="text-fg-muted">
                 {new Date(tv.dispatched_at).toLocaleString()}
               </TD>
+              <TD className="text-right tabular-nums text-fg-muted">
+                <Elapsed view={tv} />
+              </TD>
             </TR>
           ))}
         </tbody>
       </Table>
     </Card>
+  );
+}
+
+/** Why these pending tasks are not dispatching — the answer comes
+ * from the scheduler, so it is the reason, not a guess. */
+function BlockedNote({ job }: { job: FullJob }) {
+  const cluster = useLive((s) => s.cluster);
+  if (!job.blocked)
+    return (
+      <span className="text-xs text-fg-faint">
+        waiting its turn in the rotation
+      </span>
+    );
+  const { label, detail, tone } = describeBlocked(
+    job.blocked,
+    job,
+    cluster,
+  );
+  return (
+    <span className="flex items-center gap-2 text-xs">
+      <Badge tone={tone}>{label}</Badge>
+      <span className="text-fg-muted">{detail}</span>
+    </span>
   );
 }
 
@@ -159,6 +211,7 @@ export function JobPage() {
               pending
               <Badge>{job.pending.length}</Badge>
             </CardTitle>
+            <BlockedNote job={job} />
           </CardHeader>
           <CardBody className="flex flex-wrap gap-1.5">
             {job.pending.map((task) => (

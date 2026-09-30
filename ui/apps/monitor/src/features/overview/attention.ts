@@ -10,7 +10,8 @@ export type ReasonKind =
   | "unresolved"
   /** the job stopped itself on an error (pause_on_error) */
   | "paused_with_errors"
-  /** work left, nothing running: capacity, caps, or a pause */
+  /** work left and nothing running, with the scheduler's own reason
+   * attached — never a guess about why */
   | "stalled"
   /** finished, but some tasks ended in error */
   | "errors";
@@ -51,12 +52,14 @@ export function attentionRows(jobs: JobRow[]): Attention[] {
       continue;
     }
     if (c.pending > 0 && c.running === 0) {
+      // `blocked` is the scheduler's own answer. Null means the job
+      // IS dispatchable and merely has not had its turn yet — that
+      // resolves itself within a tick, so it is not attention-worthy.
+      if (!job.blocked) continue;
       rows.push({
         job,
         kind: "stalled",
-        detail: job.paused
-          ? `paused, ${c.pending} task(s) waiting`
-          : `${c.pending} task(s) waiting, none running`,
+        detail: `${c.pending} task(s) waiting · ${job.blocked}`,
       });
       continue;
     }

@@ -1285,6 +1285,26 @@
             "title": "Pool",
             "default": "default"
           },
+          "blocked": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "paused",
+                  "no_pending",
+                  "job_cap",
+                  "pool_cap",
+                  "awaiting_resolution",
+                  "global_cap",
+                  "no_host"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked"
+          },
           "image_id": {
             "type": "string",
             "title": "Image Id",

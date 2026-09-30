@@ -507,6 +507,8 @@ export interface components {
              * @default default
              */
             pool: string;
+            /** Blocked */
+            blocked?: ("paused" | "no_pending" | "job_cap" | "pool_cap" | "awaiting_resolution" | "global_cap" | "no_host") | null;
             /**
              * Image Id
              * @default
