@@ -1,11 +1,19 @@
 import { Badge } from "@lab/kit";
+import { Link } from "@tanstack/react-router";
 import { useLive } from "../../live/store";
 
+/** The header carries only what is true of the whole cluster. Which
+ * host is how full belongs on /hosts — repeating it here scaled
+ * with the fleet and pushed everything else off the bar.
+ *
+ * The one per-host fact that survives is a host being down, because
+ * that changes what you do next and would otherwise need a page
+ * visit to notice. It renders only when something IS down. */
 export function ClusterBar() {
   const cluster = useLive((s) => s.cluster);
   const connected = useLive((s) => s.connected);
-  const hosts = cluster?.settings.hosts ?? {};
-  const perHost = cluster?.running_per_host ?? {};
+  const hosts = Object.entries(cluster?.settings.hosts ?? {});
+  const down = hosts.filter(([, h]) => !h.active || !h.alive);
   return (
     <div className="flex items-center gap-3 text-sm">
       <span
@@ -14,7 +22,7 @@ export function ClusterBar() {
           connected ? "bg-ok" : "bg-danger"
         }`}
       />
-      <span className="font-semibold">dispatcher</span>
+      <span className="font-semibold tracking-tight">dispatcher</span>
       {cluster && (
         <>
           <span className="text-fg-muted">{cluster.self_host}</span>
@@ -22,17 +30,21 @@ export function ClusterBar() {
             running {cluster.running_total}/
             {cluster.settings.max_concurrent}
           </Badge>
-          <div className="flex items-center gap-1.5">
-            {Object.entries(hosts).map(([host, hs]) => (
+          {down.length > 0 && (
+            <Link to="/hosts">
               <Badge
-                key={host}
-                tone={hs.active ? "neutral" : "warn"}
-                title={hs.active ? undefined : "inactive"}
+                tone="warn"
+                title={down
+                  .map(
+                    ([name, h]) =>
+                      `${name}: ${!h.alive ? "dead" : "inactive"}`,
+                  )
+                  .join(", ")}
               >
-                {host} {perHost[host] ?? 0}/{hs.max_concurrent}
+                {down.length} host{down.length === 1 ? "" : "s"} down
               </Badge>
-            ))}
-          </div>
+            </Link>
+          )}
         </>
       )}
     </div>
