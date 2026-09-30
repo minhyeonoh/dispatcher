@@ -1,0 +1,17 @@
+INFO:     Started server process [2711750]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:7200 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54290 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50238 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50248 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50258 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50272 - "GET /api/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50286 - "GET /api/docs HTTP/1.1" 200 OK
+orphan_gc: removed 4 container(s) — ml10=4
+INFO:     127.0.0.1:60398 - "POST /api/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60414 - "GET /api/arenas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56452 - "GET /api/jobs/job-20260930T134042401107-smoke-ui HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56466 - "DELETE /api/jobs/job-20260930T134042401107-smoke-ui HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56470 - "GET /api/arenas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56472 - "GET /api/jobs HTTP/1.1" 200 OK

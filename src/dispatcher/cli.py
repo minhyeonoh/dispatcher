@@ -46,7 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     "--ui-dist",
     type=Path,
     default=None,
-    help="built web UI to serve at /ui",
+    help=(
+      "built web UI to serve at the root url space (the JSON API "
+      "stays under /api); omit for an API-only server"
+    ),
   )
   monitor = sub.add_parser(
     "monitor", help="live terminal monitor over the SSE stream"
