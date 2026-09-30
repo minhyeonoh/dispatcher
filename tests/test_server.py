@@ -643,6 +643,56 @@ def test_ui_mount_serves_spa_with_deep_link_fallback(
     assert client.get("/api/nope").status_code == 404
 
 
+def test_instance_outcome_is_read_per_instance(tmp_path: Path):
+  # The scheduler caches the LATEST outcome per task, so a
+  # superseded instance must be read from its own home or a requeue
+  # investigation would be handed its successor's result.
+  import json
+
+  with mk_client(tmp_path) as client:
+    home = tmp_path / "a"
+    aid = client.post(
+      "/jobs",
+      json=payload(
+        task_ids=["t1"], home_root=home, extra={"paused": True}
+      ),
+    ).json()["job_id"]
+    for instance, body in (
+      ("t1__0000001", {"ok": False, "infra": True}),
+      ("t1__0000002", {"ok": True, "data": {"reward": 0.5}}),
+    ):
+      d = home / instance
+      d.mkdir(parents=True, exist_ok=True)
+      (d / "outcome.json").write_text(json.dumps(body))
+
+    first = client.get(f"/jobs/{aid}/instances/t1__0000001/outcome")
+    assert first.status_code == 200
+    assert first.json()["outcome"]["infra"] is True
+    second = client.get(f"/jobs/{aid}/instances/t1__0000002/outcome")
+    assert second.json()["outcome"]["data"] == {"reward": 0.5}
+
+
+def test_instance_outcome_404s(tmp_path: Path):
+  with mk_client(tmp_path) as client:
+    aid = client.post(
+      "/jobs",
+      json=payload(
+        task_ids=["t1"],
+        home_root=tmp_path / "a",
+        extra={"paused": True},
+      ),
+    ).json()["job_id"]
+    # No envelope on disk yet.
+    assert (
+      client.get(f"/jobs/{aid}/instances/t1__0000001/outcome").status_code
+      == 404
+    )
+    assert (
+      client.get("/jobs/ghost/instances/x__0000001/outcome").status_code
+      == 404
+    )
+
+
 # ── restore ──────────────────────────────────────────────────────
 
 

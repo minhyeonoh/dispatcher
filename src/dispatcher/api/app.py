@@ -485,6 +485,14 @@ def create_app(
   async def reclaim_job(job_id: str) -> dict[str, Any]:
     return await ops.reclaim_job(_get_state(app), job_id, clock_fn)
 
+  @api.get("/jobs/{job_id}/instances/{instance_id}/outcome")
+  async def get_instance_outcome(
+    job_id: str, instance_id: str
+  ) -> dict[str, Any]:
+    return await ops.get_instance_outcome(
+      _get_state(app), job_id, instance_id
+    )
+
   @api.post("/jobs/{job_id}/instances/{instance_id}/reclaim")
   async def reclaim_instance(
     job_id: str, instance_id: str

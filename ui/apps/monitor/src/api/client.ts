@@ -1,4 +1,10 @@
-import type { ArenaDetail, ArenaSummary, FullJob, StateOut } from "./types";
+import type {
+  ArenaDetail,
+  ArenaSummary,
+  FullJob,
+  InstanceOutcome,
+  StateOut,
+} from "./types";
 
 /** The JSON surface. The root url space belongs to the pages. */
 export const API = "/api";
@@ -40,6 +46,11 @@ export const api = {
   state: () => request<StateOut>("/state"),
   job: (jobId: string) =>
     request<FullJob>(`/jobs/${encodeURIComponent(jobId)}`),
+  instanceOutcome: (jobId: string, instanceId: string) =>
+    request<InstanceOutcome>(
+      `/jobs/${encodeURIComponent(jobId)}/instances/` +
+        `${encodeURIComponent(instanceId)}/outcome`,
+    ),
   arenas: () => request<ArenaSummary[]>("/arenas"),
   arena: (path: string) => request<ArenaDetail>(`/arenas/${path}`),
 };

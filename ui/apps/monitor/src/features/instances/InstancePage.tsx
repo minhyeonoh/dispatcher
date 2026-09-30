@@ -65,6 +65,77 @@ function Row({ label, children }: { label: string; children: unknown }) {
   );
 }
 
+/** The result envelope, verbatim. Contract fields get their own
+ * line because the dispatcher's whole reading of a result is those
+ * three; `data` is the research repo's and is shown raw. */
+function OutcomeCard({
+  jobId,
+  instanceId,
+}: {
+  jobId: string;
+  instanceId: string;
+}) {
+  const query = useQuery({
+    queryKey: ["outcome", jobId, instanceId],
+    queryFn: () => api.instanceOutcome(jobId, instanceId),
+    // An envelope never changes once written, so this is the one
+    // thing in the app that is safe to cache forever.
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>outcome</CardTitle>
+        <span className="font-mono text-xs text-fg-faint">
+          outcome.json
+        </span>
+      </CardHeader>
+      <CardBody>
+        {query.isPending && (
+          <span className="text-sm text-fg-faint">loading…</span>
+        )}
+        {query.isError && (
+          <p className="text-sm text-fg-muted">
+            No readable envelope. The instance may never have written
+            one (killed, or still running), or it has not become
+            visible on this client yet.
+          </p>
+        )}
+        {query.data && (
+          <>
+            <div className="flex flex-wrap items-center gap-2 pb-3">
+              <Badge tone={query.data.outcome.ok ? "ok" : "danger"}>
+                {query.data.outcome.ok ? "ok" : "error"}
+              </Badge>
+              {query.data.outcome.infra && (
+                <Badge tone="warn">infra — requeued, not scored</Badge>
+              )}
+              {query.data.outcome.error && (
+                <span className="font-mono text-xs text-danger">
+                  {query.data.outcome.error.type}
+                  {query.data.outcome.error.exit_code !== null &&
+                    ` (exit ${query.data.outcome.error.exit_code})`}
+                </span>
+              )}
+            </div>
+            {query.data.outcome.error?.message && (
+              <pre className="mb-3 overflow-x-auto rounded-control bg-sunken p-2 font-mono text-xs whitespace-pre-wrap">
+                {query.data.outcome.error.message}
+              </pre>
+            )}
+            <div className="mb-1 text-xs text-fg-faint">data</div>
+            <pre className="overflow-x-auto font-mono text-xs leading-relaxed">
+              {JSON.stringify(query.data.outcome.data, null, 2)}
+            </pre>
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 export function InstancePage() {
   const { jobKey, instanceId } = useParams({
     from: "/jobs/$jobKey/instances/$instanceId",
@@ -154,6 +225,8 @@ export function InstancePage() {
           )}
         </CardBody>
       </Card>
+
+      <OutcomeCard jobId={job.job_id} instanceId={instanceId} />
 
       {found && (
         <Card>

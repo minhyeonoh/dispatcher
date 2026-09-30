@@ -32,3 +32,27 @@ export interface FullJob extends JobSummary {
   ghosted: Record<string, InstanceView>;
   unknown: Record<string, InstanceView>;
 }
+
+/** `GET /api/jobs/{id}/instances/{iid}/outcome` — read from the
+ * instance's OWN home, so a superseded instance returns its own
+ * envelope rather than its successor's. Immutable once written. */
+export interface OutcomeError {
+  type: string;
+  message: string;
+  exit_code: number | null;
+}
+
+export interface Outcome {
+  ok: boolean;
+  error: OutcomeError | null;
+  infra: boolean;
+  data: unknown;
+}
+
+export interface InstanceOutcome {
+  job_id: string;
+  instance_id: string;
+  task_id: string | null;
+  home: string;
+  outcome: Outcome;
+}

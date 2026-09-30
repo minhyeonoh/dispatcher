@@ -34,6 +34,10 @@ from dispatcher.core.event_log import (
   event_log_path_for,
   replay_events,
 )
+from dispatcher.core.outcome import (
+  instance_home_for,
+  read_completion,
+)
 from dispatcher.core.scheduler import (
   AliasCollisionError,
   AliasFormatError,
@@ -475,6 +479,59 @@ def _require_paused_live(
       ),
     )
   return state
+
+
+def _task_of_instance(
+  st: ServerState, job_id: str, instance_id: str
+) -> str | None:
+  """Which task an instance belongs to, or None once a later
+  instance has superseded it — the buckets hold one instance per
+  task, so a requeued predecessor is simply not in them."""
+  view = st.scheduler.job_view(job_id)
+  for bucket in (
+    "running",
+    "done_ok",
+    "done_err",
+    "unknown",
+    "ghosted",
+  ):
+    for task_id, tv in getattr(view, bucket).items():
+      if tv.instance_id == instance_id:
+        return task_id
+  return None
+
+
+async def get_instance_outcome(
+  st: ServerState, job_id: str, instance_id: str
+) -> dict[str, Any]:
+  """The result envelope one instance wrote.
+
+  Read from the instance's own home rather than the scheduler's
+  cache: the cache holds the LATEST outcome per task, so a
+  superseded instance — exactly the one a requeue investigation is
+  about — would come back as its successor's result. The file is
+  the per-instance record.
+
+  Envelopes are immutable once written, which is what makes this
+  worth caching hard on the client."""
+  try:
+    state = st.scheduler.job_state(job_id)
+  except KeyError as exc:
+    raise NotFound(f"job {job_id!r} not found") from exc
+  home = instance_home_for(state.home_root, instance_id)
+  snapshot = await asyncio.to_thread(read_completion, home)
+  if snapshot is None or snapshot.outcome is None:
+    raise NotFound(
+      f"no readable outcome for instance {instance_id!r} "
+      f"(never written, or not yet visible on this client)"
+    )
+  return {
+    "job_id": job_id,
+    "instance_id": instance_id,
+    "task_id": _task_of_instance(st, job_id, instance_id),
+    "home": str(home),
+    "outcome": snapshot.outcome.model_dump(mode="json"),
+  }
 
 
 async def reclaim_instance(
