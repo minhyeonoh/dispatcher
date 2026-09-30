@@ -9,6 +9,7 @@ import {
 import { Link } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { useLive } from "../../live/store";
+import { jobTitle } from "../jobs/naming";
 import { useOrderedJobs } from "../jobs/useJobs";
 import { attentionRows, type ReasonKind } from "./attention";
 
@@ -48,7 +49,7 @@ function Attention() {
                   params={{ jobKey: job.job_id }}
                   className="font-medium text-accent hover:underline"
                 >
-                  {job.alias || job.label}
+                  {jobTitle(job)}
                 </Link>
                 <span className="text-fg-muted">{detail}</span>
               </li>

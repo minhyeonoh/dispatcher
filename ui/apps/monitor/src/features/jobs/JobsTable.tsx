@@ -11,6 +11,7 @@ import { Link } from "@tanstack/react-router";
 import type { JobRow } from "../../live/fold";
 import { useLive } from "../../live/store";
 import { describeBlocked } from "./blocked";
+import { jobSubtitle, jobTitle } from "./naming";
 
 function StateBadge({ job }: { job: JobRow }) {
   if (job.cancelled) return <Badge tone="danger">cancelled</Badge>;
@@ -63,11 +64,11 @@ export function JobsTable({ jobs }: { jobs: JobRow[] }) {
                   params={{ jobKey: job.job_id }}
                   className="font-medium text-accent hover:underline"
                 >
-                  {job.alias || job.label}
+                  {jobTitle(job)}
                 </Link>
-                {job.alias && (
-                  <span className="ml-2 text-xs text-fg-faint">
-                    {job.label}
+                {jobSubtitle(job) && (
+                  <span className="ml-2 font-mono text-xs text-fg-faint">
+                    {jobSubtitle(job)}
                   </span>
                 )}
               </TD>

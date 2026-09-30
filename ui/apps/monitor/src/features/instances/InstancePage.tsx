@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { api } from "../../api/client";
 import type { FullJob, InstanceView } from "../../api/types";
+import { jobTitle } from "../jobs/naming";
 
 type Bucket = "running" | "unknown" | "ghosted" | "done_err" | "done_ok";
 
@@ -94,7 +95,7 @@ export function InstancePage() {
             params={{ jobKey: job.job_id }}
             className="text-accent hover:underline"
           >
-            {job.alias || job.label}
+            {jobTitle(job)}
           </Link>
           {found && <> · task {found.task}</>}
         </div>
