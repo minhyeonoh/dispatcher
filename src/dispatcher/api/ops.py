@@ -5,6 +5,7 @@ server maps them to status codes at the edge."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -28,8 +29,8 @@ from dispatcher.api.wire import (
 )
 from dispatcher.core import clock
 from dispatcher.core.event_log import (
-  append_event,
-  append_index_entry,
+  append_event_async,
+  append_index_entry_async,
   event_log_path_for,
   replay_events,
 )
@@ -41,7 +42,6 @@ from dispatcher.core.scheduler import (
 )
 
 if TYPE_CHECKING:
-  import asyncio
   from collections.abc import Callable
   from datetime import datetime
 
@@ -215,11 +215,15 @@ def _decode_source_tar(payload: dict[str, Any]) -> bytes | None:
   return blob
 
 
-def submit_attempt(
+async def submit_attempt(
   st: ServerState,
   payload: dict[str, Any],
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
+  # INVARIANT: no await between validation and scheduler.submit —
+  # the home_root-uniqueness check reads the scheduler, and an
+  # interleaved concurrent submit could otherwise double-claim
+  # one home. Everything before scheduler.submit stays sync.
   source_blob = _decode_source_tar(payload)
   if source_blob is None and st.settings.require_source:
     raise Invalid(
@@ -265,11 +269,16 @@ def submit_attempt(
   # the record it promised would be a silent contract break.
   if source_blob is not None:
     source_path = attempt.home_root / SOURCE_TAR_FILENAME
-    try:
+
+    def _write_source() -> None:
       source_path.parent.mkdir(parents=True, exist_ok=True)
       tmp = source_path.with_suffix(".tar.tmp")
       tmp.write_bytes(source_blob)
       tmp.replace(source_path)
+
+    try:
+      # Off the loop (R5): this can be hundreds of MB onto NFS.
+      await asyncio.to_thread(_write_source)
     except OSError as exc:
       st.scheduler.cancel(attempt.attempt_id)
       raise Internal(f"source archive write failed: {exc}") from exc
@@ -278,8 +287,8 @@ def submit_attempt(
   # recoverable from the log side.
   log_path = event_log_path_for(attempt)
   for ev in events:
-    append_event(log_path, ev)
-  append_index_entry(
+    await append_event_async(log_path, ev)
+  await append_index_entry_async(
     st.config.data_dir,
     {
       "event": "submit",
@@ -314,7 +323,7 @@ _ALLOWED_PATCH_KNOBS = frozenset(
 )
 
 
-def patch_attempt(
+async def patch_attempt(
   st: ServerState,
   attempt_id: str,
   payload: dict[str, Any],
@@ -388,7 +397,7 @@ def patch_attempt(
   log_path = event_log_path_for(state)
   at = clock_fn().isoformat()
   for knob, value in payload.items():
-    append_event(
+    await append_event_async(
       log_path,
       {
         "type": "patch",
@@ -406,7 +415,7 @@ def patch_attempt(
   return snapshot_attempt(st.scheduler, attempt_id)
 
 
-def cancel_attempt(
+async def cancel_attempt(
   st: ServerState,
   attempt_id: str,
   clock_fn: Callable[[], datetime],
@@ -419,7 +428,7 @@ def cancel_attempt(
   # Fire-and-forget remote kill; the GC catches stragglers.
   st.runtime.fire_kill_trials(runtime_state.running)
   log_path = event_log_path_for(state)
-  append_event(
+  await append_event_async(
     log_path,
     {
       "type": "cancel",
@@ -427,7 +436,7 @@ def cancel_attempt(
       "at": clock_fn().isoformat(),
     },
   )
-  append_index_entry(
+  await append_index_entry_async(
     st.config.data_dir,
     {
       "event": "cancel",
@@ -472,7 +481,7 @@ def _require_paused_live(
   return state
 
 
-def reclaim_attempt(
+async def reclaim_attempt(
   st: ServerState,
   attempt_id: str,
   clock_fn: Callable[[], datetime],
@@ -490,7 +499,7 @@ def reclaim_attempt(
   for task_name, tv in running_snapshot.items():
     if st.scheduler.reclaim_from_running(attempt_id, task_name):
       reclaimed.append(task_name)
-      append_event(
+      await append_event_async(
         log_path,
         {
           "type": "reclaim",
@@ -518,7 +527,7 @@ def reclaim_attempt(
   }
 
 
-def retry_done_err(
+async def retry_done_err(
   st: ServerState,
   attempt_id: str,
   payload: RetryDoneErrRequest | None,
@@ -547,7 +556,10 @@ def retry_done_err(
       if since_epoch is not None:
         outcome_path = state.home_root / tv.trial_name / "outcome.json"
         try:
-          if outcome_path.stat().st_mtime < since_epoch:
+          mtime = await asyncio.to_thread(
+            lambda p=outcome_path: p.stat().st_mtime
+          )
+          if mtime < since_epoch:
             continue
         except OSError:
           # Nothing to compare against — do NOT retry, so the
@@ -563,7 +575,7 @@ def retry_done_err(
     if st.scheduler.retry_from_done_err(attempt_id, task_name):
       retried.append(task_name)
       st.metrics.undo_done_err(attempt_id)
-      append_event(
+      await append_event_async(
         log_path,
         {
           "type": "retry",
@@ -591,7 +603,7 @@ def retry_done_err(
   }
 
 
-def archive_attempt(
+async def archive_attempt(
   st: ServerState,
   attempt_id: str,
   clock_fn: Callable[[], datetime],
@@ -611,7 +623,7 @@ def archive_attempt(
   except NotArchivableError as exc:
     raise Conflict(exc.reason) from exc
   state = st.scheduler.attempt_state(attempt_id)
-  append_event(
+  await append_event_async(
     event_log_path_for(state),
     {
       "type": "archive",
@@ -643,7 +655,7 @@ def archive_attempt(
   }
 
 
-def unarchive_attempt(
+async def unarchive_attempt(
   st: ServerState,
   attempt_id: str,
   clock_fn: Callable[[], datetime],
@@ -657,7 +669,7 @@ def unarchive_attempt(
       f"attempt {exc.attempt_id!r} is not archived",
     ) from exc
   state = st.scheduler.attempt_state(attempt_id)
-  append_event(
+  await append_event_async(
     event_log_path_for(state),
     {
       "type": "unarchive",

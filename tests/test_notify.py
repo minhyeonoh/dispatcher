@@ -26,7 +26,7 @@ def run_check(manager: NotifyManager, aid: str) -> None:
   import asyncio
 
   async def _c() -> None:
-    manager.check(aid)
+    await manager.check(aid)
 
   asyncio.run(_c())
 

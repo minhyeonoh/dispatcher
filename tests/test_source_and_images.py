@@ -374,12 +374,8 @@ def test_bootstrap_without_source_is_plain_exec(tmp_path: Path):
 def test_bootstrap_unreadable_source_exits_75(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-  monkeypatch.setenv(
-    "DISPATCHER_SOURCE", str(tmp_path / "missing.tar")
-  )
-  monkeypatch.setenv(
-    "DISPATCHER_SOURCE_DEST", str(tmp_path / "d")
-  )
+  monkeypatch.setenv("DISPATCHER_SOURCE", str(tmp_path / "missing.tar"))
+  monkeypatch.setenv("DISPATCHER_SOURCE_DEST", str(tmp_path / "d"))
   import dispatcher_sdk.bootstrap as bs
 
   # Direct call (subprocess would sleep through retries).

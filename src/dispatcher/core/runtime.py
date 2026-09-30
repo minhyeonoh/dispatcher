@@ -48,7 +48,10 @@ from dispatcher.core.containers import (
   probe_trial,
 )
 from dispatcher.core.dispatch import DispatchError, docker_dispatch
-from dispatcher.core.event_log import append_event, event_log_path_for
+from dispatcher.core.event_log import (
+  append_event_async,
+  event_log_path_for,
+)
 from dispatcher.core.models import (
   INFRA_EXIT_CODES,
   TRIAL_SPEC_FILENAME,
@@ -167,14 +170,14 @@ class DispatcherRuntime:
     while True:
       await self._dispatch_available()
       if poll_active:
-        self._poll_all()
+        await self._poll_all()
       await asyncio.sleep(self._tick_interval)
 
   async def run_until_done(self, *, max_ticks: int | None = None) -> None:
     ticks = 0
     while self._sched.has_work():
       await self._dispatch_available()
-      self._poll_all()
+      await self._poll_all()
       await asyncio.sleep(self._tick_interval)
       ticks += 1
       if max_ticks is not None and ticks >= max_ticks:
@@ -190,7 +193,6 @@ class DispatcherRuntime:
   async def _do_dispatch(self, action: DispatchEntry) -> None:
     state = self._sched.attempt_state(action.attempt_id)
     trial_home = trial_home_for(state.home_root, action.trial_name)
-    trial_home.mkdir(parents=True, exist_ok=True)
     spec = {
       "attempt_id": action.attempt_id,
       "task_name": action.task_name,
@@ -198,9 +200,16 @@ class DispatcherRuntime:
       "home": state.container.home_mount,
       "payload": state.payloads.get(action.task_name),
     }
-    (trial_home / TRIAL_SPEC_FILENAME).write_text(
-      json.dumps(spec, indent=2)
-    )
+
+    def _stage() -> None:
+      # NFS writes off the loop (R5): a slow write stalls this
+      # dispatch, not the whole runtime.
+      trial_home.mkdir(parents=True, exist_ok=True)
+      (trial_home / TRIAL_SPEC_FILENAME).write_text(
+        json.dumps(spec, indent=2)
+      )
+
+    await asyncio.to_thread(_stage)
     try:
       await self._dispatch(action, state)
     except DispatchError as exc:
@@ -218,7 +227,7 @@ class DispatcherRuntime:
       if not self._sched.requeue_after_infra_failure(
         action.attempt_id, action.task_name, "running"
       ):
-        self._apply_terminal_transition(
+        await self._apply_terminal_transition(
           aid=action.attempt_id,
           task_name=action.task_name,
           trial_name=action.trial_name,
@@ -242,7 +251,7 @@ class DispatcherRuntime:
     # window between docker-run and this append leaves a running
     # container the log doesn't know — the startup census +
     # GC-orphan path reap it.
-    append_event(
+    await append_event_async(
       event_log_path_for(state),
       {
         "type": "dispatch",
@@ -299,14 +308,14 @@ class DispatcherRuntime:
 
   # ── completion: poll fallback ──────────────────────────────
 
-  def _poll_all(self) -> None:
+  async def _poll_all(self) -> None:
     for aid, trial_view in list(self._sched.iter_running()):
       state = self._sched.attempt_state(aid)
       trial_home = trial_home_for(state.home_root, trial_view.trial_name)
-      snapshot = self._poll(trial_home)
+      snapshot = await asyncio.to_thread(self._poll, trial_home)
       if snapshot is None:
         continue
-      self._apply_trial_completion(
+      await self._apply_trial_completion(
         aid,
         trial_view.task_name,
         trial_view.trial_name,
@@ -357,7 +366,9 @@ class DispatcherRuntime:
       # finished and wrote its result; whatever killed the
       # container afterwards is teardown bookkeeping.
       snapshot.exit_code = exit_code
-    self._apply_trial_completion(aid, task_name, trial_name, snapshot)
+    await self._apply_trial_completion(
+      aid, task_name, trial_name, snapshot
+    )
 
   async def reconcile_from_census(
     self, host: str, containers: list[dict[str, Any]]
@@ -401,19 +412,43 @@ class DispatcherRuntime:
   async def _poll_with_nfs_retry(
     self, trial_home: Path
   ) -> CompletionSnapshot | None:
-    snapshot = self._poll(trial_home)
+    snapshot = await asyncio.to_thread(self._poll, trial_home)
     if snapshot is not None:
       return snapshot
     for delay in self._NFS_POLL_RETRY_DELAYS:
       await asyncio.sleep(delay)
-      snapshot = self._poll(trial_home)
+      snapshot = await asyncio.to_thread(self._poll, trial_home)
       if snapshot is not None:
         return snapshot
     return None
 
   # ── terminal pipeline ──────────────────────────────────────
 
-  def _apply_trial_completion(
+  def _observation_is_stale(
+    self, aid: str, task_name: str, trial_name: str, from_state: str
+  ) -> bool:
+    """True when the bucket no longer holds THIS trial — the
+    observation raced a reclaim/requeue/cancel across an await.
+    Acting on it would score a NEW trial with an OLD trial's
+    outcome, which is exactly the contamination class this repo
+    exists to prevent (latent even pre-async: the die handler's
+    7s NFS window). Stale observations are dropped; the current
+    occupant's own signals classify it."""
+    tv = self._sched.trial_view_in(aid, from_state, task_name)  # type: ignore[arg-type]
+    if tv is None or tv.trial_name != trial_name:
+      logger.warning(
+        "stale observation dropped: attempt=%s task=%s trial=%s "
+        "(bucket %s now holds %s)",
+        aid,
+        task_name,
+        trial_name,
+        from_state,
+        tv.trial_name if tv else "nothing",
+      )
+      return True
+    return False
+
+  async def _apply_trial_completion(
     self,
     aid: str,
     task_name: str,
@@ -425,7 +460,7 @@ class DispatcherRuntime:
       aid, task_name, trial_name, to_state, snapshot, "running"
     ):
       return
-    self._apply_terminal_transition(
+    await self._apply_terminal_transition(
       aid=aid,
       task_name=task_name,
       trial_name=trial_name,
@@ -453,6 +488,8 @@ class DispatcherRuntime:
       return False
     if not snapshot.infra:
       return False
+    if self._observation_is_stale(aid, task_name, trial_name, from_state):
+      return True  # handled: dropped, nothing to score
     if not self._sched.requeue_after_infra_failure(
       aid, task_name, from_state
     ):
@@ -477,7 +514,7 @@ class DispatcherRuntime:
       )
     return True
 
-  def _apply_terminal_transition(
+  async def _apply_terminal_transition(
     self,
     *,
     aid: str,
@@ -489,13 +526,15 @@ class DispatcherRuntime:
   ) -> None:
     """One ordered path for every completion-like transition:
 
-      scheduler state + pause → per-completion hook → drain hook
-      → metrics → transition event → pause event
+      stale guard → scheduler state + pause → hooks → drain →
+      metrics → bus events → event-log appends (awaited, last)
 
     unknown/ghosted enter this pipeline (they are unresolved
     terminal observations) and keep blocking drain."""
     if to_state in ("done_ok", "done_err") and snapshot is None:
       raise ValueError(f"{to_state} transition requires a snapshot")
+    if self._observation_is_stale(aid, task_name, trial_name, from_state):
+      return
 
     paused_on_error = self._sched.transition_trial(
       attempt_id=aid,
@@ -508,18 +547,18 @@ class DispatcherRuntime:
       self._last_exit.pop((aid, trial_name), None)
 
     state = self._sched.attempt_state(aid)
+    events_to_append: list[dict] = []
     if to_state == "unknown":
       # Breadcrumb only — restore re-derives the bucket from disk;
       # this keeps an audit trail of when sight was lost.
-      append_event(
-        event_log_path_for(state),
+      events_to_append.append(
         {
           "type": "unknown",
           "attempt_id": aid,
           "task_name": task_name,
           "trial_name": trial_name,
           "at": clock.now().isoformat(),
-        },
+        }
       )
     if self._on_trial_completed is not None:
       self._on_trial_completed(state, self._sched.attempt_outcomes(aid))
@@ -552,14 +591,13 @@ class DispatcherRuntime:
           aid, to_state=to_state, values=snapshot.values
         )
     if paused_on_error:
-      append_event(
-        event_log_path_for(state),
+      events_to_append.append(
         {
           "type": "pause_on_error",
           "attempt_id": aid,
           "task_name": task_name,
           "at": clock.now().isoformat(),
-        },
+        }
       )
     if self._event_bus is not None:
       moved = self._sched.trial_view_in(aid, to_state, task_name)
@@ -602,6 +640,13 @@ class DispatcherRuntime:
           "attempt_paused_on_error",
           {"attempt_id": aid, "task_name": task_name},
         )
+    # Appends LAST: every in-memory mutation (scheduler, metrics,
+    # hooks, bus) completed synchronously above, so nothing can
+    # observe a half-applied transition across these awaits. A
+    # crash before the append loses only breadcrumbs that restore
+    # re-derives from disk anyway.
+    for ev in events_to_append:
+      await append_event_async(event_log_path_for(state), ev)
 
   # ── resolver ───────────────────────────────────────────────
 
@@ -654,7 +699,7 @@ class DispatcherRuntime:
     ) -> None:
       async with sem:
         try:
-          outcome = self._resolve_ghosted_one(aid, task_name, tv)
+          outcome = await self._resolve_ghosted_one(aid, task_name, tv)
         except Exception:
           logger.exception(
             "resolver (ghosted) failed for %s / %s", aid, task_name
@@ -669,11 +714,13 @@ class DispatcherRuntime:
         tg.start_soon(probe_ghosted, aid, task_name, tv)
     return counts
 
-  def _resolve_ghosted_one(
+  async def _resolve_ghosted_one(
     self, aid: str, task_name: str, tv: TrialView
   ) -> str:
     state = self._sched.attempt_state(aid)
-    snapshot = self._poll(trial_home_for(state.home_root, tv.trial_name))
+    snapshot = await asyncio.to_thread(
+      self._poll, trial_home_for(state.home_root, tv.trial_name)
+    )
     if snapshot is None:
       return "unchanged"
     to_state = classify(snapshot)
@@ -681,7 +728,7 @@ class DispatcherRuntime:
       aid, task_name, tv.trial_name, to_state, snapshot, "ghosted"
     ):
       return "requeued"
-    self._apply_terminal_transition(
+    await self._apply_terminal_transition(
       aid=aid,
       task_name=task_name,
       trial_name=tv.trial_name,
@@ -697,14 +744,16 @@ class DispatcherRuntime:
     state = self._sched.attempt_state(aid)
     # Cheap NFS look first — catches lag tails past the die
     # handler's retry window.
-    snapshot = self._poll(trial_home_for(state.home_root, tv.trial_name))
+    snapshot = await asyncio.to_thread(
+      self._poll, trial_home_for(state.home_root, tv.trial_name)
+    )
     if snapshot is not None:
       to_state = classify(snapshot)
       if self._requeued_instead_of_scored(
         aid, task_name, tv.trial_name, to_state, snapshot, "unknown"
       ):
         return "requeued"
-      self._apply_terminal_transition(
+      await self._apply_terminal_transition(
         aid=aid,
         task_name=task_name,
         trial_name=tv.trial_name,
@@ -749,7 +798,7 @@ class DispatcherRuntime:
             },
           )
         return "requeued"
-      self._apply_terminal_transition(
+      await self._apply_terminal_transition(
         aid=aid,
         task_name=task_name,
         trial_name=tv.trial_name,

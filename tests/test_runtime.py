@@ -184,7 +184,7 @@ def test_paused_attempt_drains_when_last_trial_finishes(
   async def _run():
     await runtime._dispatch_available()
     sched.patch("att-001", paused=True)
-    runtime._poll_all()
+    await runtime._poll_all()
 
   asyncio.run(_run())
   # Pause blocks FUTURE dispatch; with everything terminal it must
@@ -292,11 +292,13 @@ def test_live_and_resolver_share_terminal_pipeline(
 
     monkeypatch.setattr(runtime, "_apply_terminal_transition", record)
     if mode == "live":
-      runtime._apply_trial_completion(
-        action.attempt_id,
-        action.task_name,
-        action.trial_name,
-        snapshot,
+      asyncio.run(
+        runtime._apply_trial_completion(
+          action.attempt_id,
+          action.task_name,
+          action.trial_name,
+          snapshot,
+        )
       )
     else:
       sched.transition_trial(
@@ -644,11 +646,13 @@ def test_infra_requeue_budget_exhaustion_scores_done_err(
   for i in range(Scheduler.MAX_INFRA_RETRIES + 1):
     action = sched.dispatch_one()
     assert action is not None, f"round {i}"
-    runtime._apply_trial_completion(
-      action.attempt_id,
-      action.task_name,
-      action.trial_name,
-      errored(infra=True),
+    asyncio.run(
+      runtime._apply_trial_completion(
+        action.attempt_id,
+        action.task_name,
+        action.trial_name,
+        errored(infra=True),
+      )
     )
   view = sched.attempt_view("att-001")
   assert set(view.done_err) == {"t1"}
@@ -747,3 +751,64 @@ def test_reconcile_remembers_infra_exit_code(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["requeued"] == 1
+
+
+# ── stale observations (async windows + latent 7s die window) ───
+
+
+def test_stale_die_observation_cannot_score_new_trial(
+  tmp_path: Path,
+):
+  # A die observation for trial N arriving AFTER the task was
+  # requeued and re-dispatched as trial N+1 must be dropped —
+  # applying it would score the NEW trial with the OLD trial's
+  # outcome. This window existed even pre-async (the die
+  # handler's NFS retry pause); the guard closes it.
+  sched = mk_sched(1)
+  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  first = sched.dispatch_one()
+  assert first is not None
+  # Task goes back to pending (infra requeue) and gets a fresh
+  # trial while the old die observation is still in flight.
+  assert sched.requeue_after_infra_failure("att-001", "t1", "running")
+  second = sched.dispatch_one()
+  assert second is not None
+  assert second.trial_name != first.trial_name
+
+  runtime = DispatcherRuntime(
+    sched, self_host="ml10", poll=lambda _p: clean()
+  )
+  # Old trial's completion lands late.
+  asyncio.run(
+    runtime._apply_trial_completion(
+      "att-001", "t1", first.trial_name, clean({"reward": 0.0})
+    )
+  )
+  view = sched.attempt_view("att-001")
+  # New trial still running, untouched; nothing scored.
+  assert set(view.running) == {"t1"}
+  assert view.running["t1"].trial_name == second.trial_name
+  assert not view.done_ok and not view.done_err
+
+
+def test_stale_infra_observation_cannot_requeue_new_trial(
+  tmp_path: Path,
+):
+  sched = mk_sched(1)
+  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  first = sched.dispatch_one()
+  assert first is not None
+  sched.requeue_after_infra_failure("att-001", "t1", "running")
+  second = sched.dispatch_one()
+  assert second is not None
+  runtime = DispatcherRuntime(
+    sched, self_host="ml10", poll=lambda _p: None
+  )
+  asyncio.run(
+    runtime._apply_trial_completion(
+      "att-001", "t1", first.trial_name, errored(infra=True)
+    )
+  )
+  view = sched.attempt_view("att-001")
+  # The stale infra report must not bounce the LIVE trial.
+  assert view.running["t1"].trial_name == second.trial_name

@@ -207,7 +207,7 @@ def test_archive_loop_applies_and_skips(monkeypatch, tmp_path: Path):
 
   applied: list[str] = []
 
-  def archive_one(aid: str) -> None:
+  async def archive_one(aid: str) -> None:
     if aid == "skippy":
       raise LoopSkip("re-flipped to unknown")
     applied.append(aid)
@@ -237,6 +237,10 @@ def test_archive_loop_applies_and_skips(monkeypatch, tmp_path: Path):
   assert applied[:2] == ["a1", "a2"]
 
 
+async def _noop_archive(aid: str) -> None:
+  return None
+
+
 def test_archive_loop_disabled_at_zero_days(monkeypatch):
   from datetime import UTC, datetime
 
@@ -255,7 +259,7 @@ def test_archive_loop_disabled_at_zero_days(monkeypatch):
         scheduler=None,  # type: ignore[arg-type]
         settings=_archive_settings(0),
         clock_fn=lambda: datetime.now(UTC),
-        archive_one=lambda aid: None,
+        archive_one=_noop_archive,
       )
     )
     await asyncio.sleep(0.1)

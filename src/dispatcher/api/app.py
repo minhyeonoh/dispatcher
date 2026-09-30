@@ -219,9 +219,9 @@ def create_app(
       new = scheduler.set_host_settings(host, max_concurrent=cap)
       settings.hosts[host] = new.model_copy()
 
-    def _auto_archive_one(aid: str) -> None:
+    async def _auto_archive_one(aid: str) -> None:
       try:
-        ops.archive_attempt(server_state, aid, clock_fn, kind="auto")
+        await ops.archive_attempt(server_state, aid, clock_fn, kind="auto")
       except ops.OpError as exc:
         # Precondition re-check lost a race with the resolver —
         # skip this tick, not an error.
@@ -437,35 +437,35 @@ def create_app(
   async def submit_attempt(
     payload: dict[str, Any],
   ) -> dict[str, Any]:
-    return ops.submit_attempt(_get_state(app), payload, clock_fn)
+    return await ops.submit_attempt(_get_state(app), payload, clock_fn)
 
   @app.patch("/attempts/{attempt_id}")
   async def patch_attempt(
     attempt_id: str, payload: dict[str, Any]
   ) -> AttemptSummaryOut:
-    return ops.patch_attempt(
+    return await ops.patch_attempt(
       _get_state(app), attempt_id, payload, clock_fn
     )
 
   @app.delete("/attempts/{attempt_id}")
   async def cancel_attempt(attempt_id: str) -> dict[str, Any]:
-    return ops.cancel_attempt(_get_state(app), attempt_id, clock_fn)
+    return await ops.cancel_attempt(_get_state(app), attempt_id, clock_fn)
 
   @app.post("/attempts/{attempt_id}/reclaim")
   async def reclaim_attempt(attempt_id: str) -> dict[str, Any]:
-    return ops.reclaim_attempt(_get_state(app), attempt_id, clock_fn)
+    return await ops.reclaim_attempt(_get_state(app), attempt_id, clock_fn)
 
   @app.post("/attempts/{attempt_id}/retry-done-err")
   async def retry_done_err(
     attempt_id: str, payload: RetryDoneErrRequest | None = None
   ) -> dict[str, Any]:
-    return ops.retry_done_err(
+    return await ops.retry_done_err(
       _get_state(app), attempt_id, payload, clock_fn
     )
 
   @app.post("/attempts/{attempt_id}/archive")
   async def archive_attempt_ep(attempt_id: str) -> dict[str, Any]:
-    return ops.archive_attempt(
+    return await ops.archive_attempt(
       _get_state(app), attempt_id, clock_fn, kind="manual"
     )
 
@@ -473,7 +473,9 @@ def create_app(
   async def unarchive_attempt_ep(
     attempt_id: str,
   ) -> dict[str, Any]:
-    return ops.unarchive_attempt(_get_state(app), attempt_id, clock_fn)
+    return await ops.unarchive_attempt(
+      _get_state(app), attempt_id, clock_fn
+    )
 
   @app.patch("/settings")
   async def patch_settings(payload: SettingsPatch) -> Settings:

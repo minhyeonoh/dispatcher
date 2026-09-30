@@ -20,7 +20,10 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher.core import clock
-from dispatcher.core.event_log import append_event, event_log_path_for
+from dispatcher.core.event_log import (
+  append_event_async,
+  event_log_path_for,
+)
 
 if TYPE_CHECKING:
   from dispatcher.core.event_bus import EventBus
@@ -138,7 +141,7 @@ class NotifyManager:
         if not isinstance(aid, str):
           continue
         try:
-          self.check(aid)
+          await self.check(aid)
         except Exception:
           logger.exception("notify check failed attempt=%s", aid)
     finally:
@@ -155,7 +158,7 @@ class NotifyManager:
             len(self._send_tasks),
           )
 
-  def check(self, aid: str) -> None:
+  async def check(self, aid: str) -> None:
     try:
       state = self._sched.attempt_state(aid)
     except KeyError:
@@ -175,9 +178,9 @@ class NotifyManager:
         break
       if t in state.notified_thresholds:
         continue
-      self._fire(state, view, threshold=t, done=done, total=total)
+      await self._fire(state, view, threshold=t, done=done, total=total)
 
-  def _fire(
+  async def _fire(
     self,
     state: AttemptState,
     view: AttemptView,
@@ -188,7 +191,7 @@ class NotifyManager:
   ) -> None:
     fired_at = clock.now().isoformat()
     try:
-      append_event(
+      await append_event_async(
         event_log_path_for(state),
         {
           "type": "notify_fired",

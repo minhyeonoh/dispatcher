@@ -20,7 +20,7 @@ from dispatcher.core.event_log import event_log_path_for
 from dispatcher.core.loops import LoopSkip, every
 
 if TYPE_CHECKING:
-  from collections.abc import Callable
+  from collections.abc import Awaitable, Callable
 
   from dispatcher.core.scheduler import Scheduler
 
@@ -52,7 +52,7 @@ async def archive_loop(
   scheduler: Scheduler,
   settings: ArchiveSettings,
   clock_fn: Callable[[], datetime],
-  archive_one: Callable[[str], None],
+  archive_one: Callable[[str], Awaitable[None]],
 ) -> None:
   """`archive_one(aid)` applies one auto-archive (the server's
   operation, shared with the endpoint). It raises LoopSkip when a
@@ -69,7 +69,7 @@ async def archive_loop(
     archived = 0
     for aid in candidates:
       try:
-        archive_one(aid)
+        await archive_one(aid)
         archived += 1
       except LoopSkip as exc:
         logger.info("auto-archive skipped attempt=%s: %s", aid, exc)

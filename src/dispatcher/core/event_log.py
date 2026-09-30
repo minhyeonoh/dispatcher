@@ -23,6 +23,7 @@ Event types:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -223,6 +224,34 @@ def append_event(log_path: Path, event: dict[str, Any]) -> None:
   log_path.parent.mkdir(parents=True, exist_ok=True)
   with log_path.open("a", encoding="utf-8") as f:
     f.write(json.dumps(event, default=str) + "\n")
+
+
+# One lock per log path. Offloading appends to threads makes
+# concurrent appends to the same file possible, and O_APPEND is
+# NOT atomic on NFS — unserialized appends can interleave bytes.
+# Every append that can run concurrently (runtime, ops, notify)
+# must go through append_event_async; plain append_event is for
+# single-threaded startup paths (restore backfill).
+_append_locks: dict[Path, asyncio.Lock] = {}
+
+
+async def append_event_async(
+  log_path: Path, event: dict[str, Any]
+) -> None:
+  """`append_event` off the event loop, serialized per path so a
+  slow NFS write stalls only its caller, never the loop — and so
+  two appends can't interleave on the wire."""
+  lock = _append_locks.setdefault(log_path, asyncio.Lock())
+  async with lock:
+    await asyncio.to_thread(append_event, log_path, event)
+
+
+async def append_index_entry_async(
+  data_dir: Path, entry: dict[str, Any]
+) -> None:
+  lock = _append_locks.setdefault(index_path(data_dir), asyncio.Lock())
+  async with lock:
+    await asyncio.to_thread(append_index_entry, data_dir, entry)
 
 
 def read_events(log_path: Path) -> list[dict[str, Any]]:
