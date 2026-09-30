@@ -176,7 +176,9 @@ export function JobPage() {
     <div className="flex flex-col gap-4">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold">{jobTitle(job)}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {jobTitle(job)}
+          </h1>
           {jobSubtitle(job) && (
             <span className="font-mono text-xs text-fg-faint">
               {jobSubtitle(job)}

@@ -11,7 +11,7 @@ export function SettingsPage() {
   const { hosts, ...rest } = cluster.settings;
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-semibold">settings</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">settings</h1>
       <p className="text-sm text-fg-muted">
         The operator-tunable document. Every change persists, so it
         survives restarts; host caps live under{" "}

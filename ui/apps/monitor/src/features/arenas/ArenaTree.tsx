@@ -13,8 +13,8 @@ function Node({ node, depth }: { node: ArenaNode; depth: number }) {
         to="/arenas/$"
         params={{ _splat: node.path }}
         className={cn(
-          "flex items-center justify-between rounded-control px-2 py-1 text-sm",
-          "hover:bg-sunken",
+          "flex items-center justify-between rounded-control px-2 py-1.5 text-sm",
+          "transition-colors hover:bg-sunken",
           active && "bg-accent-surface text-accent",
         )}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
@@ -37,7 +37,7 @@ export function ArenaTree() {
   );
   return (
     <nav className="flex flex-col gap-0.5">
-      <div className="px-2 pt-1 pb-2 text-xs font-medium tracking-wide text-fg-faint uppercase">
+      <div className="px-2 pb-2 text-xs font-medium tracking-wide text-fg-faint uppercase">
         arenas
       </div>
       {roots.length === 0 && (

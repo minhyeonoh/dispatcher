@@ -62,7 +62,7 @@ function Nav() {
         <Link
           key={to}
           to={to}
-          className="rounded-control px-2 py-1 text-sm text-fg-muted hover:bg-sunken hover:text-fg"
+          className="rounded-control px-3 py-1.5 text-sm font-medium text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
           activeProps={{ className: "bg-accent-surface text-accent" }}
           activeOptions={{ exact }}
         >
@@ -76,7 +76,7 @@ function Nav() {
 export function AppShell() {
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between gap-4 border-b border-line px-4 py-2">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line px-5">
         <ClusterBar />
         <div className="flex items-center gap-2">
           <Nav />
@@ -84,10 +84,10 @@ export function AppShell() {
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
-        <aside className="w-56 shrink-0 overflow-y-auto border-r border-line p-2">
+        <aside className="w-60 shrink-0 overflow-y-auto border-r border-line bg-sidebar px-3 py-4">
           <ArenaTree />
         </aside>
-        <main className="min-w-0 flex-1 overflow-y-auto p-4">
+        <main className="min-w-0 flex-1 overflow-y-auto p-6">
           <Outlet />
         </main>
       </div>

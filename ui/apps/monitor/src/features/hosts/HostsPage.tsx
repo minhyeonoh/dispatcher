@@ -19,7 +19,7 @@ export function HostsPage() {
   const hosts = Object.entries(cluster.settings.hosts);
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-semibold">fleet</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">fleet</h1>
       <Card>
         <CardHeader>
           <CardTitle>hosts</CardTitle>

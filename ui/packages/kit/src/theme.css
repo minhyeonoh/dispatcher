@@ -21,6 +21,7 @@
 
   --color-surface: var(--surface);
   --color-raised: var(--raised);
+  --color-sidebar: var(--sidebar);
   --color-sunken: var(--sunken);
   --color-overlay: var(--overlay);
 

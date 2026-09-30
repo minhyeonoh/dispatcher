@@ -1,3 +1,11 @@
+/* Self-hosted so the app has no runtime dependency on a font CDN —
+ * it is served over a tailnet and must render the same offline.
+ * Inter ships as one variable file; Plex Mono is static, so only
+ * the two weights actually used are pulled in. */
+@import "@fontsource-variable/inter";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
 @import "@lab/tokens/base.css";
 @import "tailwindcss";
 @import "@lab/kit/theme.css";

@@ -85,7 +85,7 @@ export function InstancePage() {
     <div className="flex flex-col gap-4">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="font-mono text-lg font-semibold">
+          <h1 className="font-mono text-2xl font-semibold tracking-tight">
             {instanceId}
           </h1>
           {found ? (

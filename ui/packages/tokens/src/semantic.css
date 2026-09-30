@@ -25,15 +25,17 @@
 }
 
 :root {
-  /* ground — three steps. The app shell (header, sidebar) has no
-   * fill of its own: it is the page, bounded by a line. Separation
-   * in this theme is a border's job, and giving the chrome a tint
-   * put a fourth plane on screen that nothing needed.
-   *   light   #fff        #fff        zinc-100
-   *   dark    #000        zinc-950    zinc-800
-   *           page        card        filled */
+  /* ground. Measured off the reference, not guessed: its header and
+   * main are the PAGE colour exactly (#fff / #000) and only the
+   * sidebar shifts, by a hair — #fafafa in light, #0a0a0a in dark.
+   * An earlier attempt tinted the whole shell at zinc-900, five
+   * times that lift, and it read as a slab.
+   *   light   #fff     #fff      #fafafa    zinc-100
+   *   dark    #000     zinc-950  zinc-950   zinc-800
+   *           page     card      sidebar    filled */
   --surface: light-dark(var(--gray-0), var(--gray-12));
   --raised: light-dark(var(--gray-0), var(--gray-11));
+  --sidebar: light-dark(var(--gray-1), var(--gray-11));
   --sunken: light-dark(var(--gray-2), var(--gray-9));
   --overlay: light-dark(
     oklch(21% 0.006 285.885 / 0.4),
@@ -50,18 +52,37 @@
   --fg-faint: light-dark(var(--gray-5), var(--gray-6));
 
   /* accent — the one colour that carries meaning by itself */
-  --accent: light-dark(var(--accent-6), var(--accent-5));
-  --accent-hover: light-dark(var(--accent-7), var(--accent-4));
+  --accent: light-dark(var(--accent-6), var(--accent-4));
+  --accent-hover: light-dark(var(--accent-7), var(--accent-3));
   --accent-fg: light-dark(var(--gray-0), var(--gray-0));
-  --accent-surface: light-dark(var(--accent-1), var(--accent-8));
 
-  /* status */
+  /* Tinted chips are the accent laid over whatever is behind them,
+   * not a fixed ramp step — measured: their dark chip is #0e1932,
+   * which is exactly blue-500 at 20% on black, and the light one
+   * is the same mix at 10% on white. A solid step cannot do that
+   * on two grounds at once. */
+  --accent-surface: light-dark(
+    color-mix(in srgb, var(--accent-5) 10%, transparent),
+    color-mix(in srgb, var(--accent-5) 20%, transparent)
+  );
+
+  /* status — same construction, so every chip on screen is built
+   * the same way */
   --ok: light-dark(var(--green-6), var(--green-4));
-  --ok-surface: light-dark(var(--green-1), var(--green-9));
+  --ok-surface: light-dark(
+    color-mix(in srgb, var(--green-4) 12%, transparent),
+    color-mix(in srgb, var(--green-4) 20%, transparent)
+  );
   --danger: light-dark(var(--red-6), var(--red-4));
-  --danger-surface: light-dark(var(--red-1), var(--red-9));
+  --danger-surface: light-dark(
+    color-mix(in srgb, var(--red-4) 12%, transparent),
+    color-mix(in srgb, var(--red-4) 20%, transparent)
+  );
   --warn: light-dark(var(--amber-6), var(--amber-4));
-  --warn-surface: light-dark(var(--amber-1), var(--amber-9));
+  --warn-surface: light-dark(
+    color-mix(in srgb, var(--amber-4) 14%, transparent),
+    color-mix(in srgb, var(--amber-4) 22%, transparent)
+  );
 
   /* interaction */
   --focus: light-dark(var(--accent-6), var(--accent-4));

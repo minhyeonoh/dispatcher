@@ -3,11 +3,16 @@
  * they exist to be assigned into semantic tokens.
  *
  * The ramps are Tailwind's (zinc for neutrals, blue for accent,
- * emerald/red/amber for status), kept at their published oklch
- * values rather than re-derived — a ramp that has been looked at by
- * that many eyes is better tuned than one we would invent, and
- * matching it exactly means a shadcn component dropped in unstyled
- * still looks like it belongs. */
+ * emerald/red/amber for status) rather than something re-derived —
+ * a ramp that many eyes have tuned beats one we would invent, and
+ * matching it means a shadcn component dropped in unstyled still
+ * looks native.
+ *
+ * The BLUE is the v3 ramp, taken from pixels rather than from the
+ * reference site's `--color-blue-*` variables: those carry v4's
+ * oklch re-derivation (#2b7fff for blue-500) while what actually
+ * renders there is the older, calmer #3b82f6. The v4 blues read
+ * electric next to it. Measured, not assumed. */
 
 :root {
   /* neutral ramp — zinc: barely cool, so accent colour reads as
@@ -28,15 +33,15 @@
    * here so every surface above it can lift by lightness alone. */
   --gray-12: #000;
 
-  /* accent ramp — blue */
-  --accent-1: oklch(97% 0.014 254.604);
-  --accent-2: oklch(93.2% 0.032 255.585);
-  --accent-3: oklch(88.2% 0.059 254.128);
-  --accent-4: oklch(70.7% 0.165 254.624);
-  --accent-5: oklch(62.3% 0.214 259.815);
-  --accent-6: oklch(54.6% 0.245 262.881);
-  --accent-7: oklch(48.8% 0.243 264.376);
-  --accent-8: oklch(28.2% 0.091 267.935);
+  /* accent ramp — blue (v3 hexes; see the note above) */
+  --accent-1: #eff6ff;
+  --accent-2: #dbeafe;
+  --accent-3: #bfdbfe;
+  --accent-4: #60a5fa;
+  --accent-5: #3b82f6;
+  --accent-6: #2563eb;
+  --accent-7: #1d4ed8;
+  --accent-8: #172554;
 
   /* status hues */
   --green-1: oklch(95% 0.052 163.051);
@@ -61,11 +66,14 @@
   --radius-full: 9999px;
 
   /* type */
+  /* The app is responsible for LOADING these (see the monitor's
+   * styles.css); naming a family nobody loaded is how a design
+   * silently renders in the system font instead. */
   --font-sans:
     "Inter Variable", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", sans-serif;
   --font-mono:
-    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas,
     monospace;
 
   /* elevation */
