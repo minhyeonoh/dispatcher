@@ -58,6 +58,7 @@ from dispatcher.core.models import (
 )
 from dispatcher.core.outcome import (
   CompletionSnapshot,
+  bust_dir_cache,
   read_completion,
   trial_home_for,
 )
@@ -124,8 +125,13 @@ def classify(snapshot: CompletionSnapshot | None) -> TrialViewState:
 class DispatcherRuntime:
   # Bridging retries for NFS attribute-cache lag between the die
   # event and the outcome.json becoming visible to this client.
-  # Misses fall to `unknown` and the resolver catches up.
-  _NFS_POLL_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0, 4.0)
+  # Each retry is preceded by a directory cache bust (see
+  # `bust_dir_cache`) — without it these retries just re-ask the
+  # local cache, which is how 43% of the old router's trials
+  # parked in unknown over files that already existed. The
+  # ladder is insurance for the bust not taking; misses still
+  # fall to `unknown` and the resolver catches up.
+  _NFS_POLL_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
 
   def __init__(
     self,
@@ -417,10 +423,15 @@ class DispatcherRuntime:
       return snapshot
     for delay in self._NFS_POLL_RETRY_DELAYS:
       await asyncio.sleep(delay)
-      snapshot = await asyncio.to_thread(self._poll, trial_home)
+      snapshot = await asyncio.to_thread(self._poll_busted, trial_home)
       if snapshot is not None:
         return snapshot
     return None
+
+  def _poll_busted(self, trial_home: Path) -> CompletionSnapshot | None:
+    """Cache bust, then poll — one thread hop for both."""
+    bust_dir_cache(trial_home)
+    return self._poll(trial_home)
 
   # ── terminal pipeline ──────────────────────────────────────
 
@@ -719,7 +730,8 @@ class DispatcherRuntime:
   ) -> str:
     state = self._sched.attempt_state(aid)
     snapshot = await asyncio.to_thread(
-      self._poll, trial_home_for(state.home_root, tv.trial_name)
+      self._poll_busted,
+      trial_home_for(state.home_root, tv.trial_name),
     )
     if snapshot is None:
       return "unchanged"
@@ -743,9 +755,11 @@ class DispatcherRuntime:
   ) -> str:
     state = self._sched.attempt_state(aid)
     # Cheap NFS look first — catches lag tails past the die
-    # handler's retry window.
+    # handler's retry window. Busted: at 30s cadence the
+    # directory cache can still be live (acdirmax up to 60s).
     snapshot = await asyncio.to_thread(
-      self._poll, trial_home_for(state.home_root, tv.trial_name)
+      self._poll_busted,
+      trial_home_for(state.home_root, tv.trial_name),
     )
     if snapshot is not None:
       to_state = classify(snapshot)

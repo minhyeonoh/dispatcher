@@ -62,5 +62,25 @@ def read_completion(trial_home: Path) -> CompletionSnapshot | None:
   )
 
 
+def bust_dir_cache(trial_home: Path) -> None:
+  """Invalidate THIS client's NFS cache for a trial home we own.
+
+  The outcome is written by a container on another host; this
+  client's negative-dentry / directory-attribute cache keeps
+  answering "no such file" for up to acdirmax (default 60s) —
+  measured on the old router as 43% of all trials parking in
+  unknown while the file already existed. Writing into the
+  directory ourselves bumps its mtime locally, so the kernel
+  discards its own cache and the next lookup goes to the server.
+  Best-effort: any failure just leaves today's behaviour (miss →
+  resolver later)."""
+  probe = trial_home / ".nfs-probe"
+  try:
+    probe.touch()
+    probe.unlink(missing_ok=True)
+  except OSError:
+    pass
+
+
 def trial_home_for(home_root: Path, trial_name: str) -> Path:
   return home_root / trial_name

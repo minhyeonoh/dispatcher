@@ -812,3 +812,51 @@ def test_stale_infra_observation_cannot_requeue_new_trial(
   view = sched.attempt_view("att-001")
   # The stale infra report must not bounce the LIVE trial.
   assert view.running["t1"].trial_name == second.trial_name
+
+
+# ── NFS cache bust in the retry ladder ──────────────────────────
+
+
+def test_retry_ladder_busts_cache_between_attempts(tmp_path: Path):
+  # Simulates the measured failure: the file "exists" but the
+  # client cache answers miss until a bust invalidates it. The
+  # die handler must land done_ok on its own, without parking in
+  # unknown for the resolver.
+  sched, trial_name = _sched_with_running(tmp_path)
+  busted = [False]
+
+  def fake_poll(trial_home):
+    return clean({"reward": 1.0}) if busted[0] else None
+
+  runtime = DispatcherRuntime(sched, self_host="ml10", poll=fake_poll)
+  runtime._NFS_POLL_RETRY_DELAYS = (0.0,)
+
+  def fake_bust(trial_home) -> None:
+    busted[0] = True
+
+  import dispatcher.core.runtime as rt
+
+  orig = rt.bust_dir_cache
+  rt.bust_dir_cache = fake_bust
+  try:
+    asyncio.run(
+      runtime.handle_docker_die("ml10", _die_event(trial_name, "0"))
+    )
+  finally:
+    rt.bust_dir_cache = orig
+  view = sched.attempt_view("att-001")
+  assert set(view.done_ok) == {"t1"}
+  assert not view.unknown
+
+
+def test_bust_dir_cache_is_best_effort(tmp_path: Path):
+  from dispatcher.core.outcome import bust_dir_cache
+
+  # Owned dir: probe leaves no trace.
+  d = tmp_path / "t"
+  d.mkdir()
+  bust_dir_cache(d)
+  assert list(d.iterdir()) == []
+  # Missing dir: silently does nothing (behaviour falls back to
+  # today's miss → resolver path).
+  bust_dir_cache(tmp_path / "nope")
