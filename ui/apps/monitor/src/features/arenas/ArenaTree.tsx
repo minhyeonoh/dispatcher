@@ -12,6 +12,22 @@ import {
 } from "./expansion";
 import { buildArenaTree, type ArenaNode } from "./tree";
 
+/** A leaf carries a dot in the chevron's slot rather than empty
+ * space: the gap read as a missing control, and the dot says
+ * "nothing below this" instead of saying nothing at all. Same
+ * viewBox as the chevron so the two align exactly. */
+function LeafDot() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      aria-hidden="true"
+      className="size-3 shrink-0 text-fg-faint"
+    >
+      <circle cx="6" cy="6" r="1.75" fill="currentColor" />
+    </svg>
+  );
+}
+
 function Chevron({ open }: { open: boolean }) {
   return (
     <svg
@@ -75,7 +91,9 @@ function Node({
             <Chevron open={open} />
           </button>
         ) : (
-          <span className="size-5 shrink-0" />
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <LeafDot />
+          </span>
         )}
         <Link
           to="/arenas/$"
