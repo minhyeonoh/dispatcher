@@ -16,13 +16,12 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dispatcher_sdk import InfraFailure, run
 
 if TYPE_CHECKING:
-  from pathlib import Path
-
   from dispatcher_sdk import InstanceContext
 
 # Sleeping is the "work". Chunked so the log shows progress and a
@@ -40,11 +39,19 @@ def _sleep_with_progress(total_s: float) -> None:
     time.sleep(min(_TICK_S, total_s - elapsed))
 
 
-def _flaky_marker(instance: InstanceContext) -> Path:
-  """One marker per TASK, in the job's home root (the parent of
-  this instance's home) — it has to outlive this instance for the
-  retry to see it."""
-  marker_dir = instance.home.parent / ".flaky-seen"
+def _flaky_marker(instance: InstanceContext) -> Path | None:
+  """One marker per TASK, on storage that outlives this instance —
+  the retry runs in a NEW container and has to see it.
+
+  `instance.home` is the instance's own home, bind-mounted at a
+  fixed container path; its parent is container-local, so a marker
+  written there dies with the container and every retry would fail
+  identically. Cross-instance state needs a mount the submitter
+  arranged — here `job_dir` (see submit.py), the job's home_root."""
+  job_dir = (instance.payload or {}).get("job_dir")
+  if not job_dir:
+    return None
+  marker_dir = Path(str(job_dir)) / ".flaky-seen"
   marker_dir.mkdir(parents=True, exist_ok=True)
   return marker_dir / instance.task
 
@@ -72,10 +79,18 @@ def work(instance: InstanceContext) -> dict[str, object]:
 
   if kind == "flaky":
     marker = _flaky_marker(instance)
+    if marker is None:
+      # No cross-instance storage → the blip could only repeat
+      # until the requeue budget runs out. Say so instead of
+      # burning it.
+      raise ValueError(
+        "flaky task needs payload['job_dir'] mounted; "
+        "submit.py arranges it"
+      )
     if not marker.exists():
       # The MACHINE failed, not the work — the dispatcher requeues
       # the task with a fresh instance instead of scoring it. The
-      # marker makes the second instance succeed, which is what a
+      # marker makes the next instance succeed, which is what a
       # transient blip looks like.
       marker.write_text(instance.instance, encoding="utf-8")
       raise InfraFailure(

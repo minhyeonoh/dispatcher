@@ -42,6 +42,13 @@ ARMS = [
   {"label": "sleepbench-throttled", "weight": 1, "max_concurrent": 2},
 ]
 
+# The dispatcher bind-mounts only the INSTANCE's own home (at
+# `container.home_mount`). Anything an instance must share with
+# the task's later instances — a retry marker here — needs its own
+# mount, so the job's home_root goes in at this path and the
+# payload tells the worker where to find it.
+JOB_DIR_MOUNT = "/dispatcher/job"
+
 
 def freeze_worker() -> str:
   """The frozen source archive: this is both the code delivery and
@@ -54,7 +61,13 @@ def freeze_worker() -> str:
 
 
 def make_payloads(
-  n_tasks: int, seed: int, *, min_s: float, max_s: float
+  n_tasks: int,
+  seed: int,
+  *,
+  min_s: float,
+  max_s: float,
+  p_error: float,
+  p_flaky: float,
 ) -> dict[str, dict[str, Any]]:
   """Per-task duration and outcome kind, decided at submit time so
   the intent is in the record, not only in the worker's head."""
@@ -63,9 +76,9 @@ def make_payloads(
   for i in range(n_tasks):
     task_id = f"task-{i:03d}"
     roll = rng.random()
-    if roll < 0.10:
+    if roll < p_error:
       kind = "error"
-    elif roll < 0.18:
+    elif roll < p_error + p_flaky:
       kind = "flaky"
     else:
       kind = "ok"
@@ -74,6 +87,7 @@ def make_payloads(
       "kind": kind,
       "reward": round(rng.betavariate(5, 3), 4),
       "seed": seed + i,
+      "job_dir": JOB_DIR_MOUNT,
     }
   return payloads
 
@@ -92,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
   ap.add_argument("--min-seconds", type=float, default=60.0)
   ap.add_argument("--max-seconds", type=float, default=300.0)
   ap.add_argument("--seed", type=int, default=7)
+  ap.add_argument("--p-error", type=float, default=0.10)
+  ap.add_argument("--p-flaky", type=float, default=0.08)
   ap.add_argument(
     "--paused",
     action="store_true",
@@ -109,13 +125,16 @@ def main(argv: list[str] | None = None) -> int:
       args.seed + i * 1000,
       min_s=args.min_seconds,
       max_s=args.max_seconds,
+      p_error=args.p_error,
+      p_flaky=args.p_flaky,
     )
+    home_root = base / str(arm["label"])
     payload: dict[str, Any] = {
       "label": arm["label"],
       "arena": args.arena,
       "task_ids": sorted(payloads),
       # One home_root per job, ever — the server 409s a reuse.
-      "home_root": str(base / str(arm["label"])),
+      "home_root": str(home_root),
       "source_tar_b64": source,
       "container": {
         "image": args.image,
@@ -128,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
           "-m",
           "worker",
         ],
+        "mounts": [f"{home_root}:{JOB_DIR_MOUNT}"],
       },
       "payloads": payloads,
       "weight": arm["weight"],

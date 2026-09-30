@@ -56,6 +56,26 @@ the same seed is the same sweep):
 The flaky path is the interesting one: it is how a real transient
 failure (a serving backend swapped underneath a trial) is meant
 to be reported — `infra=true` means "the machine failed, not the
-work", and the task is rerun rather than scored. The worker keeps
-a marker per task under `<home_root>/.flaky-seen/` so the retry
-knows to succeed.
+work", and the task is rerun rather than scored.
+
+## An instance sees only its own home
+
+Making the retry succeed needs state that outlives the first
+instance, and that turns out to be a lesson about the contract:
+**the dispatcher bind-mounts the instance's own home and nothing
+else**, at a fixed container path (`/dispatcher/home`). So the
+container cannot reach its job's `home_root`, cannot see sibling
+instances, and cannot see its own path on the host — a marker
+written "next to my home" lands in container-local storage and
+dies with the container, which would make every retry fail
+identically until the requeue budget (5) ran out and the task
+parked in `unknown`.
+
+Cross-instance state therefore needs a mount the submitter
+arranged. `submit.py` adds
+`container.mounts: ["<home_root>:/dispatcher/job"]` and puts that
+path in each payload as `job_dir`; the worker writes
+`<job_dir>/.flaky-seen/<task_id>` there. If `job_dir` is missing
+the worker fails loudly (`done_err`) rather than quietly burning
+retries — a wrong retry budget is much harder to notice than a
+stated error.
