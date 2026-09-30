@@ -12,10 +12,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher.api.settings import Settings
 from dispatcher.core.models import BlockReason
+from dispatcher.core.readout import ReadoutAggregate, ReadoutJobSummary
 
 if TYPE_CHECKING:
+  from collections.abc import Callable
+
   from dispatcher.core.models import InstanceView
   from dispatcher.core.scheduler import Scheduler
+
+  ReadoutSummaryFn = Callable[[str], ReadoutJobSummary]
+  """`job_id → its readout cell`. Passed in rather than imported so
+  wire.py stays a projection over scheduler state: None (tests,
+  restore) simply means no readout columns."""
 
 
 class RetryDoneErrRequest(BaseModel):
@@ -60,6 +68,14 @@ class JobSummaryOut(BaseModel):
   source_sha256: str = ""
   archived_at: datetime | None = None
   archive_kind: str = ""
+  # Derived columns: `{readout name: roll-up}` over this job's
+  # finished instances. Empty when the job's arena registers none.
+  readouts: dict[str, ReadoutAggregate] = Field(default_factory=dict)
+  # Finished (instance, readout) pairs with no value yet. 0 = caught
+  # up; null = this job's values aren't loaded, so the honest answer
+  # is unknown. A growing number means computation is losing the
+  # race against completion.
+  readout_lag: int | None = None
 
 
 class InstanceViewOut(BaseModel):
@@ -132,8 +148,13 @@ def job_counts(scheduler: Scheduler, job_id: str) -> JobCountsOut:
   )
 
 
-def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
+def snapshot_job(
+  scheduler: Scheduler,
+  job_id: str,
+  readouts: ReadoutSummaryFn | None = None,
+) -> JobSummaryOut:
   state = scheduler.job_state(job_id)
+  cell = readouts(job_id) if readouts is not None else ReadoutJobSummary()
   return JobSummaryOut(
     job_id=job_id,
     label=state.label,
@@ -152,6 +173,8 @@ def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
     source_sha256=state.source_sha256,
     archived_at=state.archived_at,
     archive_kind=state.archive_kind or "",
+    readouts=cell.aggregates,
+    readout_lag=cell.lag,
   )
 
 
@@ -218,12 +241,15 @@ def snapshot_arenas(scheduler: Scheduler) -> list[ArenaSummaryOut]:
 
 
 def snapshot_arena(
-  scheduler: Scheduler, arena: str, member_ids: list[str]
+  scheduler: Scheduler,
+  arena: str,
+  member_ids: list[str],
+  readouts: ReadoutSummaryFn | None = None,
 ) -> ArenaDetailOut:
   base = _arena_summary(scheduler, arena, member_ids)
   return ArenaDetailOut(
     **base.model_dump(),
-    members=[snapshot_job(scheduler, aid) for aid in member_ids],
+    members=[snapshot_job(scheduler, aid, readouts) for aid in member_ids],
   )
 
 
@@ -239,9 +265,13 @@ def cluster_snapshot(
   )
 
 
-def full_job_view(scheduler: Scheduler, job_id: str) -> FullJobOut:
+def full_job_view(
+  scheduler: Scheduler,
+  job_id: str,
+  readouts: ReadoutSummaryFn | None = None,
+) -> FullJobOut:
   view = scheduler.job_view(job_id)
-  base = snapshot_job(scheduler, job_id)
+  base = snapshot_job(scheduler, job_id, readouts)
 
   def _bucket(
     d: dict[str, InstanceView],
@@ -267,20 +297,37 @@ def full_job_view(scheduler: Scheduler, job_id: str) -> FullJobOut:
   )
 
 
-def full_job_bytes(scheduler: Scheduler, job_id: str) -> bytes:
+def full_job_bytes(
+  scheduler: Scheduler,
+  job_id: str,
+  readouts: ReadoutSummaryFn | None = None,
+) -> bytes:
   if scheduler.is_archived(job_id):
     return scheduler.archived_bytes(job_id)
-  return full_job_view(scheduler, job_id).model_dump_json().encode("utf-8")
+  return (
+    full_job_view(scheduler, job_id, readouts)
+    .model_dump_json()
+    .encode("utf-8")
+  )
 
 
-def build_full_jobs_body(scheduler: Scheduler, aids: list[str]) -> bytes:
+def build_full_jobs_body(
+  scheduler: Scheduler,
+  aids: list[str],
+  readouts: ReadoutSummaryFn | None = None,
+) -> bytes:
   """Concatenated JSON array; archived jobs splice their
-  cached bytes verbatim so the hot path never rebuilds them."""
+  cached bytes verbatim so the hot path never rebuilds them.
+
+  Those cached bytes carry the readout columns as of the last time
+  values were written for the job — the readout service refreshes
+  them when a backfill adds any, so an archived job's columns are
+  never silently stale."""
   parts: list[bytes] = [b"["]
   for i, aid in enumerate(aids):
     if i > 0:
       parts.append(b",")
-    parts.append(full_job_bytes(scheduler, aid))
+    parts.append(full_job_bytes(scheduler, aid, readouts))
   parts.append(b"]")
   return b"".join(parts)
 

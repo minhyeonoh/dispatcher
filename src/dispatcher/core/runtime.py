@@ -81,6 +81,7 @@ if TYPE_CHECKING:
   DispatchCallable = Callable[[DispatchEntry, JobState], Awaitable[None]]
   PollCallable = Callable[[Path], CompletionSnapshot | None]
   JobHook = Callable[[JobState, list[Outcome]], None]
+  TerminalHook = Callable[[str], None]
 
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ class DispatcherRuntime:
     event_bus: EventBus | None = None,
     on_job_drained: JobHook | None = None,
     on_instance_completed: JobHook | None = None,
+    on_instance_scored: TerminalHook | None = None,
     docker_event_manager: DockerEventStreamManager | None = None,
   ) -> None:
     self._sched = scheduler
@@ -151,6 +153,12 @@ class DispatcherRuntime:
     self._event_bus = event_bus
     self._on_job_drained = on_job_drained
     self._on_instance_completed = on_instance_completed
+    # Fires with a job_id the moment an instance lands in
+    # done_ok/done_err — the readout trigger. Deliberately narrower
+    # and cheaper than on_instance_completed (which builds the whole
+    # outcome list) and deliberately NOT fired for unknown/ghosted:
+    # there is nothing to derive from an instance with no envelope.
+    self._on_instance_scored = on_instance_scored
     self._docker_events = docker_event_manager
     # (image_id, host) pairs verified present. Restart clears it;
     # re-verification is one cheap inspect per pair.
@@ -553,6 +561,16 @@ class DispatcherRuntime:
     )
     if to_state in ("done_ok", "done_err"):
       self._last_exit.pop((aid, instance_id), None)
+      if self._on_instance_scored is not None:
+        # Synchronous and before any await below, so a value can
+        # start being computed in the same tick the bucket changed —
+        # this is where the "no delay" in the readout path comes
+        # from. It must not raise: a hook failure cannot be allowed
+        # to abandon a transition half-applied.
+        try:
+          self._on_instance_scored(aid)
+        except Exception:
+          logger.exception("on_instance_scored hook raised job=%s", aid)
 
     state = self._sched.job_state(aid)
     events_to_append: list[dict] = []

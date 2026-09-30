@@ -55,11 +55,56 @@ JOB_DIR_MOUNT = "/dispatcher/job"
 def freeze_worker() -> str:
   """The frozen source archive: this is both the code delivery and
   the arm record (it outlives any docker prune, on plain shared
-  storage next to the results)."""
+  storage next to the results).
+
+  `readouts.py` rides along, so the code that SCORED a run is
+  recorded with the run — a readout container mounts the same
+  archive and imports `readouts:reward` out of it."""
   buf = io.BytesIO()
   with tarfile.open(fileobj=buf, mode="w") as tf:
     tf.add(HERE / "worker.py", arcname="worker.py")
+    tf.add(HERE / "readouts.py", arcname="readouts.py")
   return base64.b64encode(buf.getvalue()).decode()
+
+
+# Columns for this arena. `reward` and `wall_seconds` are numeric
+# (they get a mean), `solved` is a boolean (a rate), `kind` is a
+# string (a count and nothing invented on top of it).
+READOUTS = [
+  {"name": "reward", "entrypoint": "readouts:reward"},
+  {"name": "solved", "entrypoint": "readouts:solved"},
+  {"name": "wall_seconds", "entrypoint": "readouts:wall_seconds"},
+  {"name": "kind", "entrypoint": "readouts:kind"},
+]
+
+
+def register_readouts(server: str, arena: str) -> None:
+  """Register before submitting so values land as instances finish.
+
+  Registering afterwards is equally fine — it backfills everything
+  already done — but doing it first means the first row you look at
+  already has its columns."""
+  import json
+  import urllib.error
+  import urllib.request
+
+  for spec in READOUTS:
+    body = json.dumps({"arena": arena, **spec}).encode()
+    req = urllib.request.Request(
+      f"{server.rstrip('/')}/api/readouts",
+      data=body,
+      headers={"Content-Type": "application/json"},
+      method="POST",
+    )
+    try:
+      with urllib.request.urlopen(req, timeout=30) as resp:
+        resp.read()
+      print(f"{'readout':>24}  {spec['name']}")
+    except urllib.error.HTTPError as exc:
+      # 409 = already registered under this name somewhere on the
+      # path. Re-running submit.py must not be a failure.
+      detail = exc.read().decode(errors="replace")[:200]
+      print(f"{'readout':>24}  {spec['name']}: {exc.code} {detail}")
 
 
 def make_payloads(
@@ -115,11 +160,18 @@ def main(argv: list[str] | None = None) -> int:
     action="store_true",
     help="submit without dispatching (resume from the UI)",
   )
+  ap.add_argument(
+    "--no-readouts",
+    action="store_true",
+    help="skip registering this arena's columns",
+  )
   args = ap.parse_args(argv)
 
   source = freeze_worker()
   base = Path(args.home_root)
   submitted: list[dict[str, Any]] = []
+  if not args.no_readouts:
+    register_readouts(args.server, args.arena)
 
   for i, arm in enumerate(ARMS):
     payloads = make_payloads(

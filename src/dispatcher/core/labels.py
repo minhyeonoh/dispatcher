@@ -11,6 +11,12 @@ old router; labels pass through verbatim).
   Cleanup expands through this label, so sibling containers a
   worker starts must carry it or they leak.
 - JOB on the main container: reverse lookup for operators.
+- READOUT on a readout container, and deliberately NOTHING else.
+  It carries neither MANAGED (the die-event filter and the census
+  would read it as an instance finishing) nor SET (the orphan GC
+  censuses by SET and would reap it mid-computation). A readout
+  container is short-lived, runs `--rm`, and is only ever addressed
+  by this label — to kill one that outran its timeout.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ MANAGED = "dispatcher.managed"
 INSTANCE = "dispatcher.instance"
 SET = "dispatcher.set"
 JOB = "dispatcher.job"
+READOUT = "dispatcher.readout"
 
 MANAGED_VALUE = "1"
 

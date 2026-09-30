@@ -84,6 +84,12 @@ from dispatcher.services.notify import (
   telegram_bot_token_from_env,
 )
 from dispatcher.services.orphan_gc import OrphanGC, gc_loop
+from dispatcher.services.readouts import (
+  ReadoutRegistry,
+  ReadoutService,
+  docker_readout_run,
+  readout_sweep_loop,
+)
 
 if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
@@ -108,6 +114,7 @@ def create_app(
   poll: Callable[[Path], CompletionSnapshot | None] | None = None,
   clock: Callable[[], datetime] | None = None,
   resolve_image: Callable[[str], str] | None = None,
+  readout_runner: Callable[..., Any] | None = None,
   heartbeat_interval: float = 15.0,
 ) -> FastAPI:
   """`settings` is the SEED, used only when no settings.json is
@@ -137,6 +144,39 @@ def create_app(
       id_gen=lambda task: server_state.next_instance_id(task),
       pool_caps=dict(settings.pool_caps),
     )
+    # Readouts are built before the runtime so the completion path
+    # can call `request` synchronously — that hook is where "values
+    # appear with no artificial delay" actually comes from.
+    readout_registry = ReadoutRegistry.load(config.data_dir)
+
+    def _refresh_archive_bytes(job_id: str) -> None:
+      """An archived job serves pre-serialized bytes, so values
+      written by a backfill would otherwise never reach a reader.
+      Re-freeze with the new columns in them."""
+      if not scheduler.is_archived(job_id):
+        return
+      state = scheduler.job_state(job_id)
+      if state.archived_at is None:  # pragma: no cover — defensive
+        return
+      try:
+        view = full_job_view(scheduler, job_id, readouts.summary)
+        scheduler.archive_job(
+          job_id,
+          at=state.archived_at,
+          kind=state.archive_kind or "manual",
+          payload_bytes=view.model_dump_json().encode("utf-8"),
+        )
+      except Exception:
+        logger.exception("readout: archive refresh failed job=%s", job_id)
+
+    readouts = ReadoutService(
+      scheduler=scheduler,
+      registry=readout_registry,
+      settings=settings.readouts,
+      runner=_pick_readout_runner(readout_runner, dispatch),
+      clock_fn=clock_fn,
+      on_values_written=_refresh_archive_bytes,
+    )
     docker_events: DockerEventStreamManager | None = None
     runtime = DispatcherRuntime(
       scheduler,
@@ -145,6 +185,7 @@ def create_app(
       poll=poll,
       tick_interval=config.tick_interval,
       event_bus=event_bus,
+      on_instance_scored=readouts.request,
     )
     if config.use_docker_events:
       docker_events = DockerEventStreamManager(
@@ -167,6 +208,7 @@ def create_app(
       runtime=runtime,
       event_bus=event_bus,
       resolve_image=resolver,
+      readouts=readouts,
     )
     app.state.dispatcher = server_state
     # Restore before anything can dispatch: rebuild JobStates
@@ -194,6 +236,9 @@ def create_app(
           f"{k}={v}" for k, v in startup_outcomes.items() if v > 0
         ),
       )
+    # Values for live jobs, so the first jobs table already carries
+    # readout columns and a truthful lag instead of nulls.
+    await readouts.load_live()
     metrics_file = config.data_dir / HOST_METRICS_FILENAME
     initial_ring = load_ring(
       metrics_file, settings.host_autotune.ring_buffer_size
@@ -264,6 +309,10 @@ def create_app(
         ),
       ),
       ("notify", notify_manager.run),
+      (
+        "readout_sweep",
+        lambda: readout_sweep_loop(readouts, settings.readouts),
+      ),
     ]
     server_state.tasks = [
       asyncio.create_task(supervised(name, factory))
@@ -276,6 +325,10 @@ def create_app(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
           await task
+      # Readout passes are per-job tasks outside `tasks`; a
+      # container in flight is abandoned, and the pairs it did not
+      # report stay unscored for the next boot's sweep.
+      await readouts.close()
       if server_state.notify_sender is not None:
         await server_state.notify_sender.close()
       if docker_events is not None:
@@ -315,7 +368,7 @@ def create_app(
     return StateOut(
       **cluster.model_dump(),
       jobs=[
-        snapshot_job(st.scheduler, aid)
+        snapshot_job(st.scheduler, aid, st.readout_fn)
         for aid in st.scheduler.all_job_ids()
       ],
     )
@@ -350,7 +403,10 @@ def create_app(
           cluster_snapshot(st.config.self_host, st.settings, st.scheduler),
         )
         for aid in list(st.scheduler.all_job_ids()):
-          yield sse("job_updated", snapshot_job(st.scheduler, aid))
+          yield sse(
+            "job_updated",
+            snapshot_job(st.scheduler, aid, st.readout_fn),
+          )
         while True:
           ev = None
           with anyio.move_on_after(heartbeat_interval) as scope:
@@ -361,7 +417,10 @@ def create_app(
           if ev.type in state_change_events:
             aid = ev.payload.get("job_id")
             if aid and st.scheduler.has_job(aid):
-              yield sse("job_updated", snapshot_job(st.scheduler, aid))
+              yield sse(
+                "job_updated",
+                snapshot_job(st.scheduler, aid, st.readout_fn),
+              )
             yield sse(
               "cluster_updated",
               cluster_snapshot(
@@ -393,11 +452,13 @@ def create_app(
       ]
     if full:
       body = await asyncio.to_thread(
-        build_full_jobs_body, st.scheduler, aids
+        build_full_jobs_body, st.scheduler, aids, st.readout_fn
       )
       return Response(content=body, media_type="application/json")
     return await asyncio.to_thread(
-      lambda: [snapshot_job(st.scheduler, aid) for aid in aids]
+      lambda: [
+        snapshot_job(st.scheduler, aid, st.readout_fn) for aid in aids
+      ]
     )
 
   @api.get("/jobs/{job_id}", response_model=None)
@@ -414,7 +475,7 @@ def create_app(
         content=st.scheduler.archived_bytes(job_id),
         media_type="application/json",
       )
-    return full_job_view(st.scheduler, job_id)
+    return full_job_view(st.scheduler, job_id, st.readout_fn)
 
   @api.post("/jobs")
   async def submit_job(
@@ -443,7 +504,7 @@ def create_app(
         status_code=404, detail=f"arena {name!r} has no jobs"
       )
     return await asyncio.to_thread(
-      snapshot_arena, st.scheduler, name, members
+      snapshot_arena, st.scheduler, name, members, st.readout_fn
     )
 
   @api.post("/arenas/{arena:path}/pause")
@@ -521,6 +582,26 @@ def create_app(
   ) -> dict[str, Any]:
     return await ops.unarchive_job(_get_state(app), job_id, clock_fn)
 
+  # Readout registration is body/query-addressed, not path-
+  # addressed: an arena name is a slash path, so
+  # `/readouts/{arena}/{name}` could not be split unambiguously.
+
+  @api.get("/readouts")
+  async def list_readouts() -> dict[str, Any]:
+    return ops.list_readouts(_get_state(app))
+
+  @api.post("/readouts")
+  async def register_readout(payload: dict[str, Any]) -> dict[str, Any]:
+    return ops.register_readout(_get_state(app), payload)
+
+  @api.delete("/readouts")
+  async def unregister_readout(arena: str, name: str) -> dict[str, Any]:
+    return ops.unregister_readout(_get_state(app), arena, name)
+
+  @api.get("/jobs/{job_id}/readouts")
+  async def get_job_readouts(job_id: str) -> dict[str, Any]:
+    return await ops.get_job_readouts(_get_state(app), job_id)
+
   @api.patch("/settings")
   async def patch_settings(payload: SettingsPatch) -> Settings:
     st = _get_state(app)
@@ -590,6 +671,24 @@ def _apply_boot_overrides(
       k: int(v) for k, v in overrides.pool_caps.items()
     }
   apply_patch_pure(settings, overrides)
+
+
+def _pick_readout_runner(
+  injected: Callable[..., Any] | None,
+  dispatch: Callable[..., Any] | None,
+) -> Any:
+  """Real docker only when the real dispatch path is in play — the
+  same rule image pinning follows. With fake dispatch and no
+  injected runner, passes produce nothing rather than shelling out."""
+  if injected is not None:
+    return injected
+  if dispatch is not None:
+
+    async def _none(*_args: Any, **_kwargs: Any) -> str:
+      return ""
+
+    return _none
+  return docker_readout_run
 
 
 async def _run_startup_census(

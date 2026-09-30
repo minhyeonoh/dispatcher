@@ -38,24 +38,27 @@ from dispatcher.core.outcome import (
   instance_home_for,
   read_completion,
 )
+from dispatcher.core.readout import BadReadout, ReadoutSpec
 from dispatcher.core.scheduler import (
   AliasCollisionError,
   AliasFormatError,
   NotArchivableError,
   NotArchivedError,
 )
+from dispatcher.services.readouts import ReadoutConflict
 
 if TYPE_CHECKING:
   from collections.abc import Callable
   from datetime import datetime
 
   from dispatcher.api.config import Config
-  from dispatcher.api.wire import JobSummaryOut
+  from dispatcher.api.wire import JobSummaryOut, ReadoutSummaryFn
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.models import InstanceView, JobState
   from dispatcher.core.runtime import DispatcherRuntime
   from dispatcher.core.scheduler import Scheduler
   from dispatcher.services.notify import TelegramSender
+  from dispatcher.services.readouts import ReadoutService
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +97,15 @@ class ServerState:
   # Resolves an image ref to its immutable ID on the launcher.
   # None in fake-dispatch (test) mode — then nothing is pinned.
   resolve_image: Callable[[str], str] | None = None
+  readouts: ReadoutService | None = None
   _seq: int = field(default=0)
+
+  @property
+  def readout_fn(self) -> ReadoutSummaryFn | None:
+    """The projection wire.py needs, or None when no readout
+    service is attached (tests) — then job rows simply carry no
+    readout columns."""
+    return None if self.readouts is None else self.readouts.summary
 
   def next_instance_id(self, task_id: str) -> str:
     """`<task[:32]>__<7-digit seq>` — deterministic, monotonic."""
@@ -319,7 +330,9 @@ async def submit_job(
   )
   st.event_bus.publish(
     "job_submitted",
-    snapshot_job(st.scheduler, job.job_id).model_dump(mode="json"),
+    snapshot_job(st.scheduler, job.job_id, st.readout_fn).model_dump(
+      mode="json"
+    ),
   )
   return {
     "job_id": job.job_id,
@@ -413,9 +426,11 @@ async def patch_job(
     )
   st.event_bus.publish(
     "job_patched",
-    snapshot_job(st.scheduler, job_id).model_dump(mode="json"),
+    snapshot_job(st.scheduler, job_id, st.readout_fn).model_dump(
+      mode="json"
+    ),
   )
-  return snapshot_job(st.scheduler, job_id)
+  return snapshot_job(st.scheduler, job_id, st.readout_fn)
 
 
 async def cancel_job(
@@ -425,7 +440,7 @@ async def cancel_job(
 ) -> dict[str, Any]:
   if not st.scheduler.has_job(job_id):
     raise NotFound(f"job {job_id!r} not found")
-  final_snapshot = snapshot_job(st.scheduler, job_id)
+  final_snapshot = snapshot_job(st.scheduler, job_id, st.readout_fn)
   state = st.scheduler.job_state(job_id)
   runtime_state = st.scheduler.cancel(job_id)
   # Fire-and-forget remote kill; the GC catches stragglers.
@@ -742,7 +757,7 @@ async def archive_job(
   kind: str = "manual",
 ) -> dict[str, Any]:
   try:
-    view = full_job_view(st.scheduler, job_id)
+    view = full_job_view(st.scheduler, job_id, st.readout_fn)
   except KeyError as exc:
     raise NotFound(f"job {job_id!r} not found") from exc
   payload_bytes = view.model_dump_json().encode("utf-8")
@@ -770,7 +785,7 @@ async def archive_job(
       f"{counts.done_err} instance(s) ended in done_err — archived "
       f"anyway (unarchive at any time to inspect / retry)"
     )
-  snapshot = snapshot_job(st.scheduler, job_id)
+  snapshot = snapshot_job(st.scheduler, job_id, st.readout_fn)
   st.event_bus.publish("job_archived", {"job_id": job_id, "kind": kind})
   return {
     "job_id": job_id,
@@ -806,7 +821,7 @@ async def unarchive_job(
       "at": clock_fn().isoformat(),
     },
   )
-  snapshot = snapshot_job(st.scheduler, job_id)
+  snapshot = snapshot_job(st.scheduler, job_id, st.readout_fn)
   st.event_bus.publish("job_unarchived", {"job_id": job_id})
   return {
     "job_id": job_id,
@@ -901,6 +916,102 @@ async def arena_cancel(
     await cancel_job(st, aid, clock_fn)
     cancelled.append(aid)
   return {"arena": name, "cancelled": cancelled}
+
+
+# ── readouts ────────────────────────────────────────────────────
+
+
+def _require_readouts(st: ServerState) -> ReadoutService:
+  if st.readouts is None:
+    raise Internal("no readout service on this dispatcher")
+  return st.readouts
+
+
+def list_readouts(st: ServerState) -> dict[str, Any]:
+  service = _require_readouts(st)
+  return {
+    "by_arena": {
+      arena: [s.model_dump(mode="json") for s in specs]
+      for arena, specs in service.registry.snapshot().items()
+    }
+  }
+
+
+def register_readout(
+  st: ServerState, payload: dict[str, Any]
+) -> dict[str, Any]:
+  """Register a readout on an arena subtree and start filling it in.
+
+  Existing finished instances are requested immediately — the
+  operator's next question after "register" is always "so what does
+  it say about what I already ran", and making them wait for a
+  sweep would answer it late for no reason. Live jobs first: they
+  are the ones someone is watching."""
+  service = _require_readouts(st)
+  if not isinstance(payload, dict):
+    raise Invalid("body must be an object")
+  arena = normalize_arena(payload.get("arena", ""))
+  if not arena:
+    raise Invalid(
+      "arena is required — a readout belongs to a comparison unit, "
+      "and jobs with no arena get none"
+    )
+  try:
+    spec = ReadoutSpec.model_validate(
+      {k: v for k, v in payload.items() if k != "arena"}
+    )
+  except Exception as exc:
+    raise Invalid(f"bad readout spec: {exc}") from exc
+  try:
+    service.registry.register(arena, spec)
+  except BadReadout as exc:
+    raise Invalid(str(exc)) from exc
+  except ReadoutConflict as exc:
+    raise Conflict(str(exc)) from exc
+  except OSError as exc:
+    raise Internal(f"readout registry write failed: {exc}") from exc
+  members = arena_members(st.scheduler, arena)
+  for aid in sorted(members, key=st.scheduler.is_archived):
+    service.request(aid)
+  return {
+    "arena": arena,
+    "readout": spec.model_dump(mode="json"),
+    "backfilling": members,
+  }
+
+
+def unregister_readout(
+  st: ServerState, arena: str, name: str
+) -> dict[str, Any]:
+  service = _require_readouts(st)
+  node = normalize_arena(arena)
+  if not node:
+    raise Invalid("arena is required")
+  try:
+    removed = service.registry.unregister(node, name)
+  except OSError as exc:
+    raise Internal(f"readout registry write failed: {exc}") from exc
+  if not removed:
+    raise NotFound(f"readout {name!r} is not registered at {node!r}")
+  # Values stay on disk: they are the record of finished work, not a
+  # cache of a registration.
+  return {"arena": node, "name": name, "status": "unregistered"}
+
+
+async def get_job_readouts(st: ServerState, job_id: str) -> dict[str, Any]:
+  """Every value this job carries, per readout, keyed by instance."""
+  service = _require_readouts(st)
+  if not st.scheduler.has_job(job_id):
+    raise NotFound(f"job {job_id!r} not found")
+  loaded = await service.load(job_id)
+  return {
+    "job_id": job_id,
+    "values": {
+      name: [v.model_dump(mode="json") for v in values.values()]
+      for name, values in loaded.items()
+    },
+    "summary": service.summary(job_id).model_dump(mode="json"),
+  }
 
 
 def _mk_job_id(label: str) -> str:

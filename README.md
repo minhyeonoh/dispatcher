@@ -119,9 +119,82 @@ Before exiting, the worker writes `<home>/outcome.json`:
 Only `ok` / `error` / `infra` are contract — the dispatcher's
 entire understanding of a result. `data` is opaque passthrough:
 metrics (reward, whatever) are the research repo's business,
-computed later from the stored envelopes, so put everything a
-future readout might need in `data`. Exit codes: 0 ok, 1 error,
-75 infra (EX_TEMPFAIL).
+derived later by a **readout** (below), so put everything a future
+readout might need in `data`. Exit codes: 0 ok, 1 error, 75 infra
+(EX_TEMPFAIL).
+
+## Readouts
+
+The dispatcher cannot know what `reward` or `tgc` means — every
+benchmark computes it from its own envelope. So the computation
+stays on the research-repo side and the dispatcher only runs it:
+
+```python
+# myrepo/readouts.py
+def reward(instance):
+  return instance.data["reward"]        # instance.outcome["data"]
+```
+
+Register it on an arena, and it becomes a column:
+
+```
+POST /api/readouts
+{"arena": "myrepo/my-sweep", "name": "reward",
+ "entrypoint": "myrepo.readouts:reward", "timeout_sec": 60}
+```
+
+- **Registration is per arena**, and a path covers its subtree —
+  the jobs you compare are the jobs scored the same way.
+  Jobs with no arena get none.
+- **The name is the identity.** A changed computation is a
+  different readout (`reward-v1` / `reward-v2`), never a new
+  version of the same one: a column that silently changes meaning
+  invalidates every figure already drawn from it. Registering a
+  name that already exists elsewhere on the same arena path is a
+  409, not an overwrite.
+- **One value per instance** is the whole contract. Job-level
+  numbers are arithmetic over those values, so no operator code
+  runs at that level: numbers get a mean, bools get a rate (`True`
+  counts 1), a column with a string in it gets a count and nothing
+  invented on top of it. Return `None` for "not applicable here" —
+  it is excluded from the mean rather than averaged as zero, which
+  is the difference between reporting a broken run and reporting a
+  worse method.
+
+Values land the moment an instance finishes — the completion
+handler asks for a pass with no timer in the path. A pass runs
+`python -m dispatcher_sdk.readout` in a container built from the
+job's **pinned image** (on the launcher, job home mounted
+read-only, `container.extra_args` deliberately not applied), which
+imports each entrypoint and prints one marked line per
+`(instance, readout)` pair; the dispatcher appends them to
+`<home_root>/.readouts/<name>.jsonl`, append-only, last line
+winning.
+
+Requests arriving while a pass is computing fold into exactly one
+more pass after it, so a burst of 500 completions costs two
+container runs, not 500 — the running container's own duration is
+the batching window rather than an invented delay. Each pass takes
+at most `readouts.batch_cap` instances and immediately runs
+another if more remain, so a readout too heavy to keep up
+accumulates backlog on the filesystem instead of inside one
+long-lived container. That backlog is the number to watch:
+`readout_lag` on every job row counts finished pairs with no value
+yet, and grows monotonically when computation is losing the race.
+
+A readout that raises is recorded as an error against that one
+instance and never retried (the envelope is immutable, so it would
+raise forever). A pass that fails to run at all writes nothing, and
+a slow sweep (`readouts.sweep_interval_seconds`) retries it.
+Registering a readout immediately backfills every finished instance
+in the arena, archived jobs included.
+
+```
+GET    /api/readouts                    what is registered where
+POST   /api/readouts                    register + backfill
+DELETE /api/readouts?arena=..&name=..   stop computing (values stay)
+GET    /api/jobs/{id}/readouts          every value, per instance
+```
 
 ## Failure semantics
 

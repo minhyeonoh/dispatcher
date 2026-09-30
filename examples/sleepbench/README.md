@@ -5,8 +5,8 @@ minutes, the outcome mix includes genuine errors and a transient
 infra failure, and the arms of one arena differ in their
 scheduler knobs. Useful as an end-to-end exercise of a live
 dispatcher (image pinning and shipping, source freezing,
-requeues, arena aggregation, the UI) without waiting on real
-compute.
+requeues, readouts, arena aggregation, the UI) without waiting on
+real compute.
 
 It also doubles as the smallest complete answer to "how does a
 research repo use this":
@@ -15,10 +15,13 @@ research repo use this":
 worker.py     the work — reads its payload, does the thing,
               returns JSON. Nothing dispatcher-specific beyond
               `dispatcher_sdk.run(work)`.
+readouts.py   what the columns mean — one function per readout,
+              each a function of one finished instance.
 Dockerfile    the ENVIRONMENT image: interpreter + dispatcher_sdk,
               no experiment code.
-submit.py     the submitter — freezes worker.py into a tar and
-              POSTs one job per arm with per-task payloads.
+submit.py     the submitter — freezes worker.py + readouts.py into
+              one tar, registers the arena's readouts, and POSTs
+              one job per arm with per-task payloads.
 ```
 
 ## Run it
@@ -57,6 +60,29 @@ The flaky path is the interesting one: it is how a real transient
 failure (a serving backend swapped underneath a trial) is meant
 to be reported — `infra=true` means "the machine failed, not the
 work", and the task is rerun rather than scored.
+
+## What the readouts show
+
+`submit.py` registers four columns on the arena before submitting,
+all out of `readouts.py` in the frozen tar:
+
+| readout | type | aggregates to |
+| --- | --- | --- |
+| `reward` | float, `None` when the instance failed | a mean over successes only |
+| `solved` | bool | a pass rate |
+| `wall_seconds` | float | a mean |
+| `kind` | str | a count, and deliberately no mean |
+
+Two things worth noticing. `reward` returns `None` rather than
+`0.0` for a failed instance — scoring a crash as zero would drag
+the arm's mean down and read as a worse method instead of a broken
+run. And `kind` is a string on purpose: a column whose values are
+not all numbers gets `n` and nothing invented on top of it.
+
+Values appear as instances finish, with no timer in the path. Watch
+`readout_lag` on the jobs table while the sweep runs — it is
+finished `(instance, readout)` pairs with no value yet, so it
+should sit at 0 and only blip when several instances land at once.
 
 ## An instance sees only its own home
 
