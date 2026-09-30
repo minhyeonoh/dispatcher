@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 def _action(host: str = "ml9") -> DispatchEntry:
   return DispatchEntry(
     attempt_id="att-001",
-    task_name="t1",
+    task_id="t1",
     trial_id="t1__0000001",
     host=host,
     dispatched_at=datetime.now(UTC),
@@ -104,7 +104,7 @@ def test_trial_id_case_preserved_in_labels(tmp_path: Path):
   state = mk_attempt(tmp_path, ["T"])
   action = DispatchEntry(
     attempt_id="att-001",
-    task_name="T",
+    task_id="T",
     trial_id="trial_T2019__0000001",
     host="ml9",
     dispatched_at=datetime.now(UTC),

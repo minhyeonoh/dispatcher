@@ -43,7 +43,7 @@ dispatch, failure detection, and state persistence.
    ```json
    {
      "label": "my-sweep-arm1",
-     "task_list": ["task_a", "task_b"],
+     "task_ids": ["task_a", "task_b"],
      "home_root": "/nfs/exp/my-sweep-arm1",
      "source_tar_b64": "<base64 tar of the frozen code>",
      "container": {
@@ -80,7 +80,7 @@ The dispatcher starts the main container itself
   through verbatim).
 - the trial home bind-mounted at `container.home_mount`
   (default `/dispatcher/home`), containing `trial.json`
-  (`{attempt_id, task_name, trial_id, home, payload}`).
+  (`{attempt_id, task_id, trial_id, home, payload}`).
 - env: `DISPATCHER_TRIAL`, `DISPATCHER_TASK`,
   `DISPATCHER_ATTEMPT`, `DISPATCHER_HOME`,
   `DISPATCHER_SET_LABEL`.

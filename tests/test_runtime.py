@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 def mk_attempt(
   home_root: Path,
-  task_list: list[str],
+  task_ids: list[str],
   *,
   attempt_id: str = "att-001",
   max_concurrent: int | None = None,
@@ -39,7 +39,7 @@ def mk_attempt(
       "type": "submit",
       "attempt_id": attempt_id,
       "label": "demo",
-      "task_list": task_list,
+      "task_ids": task_ids,
       "home_root": str(home_root),
       "container": {"image": "img"},
       "submitted_at": "2026-09-28T10:00:00+00:00",
@@ -116,7 +116,7 @@ def test_runtime_dispatches_and_completes_all_tasks(tmp_path: Path):
   )
   asyncio.run(runtime.run_until_done(max_ticks=20))
   assert len(dispatched) == 3
-  assert {a.task_name for a in dispatched} == {"t1", "t2", "t3"}
+  assert {a.task_id for a in dispatched} == {"t1", "t2", "t3"}
   view = sched.attempt_view("att-001")
   assert set(view.done_ok) == {"t1", "t2", "t3"}
   assert view.pending == [] and view.running == {}
@@ -143,7 +143,7 @@ def test_runtime_writes_trial_spec_before_dispatch(tmp_path: Path):
   asyncio.run(runtime.run_until_done(max_ticks=5))
   assert len(captured) == 1
   spec = captured[0]
-  assert spec["task_name"] == "t1"
+  assert spec["task_id"] == "t1"
   assert spec["attempt_id"] == "att-001"
   assert spec["payload"] == {"n": 7}
   assert spec["home"] == "/dispatcher/home"
@@ -202,7 +202,7 @@ def test_resolver_applies_pause_before_completion_callbacks(
   assert action is not None
   sched.transition_trial(
     attempt_id="att-001",
-    task_name="t1",
+    task_id="t1",
     from_state="running",
     to_state="unknown",
   )
@@ -234,7 +234,7 @@ def test_resolver_drains_last_error_without_pausing(tmp_path: Path):
   assert action is not None
   sched.transition_trial(
     attempt_id="att-001",
-    task_name="t1",
+    task_id="t1",
     from_state="running",
     to_state="unknown",
   )
@@ -295,7 +295,7 @@ def test_live_and_resolver_share_terminal_pipeline(
       asyncio.run(
         runtime._apply_trial_completion(
           action.attempt_id,
-          action.task_name,
+          action.task_id,
           action.trial_id,
           snapshot,
         )
@@ -303,7 +303,7 @@ def test_live_and_resolver_share_terminal_pipeline(
     else:
       sched.transition_trial(
         attempt_id="att-001",
-        task_name="t1",
+        task_id="t1",
         from_state="running",
         to_state="unknown",
       )
@@ -334,7 +334,7 @@ def _seed_unknown(sched: Scheduler, home: Path) -> DispatchEntry:
   assert action is not None
   sched.transition_trial(
     attempt_id="att-001",
-    task_name="t1",
+    task_id="t1",
     from_state="running",
     to_state="unknown",
   )
@@ -416,7 +416,7 @@ def _seed_ghosted(sched: Scheduler, home: Path) -> None:
   _seed_unknown(sched, home)
   sched.transition_trial(
     attempt_id="att-001",
-    task_name="t1",
+    task_id="t1",
     from_state="unknown",
     to_state="ghosted",
   )
@@ -645,7 +645,7 @@ def test_infra_requeue_budget_exhaustion_scores_done_err(
     asyncio.run(
       runtime._apply_trial_completion(
         action.attempt_id,
-        action.task_name,
+        action.task_id,
         action.trial_id,
         errored(infra=True),
       )

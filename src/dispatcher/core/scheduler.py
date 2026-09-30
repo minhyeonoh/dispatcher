@@ -76,8 +76,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class _AttemptRuntime:
-  """Per-attempt bookkeeping. `pending` preserves task_list order;
-  other buckets are keyed by task_name. `outcomes` caches the
+  """Per-attempt bookkeeping. `pending` preserves task_ids order;
+  other buckets are keyed by task_id. `outcomes` caches the
   parsed envelope per terminal task so read paths never re-hit
   NFS."""
 
@@ -130,7 +130,7 @@ class Scheduler:
     self._all_order: list[str] = []
     # Pre-serialized wire blob per archived attempt.
     self._archived_bytes: dict[str, bytes] = {}
-    # attempt_id → task_name → infra-requeue count.
+    # attempt_id → task_id → infra-requeue count.
     self._infra_retries: dict[str, dict[str, int]] = {}
     self._cursor = 0
     self._turns_taken = 0
@@ -155,7 +155,7 @@ class Scheduler:
       raise AliasCollisionError(attempt.alias)
     self._alias_to_id[attempt.alias] = attempt.attempt_id
     self._attempts[attempt.attempt_id] = _AttemptRuntime(
-      state=attempt, pending=list(attempt.task_list)
+      state=attempt, pending=list(attempt.task_ids)
     )
     self._active_order.append(attempt.attempt_id)
     self._all_order.append(attempt.attempt_id)
@@ -171,7 +171,7 @@ class Scheduler:
     unknown: dict[str, TrialView] | None = None,
   ) -> None:
     """Register with pre-populated buckets (startup restore).
-    `pending` is derived as task_list minus every bucketed task.
+    `pending` is derived as task_ids minus every bucketed task.
 
     Slot accounting: only `running` bumps host/pool counts —
     `unknown` released its slot when the death was observed. A
@@ -198,7 +198,7 @@ class Scheduler:
       | set(ghosted)
       | set(unknown)
     )
-    pending = [t for t in attempt.task_list if t not in reserved]
+    pending = [t for t in attempt.task_ids if t not in reserved]
     self._attempts[attempt.attempt_id] = _AttemptRuntime(
       state=attempt,
       pending=pending,
@@ -476,11 +476,11 @@ class Scheduler:
     if host is None:
       return None
 
-    task_name = runtime.pending.pop(0)
-    trial_id = self._id_gen(task_name)
+    task_id = runtime.pending.pop(0)
+    trial_id = self._id_gen(task_id)
     dispatched_at = self._clock()
-    runtime.running[task_name] = TrialView(
-      task_name=task_name,
+    runtime.running[task_id] = TrialView(
+      task_id=task_id,
       state="running",
       trial_id=trial_id,
       host=host,
@@ -495,7 +495,7 @@ class Scheduler:
 
     return DispatchEntry(
       attempt_id=aid,
-      task_name=task_name,
+      task_id=task_id,
       trial_id=trial_id,
       host=host,
       dispatched_at=dispatched_at,
@@ -507,7 +507,7 @@ class Scheduler:
     self,
     *,
     attempt_id: str,
-    task_name: str,
+    task_id: str,
     from_state: TrialViewState,
     to_state: TrialViewState,
     outcome: Outcome | None = None,
@@ -531,7 +531,7 @@ class Scheduler:
 
     runtime = self._attempts[attempt_id]
     source = getattr(runtime, from_state)
-    trial_view = source.pop(task_name)
+    trial_view = source.pop(task_id)
     host = trial_view.host
     if from_state == "running":
       self._host_running[host] = max(
@@ -540,8 +540,8 @@ class Scheduler:
       self._pool_bump(attempt_id, -1)
 
     destination = getattr(runtime, to_state)
-    destination[task_name] = TrialView(
-      task_name=task_name,
+    destination[task_id] = TrialView(
+      task_id=task_id,
       state=to_state,
       trial_id=trial_view.trial_id,
       host=host,
@@ -551,12 +551,12 @@ class Scheduler:
       self._host_running[host] = self._host_running.get(host, 0) + 1
       self._pool_bump(attempt_id, 1)
     else:
-      runtime.outcomes[task_name] = outcome
+      runtime.outcomes[task_id] = outcome
 
     return self._apply_pause_on_error(attempt_id, to_state)
 
   def trial_view_in(
-    self, attempt_id: str, state: TrialViewState, task_name: str
+    self, attempt_id: str, state: TrialViewState, task_id: str
   ) -> TrialView | None:
     """The TrialView sitting in one bucket, or None — lets event
     consumers read host/dispatched_at back after a transition."""
@@ -566,34 +566,34 @@ class Scheduler:
     bucket = getattr(runtime, state, None)
     if not isinstance(bucket, dict):
       return None
-    return bucket.get(task_name)
+    return bucket.get(task_id)
 
   def attempt_outcomes(self, attempt_id: str) -> list[Outcome]:
-    """Every cached non-None Outcome, in task-name order."""
+    """Every cached non-None Outcome, in task-id order."""
     runtime = self._attempts[attempt_id]
     return [
       o for _, o in sorted(runtime.outcomes.items()) if o is not None
     ]
 
-  def outcome_of(self, attempt_id: str, task_name: str) -> Outcome | None:
+  def outcome_of(self, attempt_id: str, task_id: str) -> Outcome | None:
     runtime = self._attempts.get(attempt_id)
     if runtime is None:
       return None
-    return runtime.outcomes.get(task_name)
+    return runtime.outcomes.get(task_id)
 
   def seed_outcome(
-    self, attempt_id: str, task_name: str, outcome: Outcome
+    self, attempt_id: str, task_id: str, outcome: Outcome
   ) -> None:
     """Startup restore: preload a completed trial's parsed
     envelope. Idempotent."""
-    self._attempts[attempt_id].outcomes[task_name] = outcome
+    self._attempts[attempt_id].outcomes[task_id] = outcome
 
   # ── requeue / retry / reclaim ──────────────────────────────
 
   def requeue_after_infra_failure(
     self,
     attempt_id: str,
-    task_name: str,
+    task_id: str,
     from_state: TrialViewState = "running",
   ) -> bool:
     """Move a host-killed trial back to pending instead of
@@ -604,45 +604,45 @@ class Scheduler:
     budget across all entry points; returns False once exhausted
     or when the trial already left the source bucket."""
     seen = self._infra_retries.setdefault(attempt_id, {})
-    if seen.get(task_name, 0) >= self.MAX_INFRA_RETRIES:
+    if seen.get(task_id, 0) >= self.MAX_INFRA_RETRIES:
       return False
     reclaimed = (
-      self.reclaim_from_running(attempt_id, task_name)
+      self.reclaim_from_running(attempt_id, task_id)
       if from_state == "running"
-      else self.reclaim_from_parked(attempt_id, task_name, from_state)
+      else self.reclaim_from_parked(attempt_id, task_id, from_state)
     )
     if not reclaimed:
       return False
-    seen[task_name] = seen.get(task_name, 0) + 1
+    seen[task_id] = seen.get(task_id, 0) + 1
     logger.warning(
       "infra failure requeued (%d/%d): attempt=%s task=%s",
-      seen[task_name],
+      seen[task_id],
       self.MAX_INFRA_RETRIES,
       attempt_id,
-      task_name,
+      task_id,
     )
     return True
 
-  def retry_from_done_err(self, attempt_id: str, task_name: str) -> bool:
+  def retry_from_done_err(self, attempt_id: str, task_id: str) -> bool:
     """Operator retry: done_err → pending (outcome cache entry
     dropped). Re-dispatch mints a fresh trial_id, so the old
     trial dir is never reused."""
     runtime = self._attempts[attempt_id]
-    if task_name not in runtime.done_err:
+    if task_id not in runtime.done_err:
       return False
-    runtime.done_err.pop(task_name)
-    runtime.outcomes.pop(task_name, None)
+    runtime.done_err.pop(task_id)
+    runtime.outcomes.pop(task_id, None)
     self._rebuild_pending(runtime)
     return True
 
-  def reclaim_from_running(self, attempt_id: str, task_name: str) -> bool:
+  def reclaim_from_running(self, attempt_id: str, task_id: str) -> bool:
     """Undo a dispatch: running → pending, releasing the slot.
     False when the trial already left running (completion won the
     race — treat as no-op)."""
     runtime = self._attempts[attempt_id]
-    if task_name not in runtime.running:
+    if task_id not in runtime.running:
       return False
-    tv = runtime.running.pop(task_name)
+    tv = runtime.running.pop(task_id)
     self._host_running[tv.host] = max(
       0, self._host_running.get(tv.host, 0) - 1
     )
@@ -653,7 +653,7 @@ class Scheduler:
   def reclaim_from_parked(
     self,
     attempt_id: str,
-    task_name: str,
+    task_id: str,
     from_state: TrialViewState,
   ) -> bool:
     """`reclaim_from_running` for unknown/ghosted — with NO slot
@@ -666,14 +666,14 @@ class Scheduler:
       )
     runtime = self._attempts[attempt_id]
     bucket = getattr(runtime, from_state)
-    if task_name not in bucket:
+    if task_id not in bucket:
       return False
-    bucket.pop(task_name)
+    bucket.pop(task_id)
     self._rebuild_pending(runtime)
     return True
 
   def _rebuild_pending(self, runtime: _AttemptRuntime) -> None:
-    """Recompute pending from task_list order minus everything
+    """Recompute pending from task_ids order minus everything
     still bucketed — keeps requeue insertion at list position and
     self-heals any drift."""
     dispatched = (
@@ -684,7 +684,7 @@ class Scheduler:
       | set(runtime.unknown)
     )
     runtime.pending = [
-      t for t in runtime.state.task_list if t not in dispatched
+      t for t in runtime.state.task_ids if t not in dispatched
     ]
 
   # ── observers ──────────────────────────────────────────────
@@ -727,13 +727,13 @@ class Scheduler:
   def iter_unknown(self) -> Iterator[tuple[str, str, TrialView]]:
     """Snapshotted so callers may reclassify during iteration."""
     for aid, runtime in list(self._attempts.items()):
-      for task_name, tv in list(runtime.unknown.items()):
-        yield aid, task_name, tv
+      for task_id, tv in list(runtime.unknown.items()):
+        yield aid, task_id, tv
 
   def iter_ghosted(self) -> Iterator[tuple[str, str, TrialView]]:
     for aid, runtime in list(self._attempts.items()):
-      for task_name, tv in list(runtime.ghosted.items()):
-        yield aid, task_name, tv
+      for task_id, tv in list(runtime.ghosted.items()):
+        yield aid, task_id, tv
 
   def has_work(self) -> bool:
     """unknown and ghosted both count as work: they must be

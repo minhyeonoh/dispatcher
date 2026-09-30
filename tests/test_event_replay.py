@@ -15,7 +15,7 @@ def submit_event(attempt_id: str = "A", **extra: Any) -> dict:
     "type": "submit",
     "attempt_id": attempt_id,
     "label": attempt_id,
-    "task_list": ["t1", "t2"],
+    "task_ids": ["t1", "t2"],
     "home_root": f"/data/{attempt_id}",
     "container": {"image": "img"},
     "submitted_at": "2026-09-28T10:00:00+00:00",
@@ -28,7 +28,7 @@ def dispatch_event(task: str, trial: str, attempt_id: str = "A") -> dict:
   return {
     "type": "dispatch",
     "attempt_id": attempt_id,
-    "task_name": task,
+    "task_id": task,
     "trial_id": trial,
     "host": "ml10",
     "at": "2026-09-28T10:00:01+00:00",
@@ -43,7 +43,7 @@ def test_submit_populates_immutable_fields():
   assert out is not None
   state, log = out
   assert state.attempt_id == "A"
-  assert state.task_list == ["t1", "t2"]
+  assert state.task_ids == ["t1", "t2"]
   assert str(state.home_root) == "/data/A"
   assert state.container.image == "img"
   assert state.alias == "alias-A"
@@ -167,7 +167,7 @@ def test_dispatch_events_appended_to_log():
   )
   assert out is not None
   _, log = out
-  assert [(e.task_name, e.trial_id) for e in log] == [
+  assert [(e.task_id, e.trial_id) for e in log] == [
     ("t1", "t1__0000001"),
     ("t2", "t2__0000002"),
   ]
@@ -202,7 +202,7 @@ def test_pause_on_error_event_sets_paused_true():
   out = replay_events(
     [
       submit_event(),
-      {"type": "pause_on_error", "attempt_id": "A", "task_name": "t1"},
+      {"type": "pause_on_error", "attempt_id": "A", "task_id": "t1"},
     ]
   )
   assert out is not None
@@ -272,7 +272,7 @@ def _retract(kind: str, task: str, trial: str | None) -> dict:
   ev: dict[str, Any] = {
     "type": kind,
     "attempt_id": "A",
-    "task_name": task,
+    "task_id": task,
   }
   if trial is not None:
     ev["trial_id"] = trial
@@ -352,8 +352,8 @@ def test_reclaim_of_never_dispatched_task_is_noop():
 
 
 @pytest.mark.parametrize("kind", ["reclaim", "retry"])
-def test_retract_missing_task_name_raises(kind: str):
-  with pytest.raises(ReplayError, match="missing 'task_name'"):
+def test_retract_missing_task_id_raises(kind: str):
+  with pytest.raises(ReplayError, match="missing 'task_id'"):
     replay_events(
       [
         submit_event(),
@@ -373,7 +373,7 @@ def test_retract_missing_trial_id_raises(kind: str):
       [
         submit_event(),
         dispatch_event("t1", "n1"),
-        {"type": kind, "attempt_id": "A", "task_name": "t1"},
+        {"type": kind, "attempt_id": "A", "task_id": "t1"},
       ]
     )
 

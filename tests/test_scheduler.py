@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 def mk_attempt(
   attempt_id: str,
-  task_list: Iterable[str],
+  task_ids: Iterable[str],
   *,
   weight: int = 1,
   max_concurrent: int | None = None,
@@ -45,7 +45,7 @@ def mk_attempt(
     "type": "submit",
     "attempt_id": attempt_id,
     "label": attempt_id,
-    "task_list": list(task_list),
+    "task_ids": list(task_ids),
     "home_root": f"/data/{attempt_id}",
     "container": {"image": "img"},
     "submitted_at": "2026-09-28T10:00:00+00:00",
@@ -88,9 +88,9 @@ def clock_from(
 def id_gen() -> Callable[[str], str]:
   counter = [0]
 
-  def _gen(task_name: str) -> str:
+  def _gen(task_id: str) -> str:
     counter[0] += 1
-    return f"{task_name}__t{counter[0]}"
+    return f"{task_id}__t{counter[0]}"
 
   return _gen
 
@@ -108,7 +108,7 @@ def drain(sched: Scheduler, limit: int = 100) -> list[DispatchEntry]:
 def complete_ok(sched: Scheduler, action: DispatchEntry) -> None:
   sched.transition_trial(
     attempt_id=action.attempt_id,
-    task_name=action.task_name,
+    task_id=action.task_id,
     from_state="running",
     to_state="done_ok",
   )
@@ -117,18 +117,18 @@ def complete_ok(sched: Scheduler, action: DispatchEntry) -> None:
 def complete_err(sched: Scheduler, action: DispatchEntry) -> None:
   sched.transition_trial(
     attempt_id=action.attempt_id,
-    task_name=action.task_name,
+    task_id=action.task_id,
     from_state="running",
     to_state="done_err",
   )
 
 
 def die_without_outcome(
-  sched: Scheduler, attempt_id: str, task_name: str
+  sched: Scheduler, attempt_id: str, task_id: str
 ) -> None:
   sched.transition_trial(
     attempt_id=attempt_id,
-    task_name=task_name,
+    task_id=task_id,
     from_state="running",
     to_state="unknown",
   )
@@ -156,7 +156,7 @@ def test_single_attempt_dispatches_all_tasks_in_order():
   sched = mk_sched()
   sched.submit(mk_attempt("A", ["t1", "t2", "t3"]))
   actions = drain(sched)
-  assert [a.task_name for a in actions] == ["t1", "t2", "t3"]
+  assert [a.task_id for a in actions] == ["t1", "t2", "t3"]
   assert all(a.attempt_id == "A" for a in actions)
 
 
@@ -193,7 +193,7 @@ def test_two_attempts_equal_weight_interleave_one_one():
   for _ in range(6):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq == ["a1", "b1", "a2", "b2", "a3", "b3"]
 
@@ -206,7 +206,7 @@ def test_two_attempts_weight_3_to_1():
   for _ in range(6):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq[:4] == ["a1", "a2", "a3", "b1"]
   assert seq[4:6] == ["a4", "b2"]
@@ -220,7 +220,7 @@ def test_smaller_attempt_drains_then_larger_alone():
   for _ in range(5):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq == ["a1", "b1", "a2", "a3", "a4"]
 
@@ -233,7 +233,7 @@ def test_paused_attempt_skipped_by_cursor():
   sched.submit(mk_attempt("A", ["a1", "a2"], paused=True))
   sched.submit(mk_attempt("B", ["b1"]))
   action = sched.dispatch_one()
-  assert action is not None and action.task_name == "b1"
+  assert action is not None and action.task_id == "b1"
   assert sched.attempt_view("A").pending == ["a1", "a2"]
 
 
@@ -249,7 +249,7 @@ def test_pause_mid_run_stops_further_dispatch_for_that_attempt():
   complete_ok(sched, b1)
   sched.patch("A", paused=True)
   action = sched.dispatch_one()
-  assert action is not None and action.task_name == "b2"
+  assert action is not None and action.task_id == "b2"
 
 
 def test_unpause_rejoins_rotation_no_owed_turns():
@@ -265,7 +265,7 @@ def test_unpause_rejoins_rotation_no_owed_turns():
   for _ in range(3):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq == ["a1", "a2", "a3"]
 
@@ -277,7 +277,7 @@ def test_max_concurrent_1_fences_second_dispatch():
   sched = mk_sched(max_concurrent=10)
   sched.submit(mk_attempt("A", ["a1", "a2", "a3"], max_concurrent=1))
   action = sched.dispatch_one()
-  assert action is not None and action.task_name == "a1"
+  assert action is not None and action.task_id == "a1"
   assert sched.dispatch_one() is None
 
 
@@ -285,10 +285,10 @@ def test_max_concurrent_1_next_dispatch_after_completion():
   sched = mk_sched(max_concurrent=10)
   sched.submit(mk_attempt("A", ["a1", "a2"], max_concurrent=1))
   first = sched.dispatch_one()
-  assert first is not None and first.task_name == "a1"
+  assert first is not None and first.task_id == "a1"
   complete_ok(sched, first)
   second = sched.dispatch_one()
-  assert second is not None and second.task_name == "a2"
+  assert second is not None and second.task_id == "a2"
 
 
 def test_max_concurrent_k_allows_k_parallel():
@@ -297,11 +297,11 @@ def test_max_concurrent_k_allows_k_parallel():
   a = sched.dispatch_one()
   b = sched.dispatch_one()
   assert a is not None and b is not None
-  assert a.task_name == "a1" and b.task_name == "a2"
+  assert a.task_id == "a1" and b.task_id == "a2"
   assert sched.dispatch_one() is None
   complete_ok(sched, a)
   c = sched.dispatch_one()
-  assert c is not None and c.task_name == "a3"
+  assert c is not None and c.task_id == "a3"
 
 
 # ── host caps ────────────────────────────────────────────────────
@@ -382,7 +382,7 @@ def test_pause_on_error_default_off_for_parallel_attempts():
   complete_err(sched, a1)
   assert sched.attempt_paused("A") is False
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "a2"
+  assert nxt is not None and nxt.task_id == "a2"
 
 
 def test_pause_on_error_true_pauses_even_for_parallel():
@@ -404,7 +404,7 @@ def test_pause_on_error_false_never_pauses_sequential():
   complete_err(sched, a1)
   assert sched.attempt_paused("A") is False
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "a2"
+  assert nxt is not None and nxt.task_id == "a2"
 
 
 def test_pause_on_error_skips_when_no_pending_left():
@@ -430,7 +430,7 @@ def test_clean_completion_is_not_a_pause_trigger():
   complete_ok(sched, a1)
   assert sched.attempt_paused("A") is False
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "a2"
+  assert nxt is not None and nxt.task_id == "a2"
 
 
 def test_pause_on_error_blocks_dispatch_while_unknown_present():
@@ -447,12 +447,12 @@ def test_pause_on_error_blocks_dispatch_while_unknown_present():
   assert sched.dispatch_one() is None
   sched.transition_trial(
     attempt_id="A",
-    task_name="a1",
+    task_id="a1",
     from_state="unknown",
     to_state="done_ok",
   )
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "a2"
+  assert nxt is not None and nxt.task_id == "a2"
 
 
 def test_pause_on_error_off_dispatches_even_with_unknown():
@@ -461,7 +461,7 @@ def test_pause_on_error_off_dispatches_even_with_unknown():
   sched.dispatch_one()
   die_without_outcome(sched, "A", "a1")
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "a2"
+  assert nxt is not None and nxt.task_id == "a2"
 
 
 def test_death_before_outcome_parks_in_unknown_without_pausing():
@@ -496,7 +496,7 @@ def test_new_attempt_appends_to_rotation_tail():
   for _ in range(3):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq == ["a2", "b2", "c1"]
 
@@ -512,25 +512,25 @@ def test_drained_attempt_skipped_by_rotation():
   assert b1 is not None
   complete_ok(sched, b1)
   b2 = sched.dispatch_one()
-  assert b2 is not None and b2.task_name == "b2"
+  assert b2 is not None and b2.task_id == "b2"
 
 
 # ── FIFO order ───────────────────────────────────────────────────
 
 
-def test_task_dispatch_order_matches_task_list():
+def test_task_dispatch_order_matches_task_ids():
   sched = mk_sched(max_concurrent=1)
   sched.submit(mk_attempt("A", ["t3", "t1", "t2"]))
   seq: list[str] = []
   for _ in range(3):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq == ["t3", "t1", "t2"]
 
 
-def test_task_list_order_preserved_after_pause_unpause():
+def test_task_ids_order_preserved_after_pause_unpause():
   sched = mk_sched(max_concurrent=1)
   sched.submit(mk_attempt("A", ["t1", "t2", "t3"], max_concurrent=1))
   t1 = sched.dispatch_one()
@@ -540,7 +540,7 @@ def test_task_list_order_preserved_after_pause_unpause():
   assert sched.dispatch_one() is None
   sched.patch("A", paused=False)
   t2 = sched.dispatch_one()
-  assert t2 is not None and t2.task_name == "t2"
+  assert t2 is not None and t2.task_id == "t2"
 
 
 # ── transition graph + slot accounting ───────────────────────────
@@ -552,7 +552,7 @@ def test_transition_trial_rejects_invalid_source_bucket():
   with pytest.raises(ValueError, match="unsupported trial source"):
     sched.transition_trial(
       attempt_id="A",
-      task_name="t1",
+      task_id="t1",
       from_state="done_ok",
       to_state="done_err",
     )
@@ -565,7 +565,7 @@ def test_transition_trial_rejects_illegal_edge():
   with pytest.raises(ValueError, match="unsupported trial transition"):
     sched.transition_trial(
       attempt_id="A",
-      task_name="t1",
+      task_id="t1",
       from_state="running",
       to_state="running",
     )
@@ -590,7 +590,7 @@ def test_unknown_to_ghosted_does_not_change_host_slot():
   before = sched.running_per_host()[action.host]
   sched.transition_trial(
     attempt_id="A",
-    task_name="t1",
+    task_id="t1",
     from_state="unknown",
     to_state="ghosted",
   )
@@ -606,7 +606,7 @@ def test_unknown_to_running_reacquires_host_slot():
   assert sched.running_per_host()[action.host] == 0
   sched.transition_trial(
     attempt_id="A",
-    task_name="t1",
+    task_id="t1",
     from_state="unknown",
     to_state="running",
   )
@@ -631,7 +631,7 @@ def test_has_work_true_when_ghosted_present():
   die_without_outcome(sched, "A", "t1")
   sched.transition_trial(
     attempt_id="A",
-    task_name="t1",
+    task_id="t1",
     from_state="unknown",
     to_state="ghosted",
   )
@@ -660,7 +660,7 @@ def test_reclaim_from_running_moves_task_back_to_pending():
   assert view.pending == ["t3"]
   assert sched.reclaim_from_running("A", "t1") is True
   view = sched.attempt_view("A")
-  # t1 returns at its task_list position, before t3.
+  # t1 returns at its task_ids position, before t3.
   assert view.pending == ["t1", "t3"]
   assert set(view.running) == {"t2"}
 
@@ -693,10 +693,10 @@ def test_reclaimed_task_can_be_redispatched():
   sched = mk_sched(max_concurrent=10)
   sched.submit(mk_attempt("A", ["t1"]))
   first = sched.dispatch_one()
-  assert first is not None and first.task_name == "t1"
+  assert first is not None and first.task_id == "t1"
   sched.reclaim_from_running("A", "t1")
   second = sched.dispatch_one()
-  assert second is not None and second.task_name == "t1"
+  assert second is not None and second.task_id == "t1"
   assert second.trial_id != first.trial_id
 
 
@@ -868,10 +868,10 @@ def test_cancel_preserves_cursor_rotation():
   sched.submit(mk_attempt("B", ["b1", "b2"]))
   sched.submit(mk_attempt("C", ["c1", "c2"]))
   a1 = sched.dispatch_one()
-  assert a1 is not None and a1.task_name == "a1"
+  assert a1 is not None and a1.task_id == "a1"
   complete_ok(sched, a1)
   # Cursor now at B. Cancelling A (before the cursor) must not
   # skip B's turn.
   sched.cancel("A")
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "b1"
+  assert nxt is not None and nxt.task_id == "b1"

@@ -75,7 +75,7 @@ def build_remote_command(
     **spec.env,
     **state.env,
     ENV_TRIAL: action.trial_id,
-    ENV_TASK: action.task_name,
+    ENV_TASK: action.task_id,
     ENV_ATTEMPT: state.attempt_id,
     ENV_HOME: spec.home_mount,
     ENV_SET_LABEL: labels.set_label(action.trial_id),

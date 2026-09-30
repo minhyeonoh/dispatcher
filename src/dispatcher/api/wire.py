@@ -119,7 +119,7 @@ def attempt_counts(
     done_err=len(view.done_err),
     ghosted=len(view.ghosted),
     unknown=len(view.unknown),
-    total=len(state.task_list),
+    total=len(state.task_ids),
   )
 
 
@@ -174,8 +174,8 @@ def full_attempt_view(
   view = scheduler.attempt_view(attempt_id)
   base = snapshot_attempt(scheduler, attempt_id)
 
-  def _values_for(task_name: str) -> dict[str, float] | None:
-    outcome = scheduler.outcome_of(attempt_id, task_name)
+  def _values_for(task_id: str) -> dict[str, float] | None:
+    outcome = scheduler.outcome_of(attempt_id, task_id)
     if outcome is None:
       return None
     return {

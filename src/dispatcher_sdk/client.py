@@ -45,10 +45,10 @@ def _request(
 
 
 def submit_attempt(server: str, payload: dict[str, Any]) -> dict[str, Any]:
-  """POST /attempts. Required payload keys: label, task_list,
+  """POST /attempts. Required payload keys: label, task_ids,
   home_root (absolute, unique per attempt), container ({image,
   command, env, mounts, home_mount, extra_args}). Optional:
-  payloads (per-task, keys ⊆ task_list), env, pool, tags, scope,
+  payloads (per-task, keys ⊆ task_ids), env, pool, tags, scope,
   paused, weight, max_concurrent, pause_on_error, alias."""
   return _request(server, "POST", "/attempts", payload)
 

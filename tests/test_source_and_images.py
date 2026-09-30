@@ -51,7 +51,7 @@ def test_submit_stores_source_tar_and_sha(tmp_path: Path):
     resp = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={
           "paused": True,
@@ -74,7 +74,7 @@ def test_submit_source_survives_restart(tmp_path: Path):
     client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         attempt_id="A",
         extra={
@@ -94,7 +94,7 @@ def test_submit_bad_base64_is_400(tmp_path: Path):
     resp = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"source_tar_b64": "no+t/base64!!"},
       ),
@@ -107,14 +107,14 @@ def test_require_source_rejects_bare_submit(tmp_path: Path):
     client.patch("/settings", json={"require_source": True})
     resp = client.post(
       "/attempts",
-      json=payload(task_list=["t1"], home_root=tmp_path / "a"),
+      json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     )
     assert resp.status_code == 400
     assert "source" in resp.json()["detail"]
     ok = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "b",
         extra={
           "paused": True,
@@ -148,7 +148,7 @@ def test_submit_pins_image_id_via_resolver(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -179,7 +179,7 @@ def test_submit_unresolvable_image_is_400(tmp_path: Path):
   with TestClient(app) as client:
     resp = client.post(
       "/attempts",
-      json=payload(task_list=["t1"], home_root=tmp_path / "a"),
+      json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     )
     assert resp.status_code == 400
     assert "not found" in resp.json()["detail"]
@@ -190,7 +190,7 @@ def test_fake_dispatch_mode_pins_nothing(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -206,7 +206,7 @@ def _action() -> DispatchEntry:
 
   return DispatchEntry(
     attempt_id="att-001",
-    task_name="t1",
+    task_id="t1",
     trial_id="t1__0000001",
     host="ml9",
     dispatched_at=datetime.now(UTC),

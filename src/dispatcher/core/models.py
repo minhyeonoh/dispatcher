@@ -76,7 +76,7 @@ class AttemptState(BaseModel):
 
   attempt_id: str
   label: str
-  task_list: list[str]
+  task_ids: list[str]
   # Directory that holds one subdir per trial
   # (`<home_root>/<trial_id>/`). Must be unique per attempt and
   # visible on every dispatch host (shared filesystem).
@@ -122,7 +122,7 @@ class DispatchEntry(BaseModel):
   returns for the runtime to execute."""
 
   attempt_id: str
-  task_name: str
+  task_id: str
   trial_id: str
   host: str
   dispatched_at: datetime
@@ -137,7 +137,7 @@ class TrialView(BaseModel):
   """One dispatched trial's snapshot. Pending tasks are plain
   strings in `AttemptView.pending`, never TrialViews."""
 
-  task_name: str
+  task_id: str
   state: TrialViewState
   trial_id: str
   host: str

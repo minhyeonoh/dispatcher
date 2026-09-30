@@ -79,7 +79,7 @@ def load_trial(
       time.sleep(0.5)
   return TrialContext(
     attempt=spec.get("attempt_id") or e.get("DISPATCHER_ATTEMPT", ""),
-    task=spec.get("task_name") or e.get("DISPATCHER_TASK", ""),
+    task=spec.get("task_id") or e.get("DISPATCHER_TASK", ""),
     trial=spec.get("trial_id") or e.get("DISPATCHER_TRIAL", ""),
     home=home,
     payload=spec.get("payload"),

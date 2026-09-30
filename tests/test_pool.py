@@ -26,7 +26,7 @@ def test_pool_replays_from_submit_and_patch():
         "type": "submit",
         "attempt_id": "A",
         "label": "A",
-        "task_list": ["t1"],
+        "task_ids": ["t1"],
         "home_root": "/data/A",
         "container": {"image": "img"},
         "submitted_at": "2026-09-28T10:00:00+00:00",
@@ -62,7 +62,7 @@ def test_pool_completion_frees_slot_for_next_dispatch():
   assert sched.dispatch_one() is None
   complete_ok(sched, first)
   nxt = sched.dispatch_one()
-  assert nxt is not None and nxt.task_name == "a2"
+  assert nxt is not None and nxt.task_id == "a2"
 
 
 def test_unlisted_pool_is_unbounded():
@@ -89,7 +89,7 @@ def test_patch_pool_moves_running_counts():
   # Completion decrements the NEW pool, no drift.
   sched.transition_trial(
     attempt_id="A",
-    task_name="a1",
+    task_id="a1",
     from_state="running",
     to_state="done_ok",
   )
@@ -123,7 +123,7 @@ def test_wrr_still_interleaves_within_pool_cap():
   for _ in range(4):
     action = sched.dispatch_one()
     assert action is not None
-    seq.append(action.task_name)
+    seq.append(action.task_id)
     complete_ok(sched, action)
   assert seq == ["a1", "b1", "a2", "b2"]
 
@@ -178,7 +178,7 @@ def test_terminal_transition_decrements_pool():
   assert sched.pool_running_snapshot() == {"gpu": 1}
   sched.transition_trial(
     attempt_id="A",
-    task_name="t2",
+    task_id="t2",
     from_state="running",
     to_state="done_ok",
   )
@@ -191,7 +191,7 @@ def test_retry_from_done_err_does_not_touch_pool():
   sched.dispatch_one()
   sched.transition_trial(
     attempt_id="A",
-    task_name="t1",
+    task_id="t1",
     from_state="running",
     to_state="done_err",
   )
@@ -211,7 +211,7 @@ def test_restore_bumps_pool_for_preexisting_running():
   )
   a = mk_attempt("A", ["t1", "t2"], pool="gpu")
   tv = TrialView(
-    task_name="t1",
+    task_id="t1",
     state="running",
     trial_id="t1__0000001",
     host="ml10",
@@ -230,7 +230,7 @@ def test_unknown_to_running_rebumps_pool():
   assert sched.pool_running_snapshot() == {}
   sched.transition_trial(
     attempt_id="A",
-    task_name="t1",
+    task_id="t1",
     from_state="unknown",
     to_state="running",
   )

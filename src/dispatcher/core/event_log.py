@@ -176,16 +176,16 @@ def _erase_dispatch(
   kind: str,
   event_index: int,
 ) -> None:
-  task_name = ev.get("task_name")
-  if task_name is None:
-    raise ReplayError(f"event {event_index}: {kind} missing 'task_name'")
+  task_id = ev.get("task_id")
+  if task_id is None:
+    raise ReplayError(f"event {event_index}: {kind} missing 'task_id'")
   trial_id = ev.get("trial_id")
   if trial_id is None:
     raise ReplayError(f"event {event_index}: {kind} missing 'trial_id'")
   # A trial_id matching nothing erases nothing: the dispatch it
   # names is already gone from the log.
   for j in range(len(log) - 1, -1, -1):
-    if log[j].task_name != task_name:
+    if log[j].task_id != task_id:
       continue
     if log[j].trial_id != trial_id:
       continue

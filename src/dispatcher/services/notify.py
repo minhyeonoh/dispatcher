@@ -1,7 +1,7 @@
 """Attempt-progress notifications to Telegram.
 
 Fires when an attempt's evidence-based completion ratio
-(done_ok + done_err over task_list; unknown/ghosted excluded —
+(done_ok + done_err over task_ids; unknown/ghosted excluded —
 no evidence, no announcement) first crosses a threshold. Fired
 thresholds persist as `notify_fired` events so restarts never
 re-announce.
@@ -163,7 +163,7 @@ class NotifyManager:
       state = self._sched.attempt_state(aid)
     except KeyError:
       return  # cancelled between event and lookup
-    total = len(state.task_list)
+    total = len(state.task_ids)
     if total <= 0:
       return
     view = self._sched.attempt_view(aid)

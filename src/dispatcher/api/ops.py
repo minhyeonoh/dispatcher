@@ -94,10 +94,10 @@ class ServerState:
   resolve_image: Callable[[str], str] | None = None
   _seq: int = field(default=0)
 
-  def next_trial_id(self, task_name: str) -> str:
+  def next_trial_id(self, task_id: str) -> str:
     """`<task[:32]>__<7-digit seq>` — deterministic, monotonic."""
     self._seq += 1
-    truncated = task_name[:32].rstrip("_-")
+    truncated = task_id[:32].rstrip("_-")
     return f"{truncated}__{self._seq:07d}"
 
   def advance_seq_to(self, seq: int) -> None:
@@ -169,20 +169,20 @@ def _validate_submit(st: ServerState, payload: dict[str, Any]) -> None:
       raise Conflict(
         (f"home_root {home_root!r} already belongs to attempt {aid!r}"),
       )
-  task_list = payload.get("task_list")
-  if not isinstance(task_list, list) or not task_list:
-    raise Invalid("task_list must be a non-empty list")
-  if len(set(task_list)) != len(task_list):
-    raise Invalid("task_list contains duplicates")
+  task_ids = payload.get("task_ids")
+  if not isinstance(task_ids, list) or not task_ids:
+    raise Invalid("task_ids must be a non-empty list")
+  if len(set(task_ids)) != len(task_ids):
+    raise Invalid("task_ids contains duplicates")
   payloads = payload.get("payloads") or {}
   if not isinstance(payloads, dict):
     raise Invalid("payloads must be an object")
-  stray = set(payloads) - set(task_list)
+  stray = set(payloads) - set(task_ids)
   if stray:
     raise Invalid(
       (
         f"payloads for unknown tasks: {sorted(stray)[:5]} — "
-        f"likely a typo; every payload key must be in task_list"
+        f"likely a typo; every payload key must be in task_ids"
       ),
     )
 
@@ -508,9 +508,9 @@ async def reclaim_trial(
     )
   view = st.scheduler.attempt_view(attempt_id)
   match: tuple[str, TrialView] | None = None
-  for task_name, tv in view.running.items():
+  for task_id, tv in view.running.items():
     if tv.trial_id == trial_id:
-      match = (task_name, tv)
+      match = (task_id, tv)
       break
   if match is None:
     # Say where it actually is — "already finished" and "typo"
@@ -525,12 +525,12 @@ async def reclaim_trial(
     raise NotFound(
       f"trial {trial_id!r} not found in attempt {attempt_id!r}"
     )
-  task_name, tv = match
+  task_id, tv = match
   # Kill first, then reclaim — same order as attempt-level
   # reclaim, so the container set is already being torn down
   # when the task becomes dispatchable again.
-  st.runtime.fire_kill_trials({task_name: tv})
-  reclaimed = st.scheduler.reclaim_from_running(attempt_id, task_name)
+  st.runtime.fire_kill_trials({task_id: tv})
+  reclaimed = st.scheduler.reclaim_from_running(attempt_id, task_id)
   if not reclaimed:
     # Natural completion won the race between snapshot and now.
     raise Conflict(
@@ -541,7 +541,7 @@ async def reclaim_trial(
     {
       "type": "reclaim",
       "attempt_id": attempt_id,
-      "task_name": task_name,
+      "task_id": task_id,
       "trial_id": trial_id,
       "at": clock_fn().isoformat(),
     },
@@ -550,13 +550,13 @@ async def reclaim_trial(
     "attempt_reclaimed",
     {
       "attempt_id": attempt_id,
-      "reclaimed": [task_name],
+      "reclaimed": [task_id],
       "skipped_completed": [],
     },
   )
   return {
     "attempt_id": attempt_id,
-    "task_name": task_name,
+    "task_id": task_id,
     "trial_id": trial_id,
     "status": "reclaimed",
   }
@@ -577,21 +577,21 @@ async def reclaim_attempt(
   at = clock_fn().isoformat()
   reclaimed: list[str] = []
   skipped: list[str] = []
-  for task_name, tv in running_snapshot.items():
-    if st.scheduler.reclaim_from_running(attempt_id, task_name):
-      reclaimed.append(task_name)
+  for task_id, tv in running_snapshot.items():
+    if st.scheduler.reclaim_from_running(attempt_id, task_id):
+      reclaimed.append(task_id)
       await append_event_async(
         log_path,
         {
           "type": "reclaim",
           "attempt_id": attempt_id,
-          "task_name": task_name,
+          "task_id": task_id,
           "trial_id": tv.trial_id,
           "at": at,
         },
       )
     else:
-      skipped.append(task_name)
+      skipped.append(task_id)
   st.event_bus.publish(
     "attempt_reclaimed",
     {
@@ -622,16 +622,16 @@ async def retry_done_err(
   targets: list[tuple[str, TrialView]] = []
   if payload.trial_ids:
     wanted = set(payload.trial_ids)
-    for task_name, tv in done_err_snapshot.items():
+    for task_id, tv in done_err_snapshot.items():
       if tv.trial_id in wanted:
-        targets.append((task_name, tv))
+        targets.append((task_id, tv))
   else:
     since_epoch = (
       payload.since_iso.timestamp()
       if payload.since_iso is not None
       else None
     )
-    for task_name, tv in done_err_snapshot.items():
+    for task_id, tv in done_err_snapshot.items():
       if payload.host is not None and tv.host != payload.host:
         continue
       if since_epoch is not None:
@@ -646,28 +646,28 @@ async def retry_done_err(
           # Nothing to compare against — do NOT retry, so the
           # operator's filter stays predictable.
           continue
-      targets.append((task_name, tv))
+      targets.append((task_id, tv))
 
   log_path = event_log_path_for(state)
   at = clock_fn().isoformat()
   retried: list[str] = []
   skipped: list[str] = []
-  for task_name, tv in targets:
-    if st.scheduler.retry_from_done_err(attempt_id, task_name):
-      retried.append(task_name)
+  for task_id, tv in targets:
+    if st.scheduler.retry_from_done_err(attempt_id, task_id):
+      retried.append(task_id)
       st.metrics.undo_done_err(attempt_id)
       await append_event_async(
         log_path,
         {
           "type": "retry",
           "attempt_id": attempt_id,
-          "task_name": task_name,
+          "task_id": task_id,
           "trial_id": tv.trial_id,
           "at": at,
         },
       )
     else:
-      skipped.append(task_name)
+      skipped.append(task_id)
   st.event_bus.publish(
     "attempt_retried",
     {

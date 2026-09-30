@@ -70,10 +70,10 @@ def restore_attempts_from_disk(
       max_seq = max(max_seq, seq_in_trial_id(entry.trial_id))
       if entry.attempt_id != attempt.attempt_id:
         continue
-      done_ok.pop(entry.task_name, None)
-      done_err.pop(entry.task_name, None)
-      unknown.pop(entry.task_name, None)
-      latest_trial[entry.task_name] = entry.trial_id
+      done_ok.pop(entry.task_id, None)
+      done_err.pop(entry.task_id, None)
+      unknown.pop(entry.task_id, None)
+      latest_trial[entry.task_id] = entry.trial_id
       outcome = completed.get(entry.trial_id)
       if outcome is not None:
         error_present = (not outcome.ok) or outcome.error is not None
@@ -85,23 +85,23 @@ def restore_attempts_from_disk(
           logger.warning(
             "restore: requeueing infra failure attempt=%s task=%s",
             attempt.attempt_id,
-            entry.task_name,
+            entry.task_id,
           )
           continue
         tv = TrialView(
-          task_name=entry.task_name,
+          task_id=entry.task_id,
           state="done_err" if error_present else "done_ok",
           trial_id=entry.trial_id,
           host=entry.host,
           dispatched_at=entry.dispatched_at,
         )
-        (done_err if error_present else done_ok)[entry.task_name] = tv
+        (done_err if error_present else done_ok)[entry.task_id] = tv
       else:
         # Dispatched, no readable outcome — could be running,
         # crashed, or NFS-lagged. Park in unknown; the startup
         # resolver reclassifies on evidence.
-        unknown[entry.task_name] = TrialView(
-          task_name=entry.task_name,
+        unknown[entry.task_id] = TrialView(
+          task_id=entry.task_id,
           state="unknown",
           trial_id=entry.trial_id,
           host=entry.host,
@@ -145,13 +145,13 @@ def restore_attempts_from_disk(
     # must not double-count in metrics.
     trial_to_task = {trial: task for task, trial in latest_trial.items()}
     for trial_id, outcome in completed.items():
-      task_name = trial_to_task.get(trial_id)
-      if task_name is None:
+      task_id = trial_to_task.get(trial_id)
+      if task_id is None:
         continue
       # Skip outcomes routed back to pending by the infra rule.
-      if task_name not in done_ok and task_name not in done_err:
+      if task_id not in done_ok and task_id not in done_err:
         continue
-      scheduler.seed_outcome(attempt.attempt_id, task_name, outcome)
+      scheduler.seed_outcome(attempt.attempt_id, task_id, outcome)
       error_present = (not outcome.ok) or outcome.error is not None
       metrics.record_completion(
         attempt.attempt_id,

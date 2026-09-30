@@ -57,14 +57,14 @@ def mk_client(
 
 def payload(
   *,
-  task_list: list[str],
+  task_ids: list[str],
   home_root: Path,
   label: str = "demo",
   attempt_id: str | None = None,
   extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   base: dict[str, Any] = {
-    "task_list": task_list,
+    "task_ids": task_ids,
     "home_root": str(home_root),
     "label": label,
     "container": {"image": "img"},
@@ -93,7 +93,7 @@ def test_submit_returns_id_alias_and_appears_in_state(
     resp = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1", "t2"],
+        task_ids=["t1", "t2"],
         home_root=tmp_path / "a",
         attempt_id="att-fixed",
       ),
@@ -118,7 +118,7 @@ def test_submit_generates_attempt_id_when_omitted(tmp_path: Path):
   with mk_client(tmp_path) as client:
     resp = client.post(
       "/attempts",
-      json=payload(task_list=["t1"], home_root=tmp_path / "a"),
+      json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     )
     assert resp.status_code == 200
     assert resp.json()["attempt_id"].startswith("att-")
@@ -127,13 +127,13 @@ def test_submit_generates_attempt_id_when_omitted(tmp_path: Path):
 def test_submit_duplicate_id_returns_409(tmp_path: Path):
   with mk_client(tmp_path) as client:
     p1 = payload(
-      task_list=["t1"],
+      task_ids=["t1"],
       home_root=tmp_path / "a",
       attempt_id="dup",
     )
     assert client.post("/attempts", json=p1).status_code == 200
     p2 = payload(
-      task_list=["t1"],
+      task_ids=["t1"],
       home_root=tmp_path / "b",
       attempt_id="dup",
     )
@@ -144,9 +144,9 @@ def test_submit_duplicate_home_root_returns_409(tmp_path: Path):
   # Two attempts sharing a home would interleave trial dirs and
   # merge event logs — silent cross-contamination.
   with mk_client(tmp_path) as client:
-    p1 = payload(task_list=["t1"], home_root=tmp_path / "same")
+    p1 = payload(task_ids=["t1"], home_root=tmp_path / "same")
     assert client.post("/attempts", json=p1).status_code == 200
-    p2 = payload(task_list=["t2"], home_root=tmp_path / "same")
+    p2 = payload(task_ids=["t2"], home_root=tmp_path / "same")
     resp = client.post("/attempts", json=p2)
     assert resp.status_code == 409
     assert "home_root" in resp.json()["detail"]
@@ -154,7 +154,7 @@ def test_submit_duplicate_home_root_returns_409(tmp_path: Path):
 
 def test_submit_relative_home_root_returns_400(tmp_path: Path):
   with mk_client(tmp_path) as client:
-    p = payload(task_list=["t1"], home_root=tmp_path / "a")
+    p = payload(task_ids=["t1"], home_root=tmp_path / "a")
     p["home_root"] = "relative/path"
     assert client.post("/attempts", json=p).status_code == 400
 
@@ -163,16 +163,16 @@ def test_submit_empty_or_duplicate_tasks_return_400(
   tmp_path: Path,
 ):
   with mk_client(tmp_path) as client:
-    p = payload(task_list=[], home_root=tmp_path / "a")
+    p = payload(task_ids=[], home_root=tmp_path / "a")
     assert client.post("/attempts", json=p).status_code == 400
-    p = payload(task_list=["t1", "t1"], home_root=tmp_path / "b")
+    p = payload(task_ids=["t1", "t1"], home_root=tmp_path / "b")
     assert client.post("/attempts", json=p).status_code == 400
 
 
 def test_submit_stray_payload_key_returns_400(tmp_path: Path):
   with mk_client(tmp_path) as client:
     p = payload(
-      task_list=["t1"],
+      task_ids=["t1"],
       home_root=tmp_path / "a",
       extra={"payloads": {"t2": 1}},  # typo — t2 not in tasks
     )
@@ -184,7 +184,7 @@ def test_submit_stray_payload_key_returns_400(tmp_path: Path):
 def test_submit_accepts_scheduler_knobs(tmp_path: Path):
   with mk_client(tmp_path) as client:
     p = payload(
-      task_list=["t1"],
+      task_ids=["t1"],
       home_root=tmp_path / "a",
       extra={"paused": True, "weight": 7, "pool": "gpu"},
     )
@@ -210,7 +210,7 @@ def test_full_view_partitions_tasks(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1", "t2", "t3", "t4"],
+        task_ids=["t1", "t2", "t3", "t4"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -223,15 +223,15 @@ def test_full_view_partitions_tasks(tmp_path: Path):
     assert a1 is not None and a2 is not None
     sched.transition_trial(
       attempt_id=aid,
-      task_name=a1.task_name,
+      task_id=a1.task_id,
       from_state="running",
       to_state="done_ok",
       outcome=Outcome(ok=True, values={"reward": 0.5}),
     )
     detail = client.get(f"/attempts/{aid}").json()
-    assert set(detail["done_ok"]) == {a1.task_name}
-    assert detail["done_ok"][a1.task_name]["values"] == {"reward": 0.5}
-    assert set(detail["running"]) == {a2.task_name}
+    assert set(detail["done_ok"]) == {a1.task_id}
+    assert detail["done_ok"][a1.task_id]["values"] == {"reward": 0.5}
+    assert set(detail["running"]) == {a2.task_id}
     assert set(detail["pending"]) == {"t3", "t4"}
 
 
@@ -242,7 +242,7 @@ def test_list_attempts_matches_state_and_scope_filter(
     client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         attempt_id="A",
         extra={"scope": "bench1", "paused": True},
@@ -251,7 +251,7 @@ def test_list_attempts_matches_state_and_scope_filter(
     client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "b",
         attempt_id="B",
         extra={"scope": "bench2", "paused": True},
@@ -276,7 +276,7 @@ def test_patch_knobs_and_persistence(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -297,7 +297,7 @@ def test_patch_unknown_knob_returns_400(tmp_path: Path):
   with mk_client(tmp_path) as client:
     aid = client.post(
       "/attempts",
-      json=payload(task_list=["t1"], home_root=tmp_path / "a"),
+      json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     ).json()["attempt_id"]
     assert (
       client.patch(f"/attempts/{aid}", json={"bogus": 1}).status_code
@@ -310,7 +310,7 @@ def test_patch_alias_collision_returns_409(tmp_path: Path):
     a = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"alias": "one", "paused": True},
       ),
@@ -319,7 +319,7 @@ def test_patch_alias_collision_returns_409(tmp_path: Path):
     b = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "b",
         extra={"paused": True},
       ),
@@ -338,7 +338,7 @@ def test_delete_removes_attempt_and_skips_restore(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -363,7 +363,7 @@ def test_reclaim_requires_paused(tmp_path: Path):
   with mk_client(tmp_path) as client:
     aid = client.post(
       "/attempts",
-      json=payload(task_list=["t1"], home_root=tmp_path / "a"),
+      json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     ).json()["attempt_id"]
     resp = client.post(f"/attempts/{aid}/reclaim")
     assert resp.status_code == 409
@@ -375,7 +375,7 @@ def test_reclaim_returns_running_tasks_to_pending(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1", "t2"],
+        task_ids=["t1", "t2"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -402,7 +402,7 @@ def test_retry_done_err_moves_back_to_pending(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -413,7 +413,7 @@ def test_retry_done_err_moves_back_to_pending(tmp_path: Path):
     assert sched.dispatch_one() is not None
     sched.transition_trial(
       attempt_id=aid,
-      task_name="t1",
+      task_id="t1",
       from_state="running",
       to_state="done_err",
       outcome=Outcome(ok=False),
@@ -444,7 +444,7 @@ def test_archive_roundtrip_and_guards(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -457,7 +457,7 @@ def test_archive_roundtrip_and_guards(tmp_path: Path):
     assert sched.dispatch_one() is not None
     sched.transition_trial(
       attempt_id=aid,
-      task_name="t1",
+      task_id="t1",
       from_state="running",
       to_state="done_ok",
       outcome=Outcome(ok=True),
@@ -564,7 +564,7 @@ def test_monitor_reports_metrics(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -644,7 +644,7 @@ def _submit_ev(home: Path, tasks: list[str]) -> dict:
     "type": "submit",
     "attempt_id": "att-restore",
     "label": "demo",
-    "task_list": tasks,
+    "task_ids": tasks,
     "home_root": str(home),
     "container": {"image": "img"},
     "submitted_at": "2026-09-28T10:00:00+00:00",
@@ -657,7 +657,7 @@ def _dispatch_ev(task: str, trial: str) -> dict:
   return {
     "type": "dispatch",
     "attempt_id": "att-restore",
-    "task_name": task,
+    "task_id": task,
     "trial_id": trial,
     "host": "ml10",
     "at": "2026-09-28T10:00:01+00:00",
@@ -787,7 +787,7 @@ def test_restore_advances_trial_id_counter(tmp_path: Path):
   with mk_client(tmp_path, dispatched=dispatched) as client:
     aid = client.post(
       "/attempts",
-      json=payload(task_list=["x1"], home_root=tmp_path / "fresh"),
+      json=payload(task_ids=["x1"], home_root=tmp_path / "fresh"),
     ).json()["attempt_id"]
     assert aid
     st = client.app.state.dispatcher  # type: ignore[union-attr]
@@ -851,7 +851,7 @@ def test_reclaim_single_trial_spares_the_rest(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1", "t2", "t3"],
+        task_ids=["t1", "t2", "t3"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -868,15 +868,15 @@ def test_reclaim_single_trial_spares_the_rest(tmp_path: Path):
     resp = client.post(f"/attempts/{aid}/trials/{a1.trial_id}/reclaim")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["task_name"] == a1.task_name
+    assert body["task_id"] == a1.task_id
     # ONLY the zombie's container set was killed.
     assert len(kills) == 1
-    assert list(kills[0]) == [a1.task_name]
+    assert list(kills[0]) == [a1.task_id]
     detail = client.get(f"/attempts/{aid}").json()
-    # Victim back at its task_list position; the healthy trial
+    # Victim back at its task_ids position; the healthy trial
     # untouched.
-    assert detail["pending"] == [a1.task_name, "t3"]
-    assert set(detail["running"]) == {a2.task_name}
+    assert detail["pending"] == [a1.task_id, "t3"]
+    assert set(detail["running"]) == {a2.task_id}
 
 
 def test_reclaim_single_trial_no_pause_needed_and_redispatches(
@@ -886,7 +886,7 @@ def test_reclaim_single_trial_no_pause_needed_and_redispatches(
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -901,7 +901,7 @@ def test_reclaim_single_trial_no_pause_needed_and_redispatches(
     assert resp.status_code == 200  # attempt NOT paused — allowed
     second = sched.dispatch_one()
     assert second is not None
-    assert second.task_name == "t1"
+    assert second.task_id == "t1"
     assert second.trial_id != first.trial_id
 
 
@@ -912,7 +912,7 @@ def test_reclaim_trial_wrong_states(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
@@ -924,7 +924,7 @@ def test_reclaim_trial_wrong_states(tmp_path: Path):
     assert action is not None
     sched.transition_trial(
       attempt_id=aid,
-      task_name="t1",
+      task_id="t1",
       from_state="running",
       to_state="done_ok",
       outcome=Outcome(ok=True),
@@ -949,7 +949,7 @@ def test_reclaim_trial_event_survives_restart(tmp_path: Path):
     aid = client.post(
       "/attempts",
       json=payload(
-        task_list=["t1"],
+        task_ids=["t1"],
         home_root=tmp_path / "a",
         attempt_id="A",
         extra={"paused": True},

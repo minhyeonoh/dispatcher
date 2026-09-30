@@ -75,7 +75,7 @@ def _complete_n(sched: Scheduler, n: int) -> None:
     assert action is not None
     sched.transition_trial(
       attempt_id=action.attempt_id,
-      task_name=action.task_name,
+      task_id=action.task_id,
       from_state="running",
       to_state="done_ok",
       outcome=Outcome(ok=True),
@@ -105,7 +105,7 @@ def test_unknown_does_not_count_toward_ratio(tmp_path: Path):
   assert action is not None
   sched.transition_trial(
     attempt_id="att-001",
-    task_name=action.task_name,
+    task_id=action.task_id,
     from_state="running",
     to_state="unknown",
   )

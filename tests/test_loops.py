@@ -298,7 +298,7 @@ def test_scan_candidates_terminal_and_idle_only(tmp_path: Path):
         break
       sched.transition_trial(
         attempt_id=action.attempt_id,
-        task_name=action.task_name,
+        task_id=action.task_id,
         from_state="running",
         to_state="done_ok",
         outcome=Outcome(ok=True),

@@ -25,7 +25,7 @@ def _spec(home: Path, payload=None) -> dict:
   home.mkdir(parents=True, exist_ok=True)
   spec = {
     "attempt_id": "att-1",
-    "task_name": "t1",
+    "task_id": "t1",
     "trial_id": "t1__0000001",
     "home": str(home),
     "payload": payload,
