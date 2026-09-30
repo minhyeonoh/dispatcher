@@ -7,7 +7,7 @@ error would score NFS lag as a failure."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from dispatcher.core.models import OUTCOME_FILENAME, Outcome
@@ -27,7 +27,6 @@ class CompletionSnapshot:
   outcome_exists: bool
   error_present: bool
   infra: bool = False
-  values: dict[str, float] = field(default_factory=dict)
   outcome: Outcome | None = None
   exit_code: int | None = None
 
@@ -48,16 +47,10 @@ def read_completion(instance_home: Path) -> CompletionSnapshot | None:
   # error object is contradictory — read it as an error rather
   # than trust the flag.
   error_present = (not parsed.ok) or parsed.error is not None
-  values = {
-    k: float(v)
-    for k, v in parsed.values.items()
-    if isinstance(v, (int, float)) and not isinstance(v, bool)
-  }
   return CompletionSnapshot(
     outcome_exists=True,
     error_present=error_present,
     infra=parsed.infra,
-    values=values,
     outcome=parsed,
   )
 

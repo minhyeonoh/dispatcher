@@ -17,7 +17,6 @@ from dispatcher.core.event_log import (
   seq_in_instance_id,
 )
 from dispatcher.core.models import InstanceView
-from dispatcher.core.outcome import CompletionSnapshot
 from dispatcher.core.scheduler import (
   AliasCollisionError,
   NotArchivableError,
@@ -26,15 +25,12 @@ from dispatcher.core.scheduler import (
 if TYPE_CHECKING:
   from pathlib import Path
 
-  from dispatcher.core.metrics import MetricsCache
   from dispatcher.core.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
 
-def restore_jobs_from_disk(
-  scheduler: Scheduler, metrics: MetricsCache, data_dir: Path
-) -> int:
+def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
   """Rebuild every live job from its event log + on-disk
   outcomes. Malformed logs are skipped (one corrupt job must
   not block startup). Returns the highest instance-id counter seen
@@ -140,9 +136,9 @@ def restore_jobs_from_disk(
           job.job_id,
           exc,
         )
-    # Seed caches from the LATEST instance of each task only — a
-    # superseded (requeued) instance's outcome must not win, and
-    # must not double-count in metrics.
+    # Seed the outcome cache from the LATEST instance of each task
+    # only — a superseded (requeued) instance's outcome must not
+    # win.
     instance_to_task = {
       instance: task for task, instance in latest_instance.items()
     }
@@ -154,20 +150,6 @@ def restore_jobs_from_disk(
       if task_id not in done_ok and task_id not in done_err:
         continue
       scheduler.seed_outcome(job.job_id, task_id, outcome)
-      error_present = (not outcome.ok) or outcome.error is not None
-      metrics.record_completion(
-        job.job_id,
-        CompletionSnapshot(
-          outcome_exists=True,
-          error_present=error_present,
-          values={
-            k: float(v)
-            for k, v in outcome.values.items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-          },
-          outcome=outcome,
-        ),
-      )
     # Re-archive: replay left the marks set; buckets + caches are
     # rebuilt, so the bytes regenerate. A precondition failure
     # (something reclassified to unknown) leaves it live.

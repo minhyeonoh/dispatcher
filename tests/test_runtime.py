@@ -11,7 +11,6 @@ import pytest
 
 from dispatcher.core import labels
 from dispatcher.core.dispatch import DispatchError
-from dispatcher.core.metrics import MetricsCache
 from dispatcher.core.models import HostSettings
 from dispatcher.core.outcome import CompletionSnapshot
 from dispatcher.core.runtime import DispatcherRuntime
@@ -74,11 +73,10 @@ async def null_dispatch(action, state) -> None:
   return None
 
 
-def clean(values: dict[str, float] | None = None):
+def clean():
   return CompletionSnapshot(
     outcome_exists=True,
     error_present=False,
-    values=values or {},
   )
 
 
@@ -276,12 +274,10 @@ def test_live_and_resolver_share_terminal_pipeline(
     assert action is not None
     snapshot = errored()
     event_types: list[str] = []
-    metrics = MetricsCache()
     runtime = DispatcherRuntime(
       sched,
       self_host="ml10",
       poll=lambda _p, _s=snapshot: _s,
-      metrics=metrics,
       event_bus=RecordingBus(event_types),  # type: ignore[arg-type]
     )
     original = runtime._apply_terminal_transition
@@ -311,7 +307,7 @@ def test_live_and_resolver_share_terminal_pipeline(
         runtime.resolve_state_once(max_concurrent_probes=1)
       )
       assert outcomes["done_err"] == 1
-    assert metrics.get("job-001").err == 1
+    assert set(sched.job_view("job-001").done_err) == {"t1"}
     assert sched.job_paused("job-001") is True
     event_orders[mode] = event_types
 
@@ -427,28 +423,23 @@ def test_ghosted_re_poll_stays_ghosted_without_outcome(
 ):
   sched = mk_sched(1)
   _seed_ghosted(sched, tmp_path)
-  metrics = MetricsCache()
   runtime = DispatcherRuntime(
-    sched, self_host="ml10", poll=lambda _p: None, metrics=metrics
+    sched, self_host="ml10", poll=lambda _p: None
   )
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["unchanged"] == 1
   assert set(sched.job_view("job-001").ghosted) == {"t1"}
-  m = metrics.get("job-001")
-  assert m.ok == 0 and m.err == 0
 
 
 def test_ghosted_re_poll_promotes_on_late_error(tmp_path: Path):
   sched = mk_sched(1)
   _seed_ghosted(sched, tmp_path)
-  metrics = MetricsCache()
   runtime = DispatcherRuntime(
     sched,
     self_host="ml10",
     poll=lambda _p: errored(),
-    metrics=metrics,
   )
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
@@ -457,26 +448,21 @@ def test_ghosted_re_poll_promotes_on_late_error(tmp_path: Path):
   view = sched.job_view("job-001")
   assert set(view.done_err) == {"t1"}
   assert set(view.ghosted) == set()
-  assert metrics.get("job-001").err == 1
 
 
 def test_ghosted_re_poll_promotes_on_late_ok(tmp_path: Path):
   sched = mk_sched(1)
   _seed_ghosted(sched, tmp_path)
-  metrics = MetricsCache()
   runtime = DispatcherRuntime(
     sched,
     self_host="ml10",
-    poll=lambda _p: clean({"reward": 1.0}),
-    metrics=metrics,
+    poll=lambda _p: clean(),
   )
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["done_ok"] == 1
-  m = metrics.get("job-001")
-  assert m.ok == 1
-  assert m.means == {"reward": 1.0}
+  assert set(sched.job_view("job-001").done_ok) == {"t1"}
 
 
 # ── docker die handler ───────────────────────────────────────────
@@ -781,7 +767,7 @@ def test_stale_die_observation_cannot_score_new_instance(
   # Old instance's completion lands late.
   asyncio.run(
     runtime._apply_instance_completion(
-      "job-001", "t1", first.instance_id, clean({"reward": 0.0})
+      "job-001", "t1", first.instance_id, clean()
     )
   )
   view = sched.job_view("job-001")
@@ -826,7 +812,7 @@ def test_retry_ladder_busts_cache_between_jobs(tmp_path: Path):
   busted = [False]
 
   def fake_poll(instance_home):
-    return clean({"reward": 1.0}) if busted[0] else None
+    return clean() if busted[0] else None
 
   runtime = DispatcherRuntime(sched, self_host="ml10", poll=fake_poll)
   runtime._NFS_POLL_RETRY_DELAYS = (0.0,)

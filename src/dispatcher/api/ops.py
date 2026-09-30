@@ -25,7 +25,6 @@ from dispatcher.api.wire import (
   full_job_view,
   job_counts,
   snapshot_job,
-  snapshot_job_with_metrics,
 )
 from dispatcher.core import clock
 from dispatcher.core.event_log import (
@@ -48,7 +47,6 @@ if TYPE_CHECKING:
   from dispatcher.api.config import Config
   from dispatcher.api.wire import JobSummaryOut
   from dispatcher.core.event_bus import EventBus
-  from dispatcher.core.metrics import MetricsCache
   from dispatcher.core.models import InstanceView, JobState
   from dispatcher.core.runtime import DispatcherRuntime
   from dispatcher.core.scheduler import Scheduler
@@ -85,7 +83,6 @@ class ServerState:
   settings: Settings
   scheduler: Scheduler
   runtime: DispatcherRuntime
-  metrics: MetricsCache
   event_bus: EventBus
   tasks: list[asyncio.Task[None]] = field(default_factory=list)
   notify_sender: TelegramSender | None = None
@@ -297,9 +294,7 @@ async def submit_job(
   )
   st.event_bus.publish(
     "job_submitted",
-    snapshot_job_with_metrics(
-      st.scheduler, st.metrics, job.job_id
-    ).model_dump(mode="json"),
+    snapshot_job(st.scheduler, job.job_id).model_dump(mode="json"),
   )
   return {
     "job_id": job.job_id,
@@ -405,9 +400,7 @@ async def patch_job(
     )
   st.event_bus.publish(
     "job_patched",
-    snapshot_job_with_metrics(st.scheduler, st.metrics, job_id).model_dump(
-      mode="json"
-    ),
+    snapshot_job(st.scheduler, job_id).model_dump(mode="json"),
   )
   return snapshot_job(st.scheduler, job_id)
 
@@ -647,7 +640,6 @@ async def retry_done_err(
   for task_id, tv in targets:
     if st.scheduler.retry_from_done_err(job_id, task_id):
       retried.append(task_id)
-      st.metrics.undo_done_err(job_id)
       await append_event_async(
         log_path,
         {

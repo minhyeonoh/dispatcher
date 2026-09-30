@@ -109,13 +109,13 @@ def test_scan_outcomes_maps_instance_to_envelope(tmp_path: Path):
   t1 = tmp_path / "t1__0000001"
   t1.mkdir()
   (t1 / "outcome.json").write_text(
-    json.dumps({"ok": True, "values": {"r": 1.0}})
+    json.dumps({"ok": True, "data": {"r": 1.0}})
   )
   t2 = tmp_path / "t2__0000002"
   t2.mkdir()  # no outcome — omitted
   out = scan_outcomes(tmp_path)
   assert set(out) == {"t1__0000001"}
-  assert out["t1__0000001"].values == {"r": 1.0}
+  assert out["t1__0000001"].data == {"r": 1.0}
 
 
 def test_scan_outcomes_skips_malformed_and_dotdirs(tmp_path: Path):

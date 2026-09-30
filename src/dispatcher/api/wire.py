@@ -1,6 +1,6 @@
 """Wire shapes: request/response DTOs, snapshot builders, SSE
-framing. Pure projections over scheduler/metrics state — no
-mutations, no side effects."""
+framing. Pure projections over scheduler state — no mutations,
+no side effects."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher.api.settings import Settings
-from dispatcher.core.metrics import JobMetrics, MetricsCache
 
 if TYPE_CHECKING:
   from dispatcher.core.models import InstanceView
@@ -58,17 +57,10 @@ class JobSummaryOut(BaseModel):
   archive_kind: str = ""
 
 
-class JobSummaryWithMetricsOut(JobSummaryOut):
-  metrics: JobMetrics
-
-
 class InstanceViewOut(BaseModel):
   instance_id: str
   host: str
   dispatched_at: datetime
-  # Outcome `values` for terminal instances whose envelope is cached;
-  # None before then.
-  values: dict[str, float] | None = None
 
 
 class FullJobOut(JobSummaryOut):
@@ -94,10 +86,6 @@ class ClusterSnapshotOut(BaseModel):
 
 class StateOut(ClusterSnapshotOut):
   jobs: list[JobSummaryOut]
-
-
-class MonitorOut(ClusterSnapshotOut):
-  jobs: list[JobSummaryWithMetricsOut]
 
 
 class HealthOut(BaseModel):
@@ -143,15 +131,6 @@ def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
   )
 
 
-def snapshot_job_with_metrics(
-  scheduler: Scheduler, metrics: MetricsCache, job_id: str
-) -> JobSummaryWithMetricsOut:
-  base = snapshot_job(scheduler, job_id)
-  return JobSummaryWithMetricsOut(
-    **base.model_dump(), metrics=metrics.get(job_id)
-  )
-
-
 def cluster_snapshot(
   self_host: str, settings: Settings, scheduler: Scheduler
 ) -> ClusterSnapshotOut:
@@ -168,16 +147,6 @@ def full_job_view(scheduler: Scheduler, job_id: str) -> FullJobOut:
   view = scheduler.job_view(job_id)
   base = snapshot_job(scheduler, job_id)
 
-  def _values_for(task_id: str) -> dict[str, float] | None:
-    outcome = scheduler.outcome_of(job_id, task_id)
-    if outcome is None:
-      return None
-    return {
-      k: float(v)
-      for k, v in outcome.values.items()
-      if isinstance(v, (int, float)) and not isinstance(v, bool)
-    }
-
   def _bucket(
     d: dict[str, InstanceView],
   ) -> dict[str, InstanceViewOut]:
@@ -186,7 +155,6 @@ def full_job_view(scheduler: Scheduler, job_id: str) -> FullJobOut:
         instance_id=tv.instance_id,
         host=tv.host,
         dispatched_at=tv.dispatched_at,
-        values=_values_for(tn),
       )
       for tn, tv in d.items()
     }

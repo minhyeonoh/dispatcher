@@ -57,10 +57,6 @@ def get_state(server: str) -> dict[str, Any]:
   return _request(server, "GET", "/state")
 
 
-def get_monitor(server: str) -> dict[str, Any]:
-  return _request(server, "GET", "/monitor")
-
-
 def list_jobs(
   server: str, *, full: bool = False, scope: str = ""
 ) -> list[dict[str, Any]]:

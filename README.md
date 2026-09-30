@@ -96,15 +96,16 @@ Before exiting, the worker writes `<home>/outcome.json`:
   "ok": true,
   "error": null | {"type": "...", "message": "...", "exit_code": 1},
   "infra": false,
-  "values": {"reward": 1.0},
   "data": <anything json>
 }
 ```
 
-Only `ok` / `error` / `infra` / `values` are contract: `values`
-means surface in the monitor and the weight tuner; `data` is
-opaque to the dispatcher. Exit codes: 0 ok, 1 error, 75 infra
-(EX_TEMPFAIL).
+Only `ok` / `error` / `infra` are contract — the dispatcher's
+entire understanding of a result. `data` is opaque passthrough:
+metrics (reward, whatever) are the research repo's business,
+computed later from the stored envelopes, so put everything a
+future readout might need in `data`. Exit codes: 0 ok, 1 error,
+75 infra (EX_TEMPFAIL).
 
 ## Failure semantics
 

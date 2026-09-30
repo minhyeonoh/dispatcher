@@ -69,7 +69,6 @@ if TYPE_CHECKING:
 
   from dispatcher.core.containers import DockerEventStreamManager
   from dispatcher.core.event_bus import EventBus
-  from dispatcher.core.metrics import MetricsCache
   from dispatcher.core.models import (
     DispatchEntry,
     InstanceView,
@@ -139,7 +138,6 @@ class DispatcherRuntime:
     dispatch: DispatchCallable | None = None,
     poll: PollCallable | None = None,
     tick_interval: float = 0.5,
-    metrics: MetricsCache | None = None,
     event_bus: EventBus | None = None,
     on_job_drained: JobHook | None = None,
     on_instance_completed: JobHook | None = None,
@@ -150,7 +148,6 @@ class DispatcherRuntime:
     self._dispatch = dispatch or self._default_dispatch
     self._poll = poll or read_completion
     self._tick_interval = tick_interval
-    self._metrics = metrics
     self._event_bus = event_bus
     self._on_job_drained = on_job_drained
     self._on_instance_completed = on_instance_completed
@@ -538,7 +535,7 @@ class DispatcherRuntime:
     """One ordered path for every completion-like transition:
 
       stale guard → scheduler state + pause → hooks → drain →
-      metrics → bus events → event-log appends (awaited, last)
+      bus events → event-log appends (awaited, last)
 
     unknown/ghosted enter this pipeline (they are unresolved
     terminal observations) and keep blocking drain."""
@@ -586,17 +583,6 @@ class DispatcherRuntime:
           self._on_job_drained(state, self._sched.job_outcomes(aid))
         if self._event_bus is not None:
           self._event_bus.publish("job_drained", {"job_id": aid})
-    if self._metrics is not None and snapshot is not None:
-      if from_state == "running":
-        self._metrics.record_completion(aid, snapshot)
-      elif from_state == "unknown":
-        self._metrics.reclassify_from_unknown(
-          aid, to_state=to_state, values=snapshot.values
-        )
-      else:
-        self._metrics.reclassify_from_ghosted(
-          aid, to_state=to_state, values=snapshot.values
-        )
     if paused_on_error:
       events_to_append.append(
         {
@@ -624,7 +610,6 @@ class DispatcherRuntime:
             "instance_id": instance_id,
             "outcome_exists": snapshot.outcome_exists,
             "error_present": snapshot.error_present,
-            "values": snapshot.values,
             "to_state": to_state,
             **instance_row,
           },
@@ -638,7 +623,6 @@ class DispatcherRuntime:
             "instance_id": instance_id,
             "from_state": from_state,
             "to_state": to_state,
-            "values": (snapshot.values if snapshot is not None else None),
             **instance_row,
           },
         )
@@ -647,8 +631,8 @@ class DispatcherRuntime:
           "job_paused_on_error",
           {"job_id": aid, "task_id": task_id},
         )
-    # Appends LAST: every in-memory mutation (scheduler, metrics,
-    # hooks, bus) completed synchronously above, so nothing can
+    # Appends LAST: every in-memory mutation (scheduler, hooks,
+    # bus) completed synchronously above, so nothing can
     # observe a half-applied transition across these awaits. A
     # crash before the append loses only breadcrumbs that restore
     # re-derives from disk anyway.
@@ -671,8 +655,8 @@ class DispatcherRuntime:
     ghosted → re-poll outcome only (container is known gone); a
     late NFS commit upgrades it, otherwise unchanged.
 
-    Scheduler/metrics mutations happen on the event loop with no
-    await between read and reclassify."""
+    Scheduler mutations happen on the event loop with no await
+    between read and reclassify."""
     counts = {
       "done_ok": 0,
       "done_err": 0,

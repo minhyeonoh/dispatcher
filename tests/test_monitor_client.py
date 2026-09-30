@@ -1,11 +1,10 @@
-"""Monitor state folding, SSE parsing, metric selection."""
+"""Monitor state folding, SSE parsing, rendering."""
 
 from __future__ import annotations
 
 from dispatcher.tools.monitor_client import (
   MonitorState,
   parse_sse_lines,
-  primary_metric,
   render_compact,
   render_detail,
 )
@@ -60,25 +59,6 @@ def test_state_heartbeat_recorded():
   assert s.last_heartbeat_at == "2026-09-28T00:00:00"
 
 
-def test_primary_metric_prefers_reward():
-  assert primary_metric({"means": {"steps": 9.0, "reward": 0.5}}) == (
-    "reward",
-    0.5,
-  )
-
-
-def test_primary_metric_falls_back_alphabetical():
-  assert primary_metric({"means": {"z": 1.0, "acc": 0.9}}) == (
-    "acc",
-    0.9,
-  )
-
-
-def test_primary_metric_none_when_empty():
-  assert primary_metric({}) is None
-  assert primary_metric({"means": {}}) is None
-
-
 def test_renderers_do_not_crash_on_empty_and_full_state():
   s = MonitorState()
   render_compact(s)
@@ -111,11 +91,6 @@ def test_renderers_do_not_crash_on_empty_and_full_state():
         "ghosted": 0,
         "unknown": 1,
         "total": 5,
-      },
-      "metrics": {
-        "ok": 1,
-        "err": 1,
-        "means": {"reward": 0.5},
       },
     },
   )

@@ -9,8 +9,8 @@ Truth-ownership split:
   persisted.
 - `Outcome` — the envelope an instance leaves at
   `<home>/outcome.json`. The dispatcher reads only the contract
-  fields (`ok`, `error`, `infra`, `values`); `data` is opaque to
-  it and belongs to the research repo.
+  fields (`ok`, `error`, `infra`); `data` is opaque to it and
+  belongs to the research repo.
 """
 
 from __future__ import annotations
@@ -180,6 +180,4 @@ class Outcome(BaseModel):
   # instead of scoring. Stated by the worker (e.g. its serving
   # backend was swapped underneath it).
   infra: bool = False
-  # Numeric results for monitoring (means surface per job).
-  values: dict[str, float] = Field(default_factory=dict)
   data: Any = None

@@ -158,30 +158,3 @@ def test_cancelled_job_check_is_noop(tmp_path: Path):
   sched.cancel("job-001")
   run_check(manager, "job-001")
   assert sender.sent == []
-
-
-def test_message_carries_value_means(tmp_path: Path):
-  from dispatcher.core.metrics import MetricsCache
-  from dispatcher.core.outcome import CompletionSnapshot
-
-  sched, _, sender, config = _mk(tmp_path, ["t1"], [1.0])
-  metrics = MetricsCache()
-  metrics.record_completion(
-    "job-001",
-    CompletionSnapshot(
-      outcome_exists=True,
-      error_present=False,
-      values={"reward": 0.75},
-    ),
-  )
-  manager = NotifyManager(
-    bus=EventBus(),
-    scheduler=sched,
-    config=config,
-    sender=sender,
-    metrics=metrics,
-  )
-  _complete_n(sched, 1)
-  run_check(manager, "job-001")
-  assert len(sender.sent) == 1
-  assert "reward: 0.750" in sender.sent[0][1]

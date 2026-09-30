@@ -4,11 +4,11 @@ dependency friction.
 
 Usage inside the main container:
 
-    from dispatcher_sdk import Result, run
+    from dispatcher_sdk import run
 
     def work(instance):
       ...  # instance.task, instance.payload, instance.home
-      return Result(values={"reward": 1.0}, data={...})
+      return {"reward": 1.0}  # any JSON → the envelope's `data`
 
     if __name__ == "__main__":
       run(work)
@@ -29,7 +29,6 @@ from dispatcher_sdk.worker import (
   EX_INFRA,
   InfraFailure,
   InstanceContext,
-  Result,
   load_instance,
   run,
   write_outcome,
@@ -38,7 +37,6 @@ from dispatcher_sdk.worker import (
 __all__ = [
   "EX_INFRA",
   "InfraFailure",
-  "Result",
   "InstanceContext",
   "load_instance",
   "run",

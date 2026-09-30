@@ -124,27 +124,6 @@ def _progress_bar(counts: dict[str, int]) -> Text:
   return bar
 
 
-def primary_metric(
-  metrics: dict[str, Any],
-) -> tuple[str, float] | None:
-  """The value key shown in the compact table: 'reward' if the
-  job reports it, else the alphabetically-first mean."""
-  means = (metrics or {}).get("means") or {}
-  if not means:
-    return None
-  if "reward" in means:
-    return "reward", float(means["reward"])
-  key = sorted(means)[0]
-  return key, float(means[key])
-
-
-def _metric_cell(metrics: dict[str, Any]) -> str:
-  pm = primary_metric(metrics)
-  if pm is None:
-    return "-"
-  return f"{pm[1]:.2f}"
-
-
 def _job_label(job: dict[str, Any]) -> Text:
   label = Text(
     job.get("alias") or job.get("label") or job.get("job_id", "?")
@@ -193,26 +172,23 @@ def render_compact(state: MonitorState):
   table.add_column("run", justify="right")
   table.add_column("pnd", justify="right")
   table.add_column("tot", justify="right")
-  table.add_column("metric", justify="right")
   table.add_column("progress")
 
   if not state.jobs:
-    table.add_row("(no jobs)", "-", "-", "-", "-", "-", "-", "")
+    table.add_row("(no jobs)", "-", "-", "-", "-", "-", "")
   else:
     for aid in state.job_order:
       job = state.jobs.get(aid)
       if job is None:
         continue
       counts = job.get("counts", {}) or {}
-      metrics = job.get("metrics", {}) or {}
       table.add_row(
         _job_label(job),
-        str(metrics.get("ok", counts.get("done_ok", 0))),
-        str(metrics.get("err", counts.get("done_err", 0))),
+        str(counts.get("done_ok", 0)),
+        str(counts.get("done_err", 0)),
         str(counts.get("running", 0)),
         str(counts.get("pending", 0)),
         str(counts.get("total", 0)),
-        _metric_cell(metrics),
         _progress_bar(counts),
       )
 
@@ -231,7 +207,6 @@ def render_detail(state: MonitorState, job_id: str):
       title="dispatcher monitor",
     )
   counts = job.get("counts", {}) or {}
-  metrics = job.get("metrics", {}) or {}
 
   summary = Table.grid(padding=(0, 2))
   summary.add_column(justify="right", style="bold")
@@ -246,18 +221,12 @@ def render_detail(state: MonitorState, job_id: str):
   )
   summary.add_row(
     "counts",
-    f"ok {metrics.get('ok', 0)}  "
-    f"err {metrics.get('err', 0)}  "
+    f"ok {counts.get('done_ok', 0)}  "
+    f"err {counts.get('done_err', 0)}  "
     f"run {counts.get('running', 0)}  "
     f"pnd {counts.get('pending', 0)}  "
     f"tot {counts.get('total', 0)}",
   )
-  means = (metrics or {}).get("means") or {}
-  if means:
-    summary.add_row(
-      "means",
-      "  ".join(f"{k} {v:.3f}" for k, v in sorted(means.items())),
-    )
 
   return Panel(
     Group(summary, Text(""), _progress_bar(counts)),

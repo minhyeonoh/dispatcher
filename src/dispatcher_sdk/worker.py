@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,16 +26,6 @@ class InfraFailure(Exception):
   """The machine under the instance failed, not the work. The
   outcome is written with infra=true and the process exits 75;
   the dispatcher reruns the task instead of scoring it."""
-
-
-@dataclass
-class Result:
-  """What `work` returns. `values` are numeric results surfaced
-  in the dispatcher's monitor (per-job means); `data` is
-  opaque and passed through to the envelope untouched."""
-
-  values: dict[str, float] = field(default_factory=dict)
-  data: Any = None
 
 
 @dataclass
@@ -150,21 +140,8 @@ def run(
     )
     _exit(EX_ERROR)
     return
-  if isinstance(out, Result):
-    envelope: dict[str, Any] = {
-      "ok": True,
-      "error": None,
-      "infra": False,
-      "values": dict(out.values),
-      "data": out.data,
-    }
-  else:
-    envelope = {
-      "ok": True,
-      "error": None,
-      "infra": False,
-      "values": {},
-      "data": out,
-    }
-  write_outcome(instance.home, envelope)
+  write_outcome(
+    instance.home,
+    {"ok": True, "error": None, "infra": False, "data": out},
+  )
   _exit(EX_OK)

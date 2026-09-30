@@ -224,11 +224,10 @@ def test_full_view_partitions_tasks(tmp_path: Path):
       task_id=a1.task_id,
       from_state="running",
       to_state="done_ok",
-      outcome=Outcome(ok=True, values={"reward": 0.5}),
+      outcome=Outcome(ok=True),
     )
     detail = client.get(f"/jobs/{aid}").json()
     assert set(detail["done_ok"]) == {a1.task_id}
-    assert detail["done_ok"][a1.task_id]["values"] == {"reward": 0.5}
     assert set(detail["running"]) == {a2.task_id}
     assert set(detail["pending"]) == {"t3", "t4"}
 
@@ -414,17 +413,10 @@ def test_retry_done_err_moves_back_to_pending(tmp_path: Path):
       to_state="done_err",
       outcome=Outcome(ok=False),
     )
-    st.metrics.record_completion(
-      aid,
-      __import__(
-        "dispatcher.core.outcome", fromlist=["CompletionSnapshot"]
-      ).CompletionSnapshot(outcome_exists=True, error_present=True),
-    )
     sched.patch(aid, paused=True)
     resp = client.post(f"/jobs/{aid}/retry-done-err", json={})
     assert resp.status_code == 200
     assert resp.json()["retried"] == ["t1"]
-    assert st.metrics.get(aid).err == 0
     detail = client.get(f"/jobs/{aid}").json()
     assert detail["pending"] == ["t1"]
     assert detail["done_err"] == {}
@@ -552,33 +544,6 @@ def test_patch_settings_unknown_key_rejected(tmp_path: Path):
 # ── monitor ──────────────────────────────────────────────────────
 
 
-def test_monitor_reports_metrics(tmp_path: Path):
-  from dispatcher.core.outcome import CompletionSnapshot
-
-  with mk_client(tmp_path) as client:
-    aid = client.post(
-      "/jobs",
-      json=payload(
-        task_ids=["t1"],
-        home_root=tmp_path / "a",
-        extra={"paused": True},
-      ),
-    ).json()["job_id"]
-    st = client.app.state.dispatcher  # type: ignore[union-attr]
-    st.metrics.record_completion(
-      aid,
-      CompletionSnapshot(
-        outcome_exists=True,
-        error_present=False,
-        values={"reward": 1.0},
-      ),
-    )
-    body = client.get("/monitor").json()
-    row = next(a for a in body["jobs"] if a["job_id"] == aid)
-    assert row["metrics"]["ok"] == 1
-    assert row["metrics"]["means"] == {"reward": 1.0}
-
-
 def test_monitor_stream_mounted_and_sse_frame_shape(
   tmp_path: Path,
 ):
@@ -665,7 +630,7 @@ def _write_outcome(home: Path, instance: str, body: dict) -> None:
   (d / "outcome.json").write_text(json.dumps(body))
 
 
-def test_restore_rebuilds_buckets_and_metrics(tmp_path: Path):
+def test_restore_rebuilds_buckets(tmp_path: Path):
   home = tmp_path / "home"
   _write_log_and_index(
     tmp_path,
@@ -676,9 +641,7 @@ def test_restore_rebuilds_buckets_and_metrics(tmp_path: Path):
       _dispatch_ev("t2", "t2__0000002"),
     ],
   )
-  _write_outcome(
-    home, "t1__0000001", {"ok": True, "values": {"reward": 1.0}}
-  )
+  _write_outcome(home, "t1__0000001", {"ok": True})
   _write_outcome(
     home,
     "t2__0000002",
@@ -688,21 +651,13 @@ def test_restore_rebuilds_buckets_and_metrics(tmp_path: Path):
     detail = client.get("/jobs/job-restore").json()
     assert set(detail["done_ok"]) == {"t1"}
     assert set(detail["done_err"]) == {"t2"}
-    assert detail["done_ok"]["t1"]["values"] == {"reward": 1.0}
     assert detail["alias"] == "restore-alias"
-    row = next(
-      a
-      for a in client.get("/monitor").json()["jobs"]
-      if a["job_id"] == "job-restore"
-    )
-    assert row["metrics"]["ok"] == 1
-    assert row["metrics"]["err"] == 1
 
 
 def test_restore_requeued_task_occupies_one_bucket(tmp_path: Path):
   # An infra requeue leaves two dispatches for one task; only the
   # LATEST instance's outcome may count, or the task lands in two
-  # buckets and both metrics inflate.
+  # buckets at once.
   home = tmp_path / "home"
   _write_log_and_index(
     tmp_path,
@@ -718,23 +673,16 @@ def test_restore_requeued_task_occupies_one_bucket(tmp_path: Path):
     "t1__0000001",
     {"ok": False, "error": {"type": "E", "message": "killed"}},
   )
-  _write_outcome(
-    home, "t1__0000002", {"ok": True, "values": {"reward": 0.5}}
-  )
+  _write_outcome(home, "t1__0000002", {"ok": True, "data": {"n": 2}})
   with mk_client(tmp_path) as client:
     detail = client.get("/jobs/job-restore").json()
     assert set(detail["done_ok"]) == {"t1"}
     assert detail["done_err"] == {}
-    # The retry's values, not the dead first instance's.
-    assert detail["done_ok"]["t1"]["values"] == {"reward": 0.5}
-    row = next(
-      a
-      for a in client.get("/monitor").json()["jobs"]
-      if a["job_id"] == "job-restore"
-    )
-    assert row["metrics"]["ok"] == 1
-    assert row["metrics"]["err"] == 0
-    assert row["metrics"]["means"] == {"reward": 0.5}
+    # The retry's outcome, not the dead first instance's.
+    st = client.app.state.dispatcher  # type: ignore[union-attr]
+    seeded = st.scheduler.outcome_of("job-restore", "t1")
+    assert seeded is not None and seeded.ok is True
+    assert seeded.data == {"n": 2}
 
 
 def test_restore_infra_outcome_goes_back_to_pending(

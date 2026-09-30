@@ -27,7 +27,6 @@ from dispatcher.core.event_log import (
 
 if TYPE_CHECKING:
   from dispatcher.core.event_bus import EventBus
-  from dispatcher.core.metrics import MetricsCache
   from dispatcher.core.models import JobState, JobView
   from dispatcher.core.scheduler import Scheduler
 
@@ -119,13 +118,11 @@ class NotifyManager:
     scheduler: Scheduler,
     config: NotifySettings,
     sender: TelegramSender,
-    metrics: MetricsCache | None = None,
   ) -> None:
     self._bus = bus
     self._sched = scheduler
     self._config = config
     self._sender = sender
-    self._metrics = metrics
     self._send_tasks: set[asyncio.Task[None]] = set()
 
   async def run(self) -> None:
@@ -236,16 +233,6 @@ class NotifyManager:
       f"progress: {done}/{total} ({pct_actual}%) ≥ {pct_threshold}%",
       f"done_ok/err: {len(view.done_ok)}/{len(view.done_err)}",
     ]
-    if self._metrics is not None:
-      try:
-        m = self._metrics.get(state.job_id)
-      except Exception:
-        m = None
-      if m is not None:
-        for key, mean in sorted(m.means.items()):
-          lines.append(
-            f"{key}: {mean:.3f} over {m.value_counts[key]} scored"
-          )
     return "\n".join(lines)
 
 

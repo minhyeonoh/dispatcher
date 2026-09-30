@@ -12,7 +12,6 @@ import pytest
 from dispatcher_sdk import (
   EX_INFRA,
   InfraFailure,
-  Result,
   load_instance,
   run,
 )
@@ -86,7 +85,7 @@ def test_ok_result_roundtrips_through_dispatcher_reader(
 
   _spec(tmp_path)
   code, outcome = _run(
-    lambda t: Result(values={"reward": 0.5}, data={"answer": 42}),
+    lambda t: {"reward": 0.5, "answer": 42},
     tmp_path,
   )
   assert code == 0
@@ -94,9 +93,8 @@ def test_ok_result_roundtrips_through_dispatcher_reader(
   snap = read_completion(tmp_path)
   assert snap is not None
   assert snap.error_present is False
-  assert snap.values == {"reward": 0.5}
   assert snap.outcome is not None
-  assert snap.outcome.data == {"answer": 42}
+  assert snap.outcome.data == {"reward": 0.5, "answer": 42}
 
 
 def test_plain_return_becomes_data(tmp_path: Path):
@@ -105,7 +103,6 @@ def test_plain_return_becomes_data(tmp_path: Path):
   assert code == 0
   assert outcome is not None
   assert outcome["data"] == [1, 2, 3]
-  assert outcome["values"] == {}
 
 
 def test_exception_writes_error_and_exits_1(tmp_path: Path):

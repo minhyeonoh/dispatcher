@@ -65,25 +65,13 @@ def test_ok_true_with_error_object_read_as_error(tmp_path: Path):
   assert snap.error_present is True
 
 
-def test_values_extracted(tmp_path: Path):
+def test_unknown_envelope_keys_are_ignored(tmp_path: Path):
+  # Envelopes from older SDKs may carry extra keys (e.g. the
+  # retired `values`) — they must still parse, not go unknown.
   write_outcome(tmp_path / "t", {"ok": True, "values": {"reward": 0.75}})
   snap = read_completion(tmp_path / "t")
   assert snap is not None
-  assert snap.values == {"reward": 0.75}
-
-
-def test_value_zero_is_preserved(tmp_path: Path):
-  write_outcome(tmp_path / "t", {"ok": True, "values": {"reward": 0.0}})
-  snap = read_completion(tmp_path / "t")
-  assert snap is not None
-  assert snap.values == {"reward": 0.0}
-
-
-def test_missing_values_yields_empty(tmp_path: Path):
-  write_outcome(tmp_path / "t", {"ok": True})
-  snap = read_completion(tmp_path / "t")
-  assert snap is not None
-  assert snap.values == {}
+  assert snap.error_present is False
 
 
 def test_infra_flag_carried(tmp_path: Path):

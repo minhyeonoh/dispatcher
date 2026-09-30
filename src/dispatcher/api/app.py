@@ -45,14 +45,12 @@ from dispatcher.api.wire import (
   FullJobOut,
   HealthOut,
   JobSummaryOut,
-  MonitorOut,
   RetryDoneErrRequest,
   StateOut,
   build_full_jobs_body,
   cluster_snapshot,
   full_job_view,
   snapshot_job,
-  snapshot_job_with_metrics,
   sse,
 )
 from dispatcher.core import clock as clock_mod
@@ -63,7 +61,6 @@ from dispatcher.core.containers import (
 )
 from dispatcher.core.event_bus import EventBus
 from dispatcher.core.loops import LoopSkip, supervised
-from dispatcher.core.metrics import MetricsCache
 from dispatcher.core.runtime import (
   DispatcherRuntime,
   resolver_loop,
@@ -118,7 +115,6 @@ def create_app(
 
   @contextlib.asynccontextmanager
   async def lifespan(app: FastAPI):
-    metrics = MetricsCache()
     event_bus = EventBus()
     persisted = load_settings(config.data_dir)
     settings = persisted if persisted is not None else seed
@@ -144,7 +140,6 @@ def create_app(
       dispatch=dispatch,
       poll=poll,
       tick_interval=config.tick_interval,
-      metrics=metrics,
       event_bus=event_bus,
     )
     if config.use_docker_events:
@@ -166,7 +161,6 @@ def create_app(
       settings=settings,
       scheduler=scheduler,
       runtime=runtime,
-      metrics=metrics,
       event_bus=event_bus,
       resolve_image=resolver,
     )
@@ -175,7 +169,7 @@ def create_app(
     # from event logs, buckets from outcome files, and push the
     # instance-id counter past every name on disk.
     server_state.advance_seq_to(
-      restore_jobs_from_disk(scheduler, metrics, config.data_dir)
+      restore_jobs_from_disk(scheduler, config.data_dir)
     )
     if docker_events is not None:
       # Census BEFORE the stream: docker's event buffer may have
@@ -235,7 +229,6 @@ def create_app(
       scheduler=scheduler,
       config=settings.notify,
       sender=server_state.notify_sender,
-      metrics=metrics,
     )
     loops: list[tuple[str, Callable[[], Awaitable[None]]]] = [
       ("runtime", runtime.run_forever),
@@ -313,20 +306,6 @@ def create_app(
       ],
     )
 
-  @app.get("/monitor")
-  async def get_monitor() -> MonitorOut:
-    st = _get_state(app)
-    cluster = cluster_snapshot(
-      st.config.self_host, st.settings, st.scheduler
-    )
-    return MonitorOut(
-      **cluster.model_dump(),
-      jobs=[
-        snapshot_job_with_metrics(st.scheduler, st.metrics, aid)
-        for aid in st.scheduler.all_job_ids()
-      ],
-    )
-
   @app.get("/monitor/stream")
   async def monitor_stream():
     st = _get_state(app)
@@ -357,10 +336,7 @@ def create_app(
           cluster_snapshot(st.config.self_host, st.settings, st.scheduler),
         )
         for aid in list(st.scheduler.all_job_ids()):
-          yield sse(
-            "job_updated",
-            snapshot_job_with_metrics(st.scheduler, st.metrics, aid),
-          )
+          yield sse("job_updated", snapshot_job(st.scheduler, aid))
         while True:
           ev = None
           with anyio.move_on_after(heartbeat_interval) as scope:
@@ -371,10 +347,7 @@ def create_app(
           if ev.type in state_change_events:
             aid = ev.payload.get("job_id")
             if aid and st.scheduler.has_job(aid):
-              yield sse(
-                "job_updated",
-                snapshot_job_with_metrics(st.scheduler, st.metrics, aid),
-              )
+              yield sse("job_updated", snapshot_job(st.scheduler, aid))
             yield sse(
               "cluster_updated",
               cluster_snapshot(
