@@ -48,9 +48,23 @@ def submit_job(server: str, payload: dict[str, Any]) -> dict[str, Any]:
   """POST /jobs. Required payload keys: label, task_ids,
   home_root (absolute, unique per job), container ({image,
   command, env, mounts, home_mount, extra_args}). Optional:
-  payloads (per-task, keys ⊆ task_ids), env, pool, tags, scope,
+  payloads (per-task, keys ⊆ task_ids), env, arena, pool,
   paused, weight, max_concurrent, pause_on_error, alias."""
   return _request(server, "POST", "/jobs", payload)
+
+
+def submit_jobs(
+  server: str, payloads: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+  """Sweep = a submission convenience, nothing more: submit each
+  payload in order, stop at the first failure (the ClientError
+  propagates). Jobs accepted before the failure STAY submitted —
+  undo is the operator's call (cancel), not the client's guess;
+  they are findable via their arena/label."""
+  results: list[dict[str, Any]] = []
+  for payload in payloads:
+    results.append(submit_job(server, payload))
+  return results
 
 
 def get_state(server: str) -> dict[str, Any]:
@@ -58,15 +72,45 @@ def get_state(server: str) -> dict[str, Any]:
 
 
 def list_jobs(
-  server: str, *, full: bool = False, scope: str = ""
+  server: str, *, full: bool = False, arena: str = ""
 ) -> list[dict[str, Any]]:
   qs = []
   if full:
     qs.append("full=1")
-  if scope:
-    qs.append(f"scope={scope}")
+  if arena:
+    qs.append(f"arena={arena}")
   path = "/jobs" + ("?" + "&".join(qs) if qs else "")
   return _request(server, "GET", path)
+
+
+def list_arenas(server: str) -> list[dict[str, Any]]:
+  return _request(server, "GET", "/arenas")
+
+
+def get_arena(server: str, arena: str) -> dict[str, Any]:
+  return _request(server, "GET", f"/arenas/{arena}")
+
+
+def arena_pause(server: str, arena: str) -> dict[str, Any]:
+  return _request(server, "POST", f"/arenas/{arena}/pause", {})
+
+
+def arena_resume(server: str, arena: str) -> dict[str, Any]:
+  return _request(server, "POST", f"/arenas/{arena}/resume", {})
+
+
+def arena_reclaim(server: str, arena: str) -> dict[str, Any]:
+  return _request(server, "POST", f"/arenas/{arena}/reclaim", {})
+
+
+def arena_cancel(
+  server: str, arena: str, *, confirm: bool = False
+) -> dict[str, Any]:
+  """Without confirm=True the server refuses (409) and names the
+  member jobs that would be dropped."""
+  return _request(
+    server, "POST", f"/arenas/{arena}/cancel", {"confirm": confirm}
+  )
 
 
 def get_job(server: str, job_id: str) -> dict[str, Any]:

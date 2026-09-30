@@ -97,10 +97,12 @@ class JobState(BaseModel):
   # per-job credentials go here).
   env: dict[str, str] = Field(default_factory=dict)
   metadata: dict[str, Any] = Field(default_factory=dict)
-  # Free-form grouping string for UIs (empty = unscoped).
-  scope: str = ""
+  # The long-lived group this job belongs to (empty = ungrouped).
+  # An arena is derived state — it exists iff a job names it —
+  # and is the comparison/operation unit above jobs; `pool` stays
+  # orthogonal (capacity axis, not experiment axis).
+  arena: str = ""
   pool: str = "default"
-  tags: list[str] = Field(default_factory=list)
   # Progress-notification thresholds already fired (replayed from
   # `notify_fired` events so restarts don't re-announce).
   notified_thresholds: list[float] = Field(default_factory=list)

@@ -821,7 +821,7 @@ _KNOB_FIELDS = frozenset(
     "weight",
     "max_concurrent",
     "pause_on_error",
-    "tags",
+    "arena",
     "pool",
   }
 )

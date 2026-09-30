@@ -48,8 +48,7 @@ class JobSummaryOut(BaseModel):
   counts: JobCountsOut
   home_root: str
   alias: str
-  scope: str = ""
-  tags: list[str] = Field(default_factory=list)
+  arena: str = ""
   pool: str = "default"
   image_id: str = ""
   source_sha256: str = ""
@@ -88,6 +87,21 @@ class StateOut(ClusterSnapshotOut):
   jobs: list[JobSummaryOut]
 
 
+class ArenaSummaryOut(BaseModel):
+  """One derived group row: an arena exists iff a job names it,
+  so there is nothing to create or delete — only to read."""
+
+  arena: str
+  jobs: int
+  paused_jobs: int
+  archived_jobs: int
+  counts: JobCountsOut
+
+
+class ArenaDetailOut(ArenaSummaryOut):
+  members: list[JobSummaryOut]
+
+
 class HealthOut(BaseModel):
   status: str
 
@@ -121,13 +135,77 @@ def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
     counts=job_counts(scheduler, job_id),
     home_root=str(state.home_root),
     alias=state.alias,
-    scope=state.scope,
-    tags=list(state.tags),
+    arena=state.arena,
     pool=state.pool or "default",
     image_id=state.image_id,
     source_sha256=state.source_sha256,
     archived_at=state.archived_at,
     archive_kind=state.archive_kind or "",
+  )
+
+
+def arena_members(scheduler: Scheduler, arena: str) -> list[str]:
+  """Membership is derived per read — submission order, live and
+  archived alike (an arena spans weeks; hiding archived members
+  would silently shrink the comparison set)."""
+  return [
+    aid
+    for aid in scheduler.all_job_ids()
+    if scheduler.job_state(aid).arena == arena
+  ]
+
+
+def _arena_summary(
+  scheduler: Scheduler, arena: str, member_ids: list[str]
+) -> ArenaSummaryOut:
+  agg = dict.fromkeys(
+    (
+      "pending",
+      "running",
+      "done_ok",
+      "done_err",
+      "ghosted",
+      "unknown",
+      "total",
+    ),
+    0,
+  )
+  paused = archived = 0
+  for aid in member_ids:
+    c = job_counts(scheduler, aid)
+    for key in agg:
+      agg[key] += getattr(c, key)
+    if scheduler.is_archived(aid):
+      archived += 1
+    elif scheduler.job_paused(aid):
+      paused += 1
+  return ArenaSummaryOut(
+    arena=arena,
+    jobs=len(member_ids),
+    paused_jobs=paused,
+    archived_jobs=archived,
+    counts=JobCountsOut(**agg),
+  )
+
+
+def snapshot_arenas(scheduler: Scheduler) -> list[ArenaSummaryOut]:
+  grouped: dict[str, list[str]] = {}
+  for aid in scheduler.all_job_ids():
+    arena = scheduler.job_state(aid).arena
+    if arena:
+      grouped.setdefault(arena, []).append(aid)
+  return [
+    _arena_summary(scheduler, arena, ids) for arena, ids in grouped.items()
+  ]
+
+
+def snapshot_arena(
+  scheduler: Scheduler, arena: str, member_ids: list[str]
+) -> ArenaDetailOut:
+  base = _arena_summary(scheduler, arena, member_ids)
+  return ArenaDetailOut(
+    **base.model_dump(),
+    members=[snapshot_job(scheduler, aid) for aid in member_ids],
   )
 
 

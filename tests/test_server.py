@@ -232,7 +232,7 @@ def test_full_view_partitions_tasks(tmp_path: Path):
     assert set(detail["pending"]) == {"t3", "t4"}
 
 
-def test_list_jobs_matches_state_and_scope_filter(
+def test_list_jobs_matches_state_and_arena_filter(
   tmp_path: Path,
 ):
   with mk_client(tmp_path) as client:
@@ -242,7 +242,7 @@ def test_list_jobs_matches_state_and_scope_filter(
         task_ids=["t1"],
         home_root=tmp_path / "a",
         job_id="A",
-        extra={"scope": "bench1", "paused": True},
+        extra={"arena": "bench1", "paused": True},
       ),
     )
     client.post(
@@ -251,13 +251,13 @@ def test_list_jobs_matches_state_and_scope_filter(
         task_ids=["t1"],
         home_root=tmp_path / "b",
         job_id="B",
-        extra={"scope": "bench2", "paused": True},
+        extra={"arena": "bench2", "paused": True},
       ),
     )
     all_rows = client.get("/jobs").json()
     assert {a["job_id"] for a in all_rows} == {"A", "B"}
-    scoped = client.get("/jobs", params={"scope": "bench1"})
-    assert {a["job_id"] for a in scoped.json()} == {"A"}
+    filtered = client.get("/jobs", params={"arena": "bench1"})
+    assert {a["job_id"] for a in filtered.json()} == {"A"}
     full = client.get("/jobs", params={"full": 1}).json()
     assert {a["job_id"] for a in full} == {"A", "B"}
     assert "pending" in full[0]
@@ -279,12 +279,12 @@ def test_patch_knobs_and_persistence(tmp_path: Path):
       ),
     ).json()["job_id"]
     resp = client.patch(
-      f"/jobs/{aid}", json={"weight": 9, "tags": ["x", "x "]}
+      f"/jobs/{aid}", json={"weight": 9, "arena": " v7 "}
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["weight"] == 9
-    assert body["tags"] == ["x"]  # deduped + stripped
+    assert body["arena"] == "v7"  # stripped
     events = read_events(tmp_path / "a" / RUN_LOG_FILENAME)
     patched = [e for e in events if e["type"] == "patch"]
     assert any(e.get("weight") == 9 for e in patched)

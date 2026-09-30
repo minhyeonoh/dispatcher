@@ -59,7 +59,7 @@ def test_submit_defaults_scheduler_knobs():
   assert state.max_concurrent is None
   assert state.pause_on_error is None
   assert state.pool == "default"
-  assert state.tags == []
+  assert state.arena == ""
   assert state.notified_thresholds == []
   assert state.archived_at is None
 
@@ -126,7 +126,7 @@ def test_patch_orthogonal_fields_all_apply():
       _patch(weight=2),
       _patch(max_concurrent=4),
       _patch(pool="gpu"),
-      _patch(tags=["x", "y"]),
+      _patch(arena="v7"),
     ]
   )
   assert out is not None
@@ -134,7 +134,7 @@ def test_patch_orthogonal_fields_all_apply():
   assert state.weight == 2
   assert state.max_concurrent == 4
   assert state.pool == "gpu"
-  assert state.tags == ["x", "y"]
+  assert state.arena == "v7"
 
 
 def test_patch_single_call_multiple_fields():

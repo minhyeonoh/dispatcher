@@ -12,6 +12,16 @@ dispatch, failure detection, and state persistence.
 - **job** — one submission: a task list + how to run one
   instance. Carries scheduler knobs (paused, weight, max_concurrent,
   pause_on_error, pool) and an operator alias.
+- **arena** — the long-lived group a job belongs to (`"arena"`
+  at submit, movable via PATCH). Derived state: an arena exists
+  iff a job names it. `GET /arenas` lists groups with aggregated
+  counts; `POST /arenas/{name}/pause|resume|reclaim` fan out the
+  per-job op over members; `/arenas/{name}/cancel` refuses
+  without `{"confirm": true}`. Submitting many jobs at once (a
+  sweep) is a client convenience
+  (`dispatcher_sdk.client.submit_jobs`), not a server concept —
+  membership is by reference, whenever the job was submitted.
+  Orthogonal to `pool` (capacity axis).
 - **task** — one unit of work, by name.
 - **instance** — one execution of a task (`<task>__<seq>`). A task
   can have several instances (infra requeue, operator retry); each
@@ -43,6 +53,7 @@ dispatch, failure detection, and state persistence.
    ```json
    {
      "label": "my-sweep-arm1",
+     "arena": "my-sweep",
      "task_ids": ["task_a", "task_b"],
      "home_root": "/nfs/exp/my-sweep-arm1",
      "source_tar_b64": "<base64 tar of the frozen code>",

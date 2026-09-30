@@ -51,7 +51,7 @@ _KNOB_FIELDS = (
   "max_concurrent",
   "pause_on_error",
   "alias",
-  "tags",
+  "arena",
   "pool",
 )
 

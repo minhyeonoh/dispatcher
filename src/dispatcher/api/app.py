@@ -42,14 +42,19 @@ from dispatcher.api.settings import (
   save_settings,
 )
 from dispatcher.api.wire import (
+  ArenaDetailOut,
+  ArenaSummaryOut,
   FullJobOut,
   HealthOut,
   JobSummaryOut,
   RetryDoneErrRequest,
   StateOut,
+  arena_members,
   build_full_jobs_body,
   cluster_snapshot,
   full_job_view,
+  snapshot_arena,
+  snapshot_arenas,
   snapshot_job,
   sse,
 )
@@ -369,13 +374,13 @@ def create_app(
 
   @app.get("/jobs", response_model=None)
   async def list_jobs(
-    full: bool = False, scope: str = ""
+    full: bool = False, arena: str = ""
   ) -> list[JobSummaryOut] | Response:
     st = _get_state(app)
     aids = st.scheduler.all_job_ids()
-    if scope:
+    if arena:
       aids = [
-        aid for aid in aids if st.scheduler.job_state(aid).scope == scope
+        aid for aid in aids if st.scheduler.job_state(aid).arena == arena
       ]
     if full:
       body = await asyncio.to_thread(
@@ -407,6 +412,48 @@ def create_app(
     payload: dict[str, Any],
   ) -> dict[str, Any]:
     return await ops.submit_job(_get_state(app), payload, clock_fn)
+
+  @app.get("/arenas")
+  async def list_arenas() -> list[ArenaSummaryOut]:
+    st = _get_state(app)
+    return await asyncio.to_thread(snapshot_arenas, st.scheduler)
+
+  @app.get("/arenas/{arena}")
+  async def get_arena(arena: str) -> ArenaDetailOut:
+    st = _get_state(app)
+    members = arena_members(st.scheduler, arena)
+    if not members:
+      raise HTTPException(
+        status_code=404, detail=f"arena {arena!r} has no jobs"
+      )
+    return await asyncio.to_thread(
+      snapshot_arena, st.scheduler, arena, members
+    )
+
+  @app.post("/arenas/{arena}/pause")
+  async def arena_pause(arena: str) -> dict[str, Any]:
+    return await ops.arena_set_paused(
+      _get_state(app), arena, True, clock_fn
+    )
+
+  @app.post("/arenas/{arena}/resume")
+  async def arena_resume(arena: str) -> dict[str, Any]:
+    return await ops.arena_set_paused(
+      _get_state(app), arena, False, clock_fn
+    )
+
+  @app.post("/arenas/{arena}/reclaim")
+  async def arena_reclaim(arena: str) -> dict[str, Any]:
+    return await ops.arena_reclaim(_get_state(app), arena, clock_fn)
+
+  @app.post("/arenas/{arena}/cancel")
+  async def arena_cancel(
+    arena: str, payload: dict[str, Any] | None = None
+  ) -> dict[str, Any]:
+    confirm = bool((payload or {}).get("confirm"))
+    return await ops.arena_cancel(
+      _get_state(app), arena, confirm, clock_fn
+    )
 
   @app.patch("/jobs/{job_id}")
   async def patch_job(

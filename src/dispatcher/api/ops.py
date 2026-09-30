@@ -22,6 +22,7 @@ from dispatcher.api.settings import (
 )
 from dispatcher.api.wire import (
   RetryDoneErrRequest,
+  arena_members,
   full_job_view,
   job_counts,
   snapshot_job,
@@ -147,6 +148,11 @@ def _prepare_submit(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_submit(st: ServerState, payload: dict[str, Any]) -> None:
+  arena = payload.get("arena")
+  if arena is not None:
+    if not isinstance(arena, str):
+      raise Invalid("arena must be a string")
+    payload["arena"] = arena.strip()
   home_root = payload.get("home_root")
   if not isinstance(home_root, str) or not home_root:
     raise Invalid("home_root must be a non-empty string")
@@ -310,7 +316,7 @@ _ALLOWED_PATCH_KNOBS = frozenset(
     "max_concurrent",
     "pause_on_error",
     "alias",
-    "tags",
+    "arena",
     "pool",
   }
 )
@@ -363,21 +369,11 @@ async def patch_job(
     if not isinstance(raw_pool, str):
       raise Invalid("pool must be a string")
     payload["pool"] = raw_pool.strip() or "default"
-  if "tags" in payload:
-    raw = payload["tags"]
-    if not isinstance(raw, list) or not all(
-      isinstance(t, str) for t in raw
-    ):
-      raise Invalid("tags must be a list of strings")
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    for t in raw:
-      s = t.strip()
-      if not s or s in seen:
-        continue
-      seen.add(s)
-      cleaned.append(s)
-    payload["tags"] = cleaned
+  if "arena" in payload:
+    raw_arena = payload["arena"]
+    if not isinstance(raw_arena, str):
+      raise Invalid("arena must be a string (empty = leave)")
+    payload["arena"] = raw_arena.strip()
   try:
     if payload:
       st.scheduler.patch(job_id, **payload)
@@ -747,6 +743,91 @@ async def unarchive_job(
     "status": "unarchived",
     "final": snapshot.model_dump(mode="json"),
   }
+
+
+# ── arena group ops: fan-outs over per-job ops ──────────────────
+# An arena has no state of its own — every group op is a loop of
+# the per-job op it names, so the arena layer can never desync
+# from the mechanism layer.
+
+
+def _arena_member_ids(st: ServerState, arena: str) -> list[str]:
+  name = arena.strip()
+  if not name:
+    raise Invalid("arena name must be non-empty")
+  members = arena_members(st.scheduler, name)
+  if not members:
+    raise NotFound(f"arena {name!r} has no jobs")
+  return members
+
+
+async def arena_set_paused(
+  st: ServerState,
+  arena: str,
+  paused: bool,
+  clock_fn: Callable[[], datetime],
+) -> dict[str, Any]:
+  members = _arena_member_ids(st, arena)
+  changed: list[str] = []
+  skipped: list[dict[str, str]] = []
+  for aid in members:
+    try:
+      await patch_job(st, aid, {"paused": paused}, clock_fn)
+      changed.append(aid)
+    except OpError as exc:
+      # Archived members etc. — the rest of the arena still moves.
+      skipped.append({"job_id": aid, "reason": str(exc)})
+  return {
+    "arena": arena.strip(),
+    "paused": paused,
+    "changed": changed,
+    "skipped": skipped,
+  }
+
+
+async def arena_reclaim(
+  st: ServerState,
+  arena: str,
+  clock_fn: Callable[[], datetime],
+) -> dict[str, Any]:
+  members = _arena_member_ids(st, arena)
+  reclaimed: dict[str, list[str]] = {}
+  skipped: list[dict[str, str]] = []
+  for aid in members:
+    try:
+      result = await reclaim_job(st, aid, clock_fn)
+      reclaimed[aid] = result["reclaimed"]
+    except OpError as exc:
+      # Same per-job precondition as /jobs/{id}/reclaim: not
+      # paused → skipped, stated, never silently forced.
+      skipped.append({"job_id": aid, "reason": str(exc)})
+  return {
+    "arena": arena.strip(),
+    "reclaimed": reclaimed,
+    "skipped": skipped,
+  }
+
+
+async def arena_cancel(
+  st: ServerState,
+  arena: str,
+  confirm: bool,
+  clock_fn: Callable[[], datetime],
+) -> dict[str, Any]:
+  members = _arena_member_ids(st, arena)
+  if not confirm:
+    # Destructive fan-out keeps friction: name what would die,
+    # do nothing.
+    raise Conflict(
+      f"arena {arena.strip()!r} cancel would drop "
+      f"{len(members)} job(s): {members} — resend with "
+      f'{{"confirm": true}}'
+    )
+  cancelled: list[str] = []
+  for aid in members:
+    await cancel_job(st, aid, clock_fn)
+    cancelled.append(aid)
+  return {"arena": arena.strip(), "cancelled": cancelled}
 
 
 def _mk_job_id(label: str) -> str:
