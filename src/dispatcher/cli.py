@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     "--data-dir",
     required=True,
     type=Path,
-    help="dispatcher-owned state dir (attempts index, blobs)",
+    help="dispatcher-owned state dir (jobs index, blobs)",
   )
   serve.add_argument(
     "--host",
@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     default=[],
     metavar="NAME=CAP",
     help=(
-      "dispatch host and its max concurrent trials; repeatable. "
+      "dispatch host and its max concurrent instances; repeatable. "
       "Required on first boot; later boots reuse the persisted "
       "settings.json and flags act as explicit overrides"
     ),
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     "monitor", help="live terminal monitor over the SSE stream"
   )
   monitor.add_argument("--server", default="http://127.0.0.1:7200")
-  monitor.add_argument("--detail", default=None, metavar="ATTEMPT_ID")
+  monitor.add_argument("--detail", default=None, metavar="JOB_ID")
   monitor.add_argument("--refresh-per-second", type=int, default=4)
 
   args = ap.parse_args(argv)

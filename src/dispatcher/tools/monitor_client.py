@@ -19,12 +19,12 @@ from rich.text import Text
 
 @dataclass
 class MonitorState:
-  """Folds SSE frames into cluster + per-attempt dicts. Payload
+  """Folds SSE frames into cluster + per-job dicts. Payload
   shapes are the server's; stored as-is."""
 
   cluster: dict[str, Any] = field(default_factory=dict)
-  attempts: dict[str, dict[str, Any]] = field(default_factory=dict)
-  attempt_order: list[str] = field(default_factory=list)
+  jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+  job_order: list[str] = field(default_factory=list)
   last_heartbeat_at: str | None = None
   connected: bool = False
   connection_error: str | None = None
@@ -34,22 +34,22 @@ class MonitorState:
       self.cluster = payload
     elif event_type == "cluster_updated":
       self.cluster.update(payload)
-    elif event_type in ("attempt_updated", "attempt_submitted"):
-      aid = payload.get("attempt_id")
+    elif event_type in ("job_updated", "job_submitted"):
+      aid = payload.get("job_id")
       if aid is None:
         return
-      if aid not in self.attempts:
-        self.attempt_order.append(aid)
-      self.attempts[aid] = payload
-    elif event_type == "attempt_cancelled":
-      # No more attempt_updated frames will follow (the server
+      if aid not in self.jobs:
+        self.job_order.append(aid)
+      self.jobs[aid] = payload
+    elif event_type == "job_cancelled":
+      # No more job_updated frames will follow (the server
       # popped it first); badge the last snapshot instead of
       # dropping the row.
-      aid = payload.get("attempt_id")
-      if aid is None or aid not in self.attempts:
+      aid = payload.get("job_id")
+      if aid is None or aid not in self.jobs:
         return
-      self.attempts[aid] = {
-        **self.attempts[aid],
+      self.jobs[aid] = {
+        **self.jobs[aid],
         "cancelled": True,
       }
     elif event_type == "heartbeat":
@@ -128,7 +128,7 @@ def primary_metric(
   metrics: dict[str, Any],
 ) -> tuple[str, float] | None:
   """The value key shown in the compact table: 'reward' if the
-  attempt reports it, else the alphabetically-first mean."""
+  job reports it, else the alphabetically-first mean."""
   means = (metrics or {}).get("means") or {}
   if not means:
     return None
@@ -145,15 +145,13 @@ def _metric_cell(metrics: dict[str, Any]) -> str:
   return f"{pm[1]:.2f}"
 
 
-def _attempt_label(attempt: dict[str, Any]) -> Text:
+def _job_label(job: dict[str, Any]) -> Text:
   label = Text(
-    attempt.get("alias")
-    or attempt.get("label")
-    or attempt.get("attempt_id", "?")
+    job.get("alias") or job.get("label") or job.get("job_id", "?")
   )
-  if attempt.get("cancelled"):
+  if job.get("cancelled"):
     label.append(" [cancelled]", style="red")
-  elif attempt.get("paused"):
+  elif job.get("paused"):
     label.append(" [paused]", style="yellow")
   return label
 
@@ -189,7 +187,7 @@ def render_compact(state: MonitorState):
     padding=(0, 1),
     header_style="bold",
   )
-  table.add_column("attempt", no_wrap=False)
+  table.add_column("job", no_wrap=False)
   table.add_column("ok", justify="right")
   table.add_column("err", justify="right")
   table.add_column("run", justify="right")
@@ -198,17 +196,17 @@ def render_compact(state: MonitorState):
   table.add_column("metric", justify="right")
   table.add_column("progress")
 
-  if not state.attempts:
-    table.add_row("(no attempts)", "-", "-", "-", "-", "-", "-", "")
+  if not state.jobs:
+    table.add_row("(no jobs)", "-", "-", "-", "-", "-", "-", "")
   else:
-    for aid in state.attempt_order:
-      attempt = state.attempts.get(aid)
-      if attempt is None:
+    for aid in state.job_order:
+      job = state.jobs.get(aid)
+      if job is None:
         continue
-      counts = attempt.get("counts", {}) or {}
-      metrics = attempt.get("metrics", {}) or {}
+      counts = job.get("counts", {}) or {}
+      metrics = job.get("metrics", {}) or {}
       table.add_row(
-        _attempt_label(attempt),
+        _job_label(job),
         str(metrics.get("ok", counts.get("done_ok", 0))),
         str(metrics.get("err", counts.get("done_err", 0))),
         str(counts.get("running", 0)),
@@ -222,29 +220,29 @@ def render_compact(state: MonitorState):
   return Group(header, table, footer)
 
 
-def render_detail(state: MonitorState, attempt_id: str):
-  attempt = state.attempts.get(attempt_id)
-  if attempt is None:
+def render_detail(state: MonitorState, job_id: str):
+  job = state.jobs.get(job_id)
+  if job is None:
     return Panel(
       Text(
-        f"attempt {attempt_id!r} not in the monitor stream",
+        f"job {job_id!r} not in the monitor stream",
         style="red",
       ),
       title="dispatcher monitor",
     )
-  counts = attempt.get("counts", {}) or {}
-  metrics = attempt.get("metrics", {}) or {}
+  counts = job.get("counts", {}) or {}
+  metrics = job.get("metrics", {}) or {}
 
   summary = Table.grid(padding=(0, 2))
   summary.add_column(justify="right", style="bold")
   summary.add_column()
-  summary.add_row("attempt_id", attempt.get("attempt_id", "?"))
-  summary.add_row("alias", attempt.get("alias", "?"))
-  summary.add_row("label", attempt.get("label", "?"))
-  summary.add_row("state", "paused" if attempt.get("paused") else "active")
+  summary.add_row("job_id", job.get("job_id", "?"))
+  summary.add_row("alias", job.get("alias", "?"))
+  summary.add_row("label", job.get("label", "?"))
+  summary.add_row("state", "paused" if job.get("paused") else "active")
   summary.add_row(
     "weight / max_concurrent",
-    f"{attempt.get('weight')} / {attempt.get('max_concurrent')}",
+    f"{job.get('weight')} / {job.get('max_concurrent')}",
   )
   summary.add_row(
     "counts",
@@ -263,6 +261,6 @@ def render_detail(state: MonitorState, attempt_id: str):
 
   return Panel(
     Group(summary, Text(""), _progress_bar(counts)),
-    title=attempt.get("alias") or attempt_id,
+    title=job.get("alias") or job_id,
     subtitle="q or ctrl+c to quit",
   )

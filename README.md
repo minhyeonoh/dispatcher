@@ -1,26 +1,26 @@
 # dispatcher
 
-Schedules containerized trials across a host fleet. Extracted
+Schedules containerized instances across a host fleet. Extracted
 from the `agents/` experiment router and made self-contained: no
 harbor, no benchmark knowledge, no repo-specific config. What a
-trial computes and what its results mean stay on the research-repo
+instance computes and what its results mean stay on the research-repo
 side; the dispatcher owns host selection, concurrency caps,
 dispatch, failure detection, and state persistence.
 
 ## Vocabulary
 
-- **attempt** — one submission: a task list + how to run one
-  trial. Carries scheduler knobs (paused, weight, max_concurrent,
+- **job** — one submission: a task list + how to run one
+  instance. Carries scheduler knobs (paused, weight, max_concurrent,
   pause_on_error, pool) and an operator alias.
 - **task** — one unit of work, by name.
-- **trial** — one execution of a task (`<task>__<seq>`). A task
-  can have several trials (infra requeue, operator retry); each
+- **instance** — one execution of a task (`<task>__<seq>`). A task
+  can have several instances (infra requeue, operator retry); each
   gets a fresh name and a fresh home dir.
-- **home** — `<home_root>/<trial_id>/`, a directory on a
+- **home** — `<home_root>/<instance_id>/`, a directory on a
   filesystem every dispatch host shares. The dispatcher writes
-  `trial.json` into it before dispatch and reads `outcome.json`
+  `instance.json` into it before dispatch and reads `outcome.json`
   out of it after.
-- **worker** — the research repo's code inside the trial's main
+- **worker** — the research repo's code inside the instance's main
   container (see `dispatcher_sdk`).
 
 ## What a research repo provides
@@ -33,12 +33,12 @@ dispatch, failure detection, and state persistence.
    attached to the submission (`source_tar_b64`). The dispatcher
    stores it at `<home_root>/.source.tar` (plain shared storage,
    immune to docker prune — this file IS the arm record), mounts
-   it read-only into every trial, and
+   it read-only into every instance, and
    `dispatcher_sdk.bootstrap` unpacks it to container-local disk
-   before exec — one sequential read per trial, no per-file
+   before exec — one sequential read per instance, no per-file
    NFS traffic. Worker code uses `dispatcher_sdk.run(work)`.
-3. **A submission** (`POST /attempts`, or
-   `dispatcher_sdk.client.submit_attempt`):
+3. **A submission** (`POST /jobs`, or
+   `dispatcher_sdk.client.submit_job`):
 
    ```json
    {
@@ -49,7 +49,7 @@ dispatch, failure detection, and state persistence.
      "container": {
        "image": "myrepo-env:deps-hash",
        "command": ["python", "-m", "dispatcher_sdk.bootstrap",
-                   "--", "python", "-m", "myrepo.trial"],
+                   "--", "python", "-m", "myrepo.worker"],
        "env": {"OPENAI_API_KEY": "..."},
        "mounts": ["/nfs/datasets:/data:ro"],
        "extra_args": ["--network", "host"]
@@ -58,31 +58,31 @@ dispatch, failure detection, and state persistence.
    }
    ```
 
-   `home_root` must be absolute and is one-attempt-only — a
-   reused home would interleave trial dirs and merge event logs,
+   `home_root` must be absolute and is one-job-only — a
+   reused home would interleave instance dirs and merge event logs,
    which is silent cross-contamination; the server 409s instead.
    The image must exist on the launcher at submit (400
    otherwise); it is resolved to its immutable ID there, every
-   trial runs that exact ID (a tag re-pushed mid-sweep changes
+   instance runs that exact ID (a tag re-pushed mid-sweep changes
    nothing), and the dispatcher ships the image to any dispatch
    host that lacks it. `settings.require_source` makes the
    source archive mandatory.
 
-## The trial contract
+## The instance contract
 
 The dispatcher starts the main container itself
 (`docker run -d`) with:
 
-- labels `dispatcher.managed=1`, `dispatcher.trial=<trial>`,
-  `dispatcher.set=<trial>`, `dispatcher.attempt=<id>`. All
+- labels `dispatcher.managed=1`, `dispatcher.instance=<instance>`,
+  `dispatcher.set=<instance>`, `dispatcher.job=<id>`. All
   docker-side identification is by label; container names are
   never used (docker/compose rewrite names — label values pass
   through verbatim).
-- the trial home bind-mounted at `container.home_mount`
-  (default `/dispatcher/home`), containing `trial.json`
-  (`{attempt_id, task_id, trial_id, home, payload}`).
-- env: `DISPATCHER_TRIAL`, `DISPATCHER_TASK`,
-  `DISPATCHER_ATTEMPT`, `DISPATCHER_HOME`,
+- the instance home bind-mounted at `container.home_mount`
+  (default `/dispatcher/home`), containing `instance.json`
+  (`{job_id, task_id, instance_id, home, payload}`).
+- env: `DISPATCHER_INSTANCE`, `DISPATCHER_TASK`,
+  `DISPATCHER_JOB`, `DISPATCHER_HOME`,
   `DISPATCHER_SET_LABEL`.
 
 The worker may start sibling containers; **every sibling must
@@ -117,10 +117,10 @@ opaque to the dispatcher. Exit codes: 0 ok, 1 error, 75 infra
   the task is **requeued** (bounded, 5 per task), never scored.
 - no envelope, container died → `unknown`; a resolver
   reclassifies on evidence (late file → done; container alive →
-  running; gone → ghosted). `unknown`/`ghosted` block attempt
+  running; gone → ghosted). `unknown`/`ghosted` block job
   drain and archive — nothing is silently dropped.
 - orphan container sets are removed only after: SET-label match,
-  not owned by any running/unknown trial, older than the age
+  not owned by any running/unknown instance, older than the age
   floor, AND seen orphan on two consecutive sweeps.
 
 ## Run it
@@ -133,12 +133,12 @@ dispatcher monitor --server http://127.0.0.1:7200
 ```
 
 All timestamps the dispatcher mints (event logs, API responses,
-attempt ids) are timezone-aware KST (+09:00); external times
+job ids) are timezone-aware KST (+09:00); external times
 (docker, file mtimes) are converted at the boundary.
 
-State: per-attempt event log at
+State: per-job event log at
 `<home_root>/.dispatcher-state.jsonl` (replayed on restart), an
-attempts index under `--data-dir`, and `settings.json` — every
+jobs index under `--data-dir`, and `settings.json` — every
 `PATCH /settings` persists the whole runtime-tunable document, so
 operator tuning survives restarts. `--host`/`--max-concurrent`
 are required on the first boot only; afterwards the persisted

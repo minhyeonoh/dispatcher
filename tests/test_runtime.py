@@ -21,29 +21,29 @@ from tests.test_scheduler import clock_from, id_gen
 if TYPE_CHECKING:
   from pathlib import Path
 
-  from dispatcher.core.models import AttemptState, DispatchEntry
+  from dispatcher.core.models import DispatchEntry, JobState
 
 
-def mk_attempt(
+def mk_job(
   home_root: Path,
   task_ids: list[str],
   *,
-  attempt_id: str = "att-001",
+  job_id: str = "job-001",
   max_concurrent: int | None = None,
   payloads: dict | None = None,
-) -> AttemptState:
+) -> JobState:
   from dispatcher.core.event_log import replay_events
 
   events: list[dict] = [
     {
       "type": "submit",
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "label": "demo",
       "task_ids": task_ids,
       "home_root": str(home_root),
       "container": {"image": "img"},
       "submitted_at": "2026-09-28T10:00:00+00:00",
-      "alias": f"{attempt_id}-alias",
+      "alias": f"{job_id}-alias",
       "payloads": payloads or {},
     }
   ]
@@ -51,7 +51,7 @@ def mk_attempt(
     events.append(
       {
         "type": "patch",
-        "attempt_id": attempt_id,
+        "job_id": job_id,
         "max_concurrent": max_concurrent,
         "at": "…",
       }
@@ -93,7 +93,7 @@ def errored(infra: bool = False):
 
 def test_runtime_dispatches_and_completes_all_tasks(tmp_path: Path):
   sched = mk_sched()
-  sched.submit(mk_attempt(tmp_path, ["t1", "t2", "t3"]))
+  sched.submit(mk_job(tmp_path, ["t1", "t2", "t3"]))
   dispatched: list[DispatchEntry] = []
 
   async def fake_dispatch(action, state) -> None:
@@ -101,10 +101,10 @@ def test_runtime_dispatches_and_completes_all_tasks(tmp_path: Path):
 
   seen: set[Path] = set()
 
-  def fake_poll(trial_home: Path):
-    if trial_home in seen:
+  def fake_poll(instance_home: Path):
+    if instance_home in seen:
       return None
-    seen.add(trial_home)
+    seen.add(instance_home)
     return clean()
 
   runtime = DispatcherRuntime(
@@ -117,19 +117,19 @@ def test_runtime_dispatches_and_completes_all_tasks(tmp_path: Path):
   asyncio.run(runtime.run_until_done(max_ticks=20))
   assert len(dispatched) == 3
   assert {a.task_id for a in dispatched} == {"t1", "t2", "t3"}
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.done_ok) == {"t1", "t2", "t3"}
   assert view.pending == [] and view.running == {}
 
 
-def test_runtime_writes_trial_spec_before_dispatch(tmp_path: Path):
+def test_runtime_writes_instance_spec_before_dispatch(tmp_path: Path):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"], payloads={"t1": {"n": 7}}))
+  sched.submit(mk_job(tmp_path, ["t1"], payloads={"t1": {"n": 7}}))
   captured: list[dict] = []
 
   async def fake_dispatch(action, state) -> None:
-    # By dispatch time the spec file must exist in the trial home.
-    spec_path = tmp_path / action.trial_id / "trial.json"
+    # By dispatch time the spec file must exist in the instance home.
+    spec_path = tmp_path / action.instance_id / "instance.json"
     assert spec_path.exists()
     captured.append(json.loads(spec_path.read_text()))
 
@@ -144,14 +144,14 @@ def test_runtime_writes_trial_spec_before_dispatch(tmp_path: Path):
   assert len(captured) == 1
   spec = captured[0]
   assert spec["task_id"] == "t1"
-  assert spec["attempt_id"] == "att-001"
+  assert spec["job_id"] == "job-001"
   assert spec["payload"] == {"n": 7}
   assert spec["home"] == "/dispatcher/home"
 
 
-def test_runtime_pause_on_error_pauses_attempt(tmp_path: Path):
+def test_runtime_pause_on_error_pauses_job(tmp_path: Path):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1", "t2"], max_concurrent=1))
+  sched.submit(mk_job(tmp_path, ["t1", "t2"], max_concurrent=1))
   runtime = DispatcherRuntime(
     sched,
     self_host="ml10",
@@ -160,17 +160,17 @@ def test_runtime_pause_on_error_pauses_attempt(tmp_path: Path):
     tick_interval=0,
   )
   asyncio.run(runtime.run_until_done(max_ticks=5))
-  assert sched.attempt_paused("att-001") is True
-  view = sched.attempt_view("att-001")
+  assert sched.job_paused("job-001") is True
+  view = sched.job_view("job-001")
   assert set(view.done_err) == {"t1"}
   assert view.pending == ["t2"]
 
 
-def test_paused_attempt_drains_when_last_trial_finishes(
+def test_paused_job_drains_when_last_instance_finishes(
   tmp_path: Path,
 ):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  sched.submit(mk_job(tmp_path, ["t1"]))
   drained: list[str] = []
   runtime = DispatcherRuntime(
     sched,
@@ -178,30 +178,30 @@ def test_paused_attempt_drains_when_last_trial_finishes(
     dispatch=null_dispatch,
     poll=lambda _p: clean(),
     tick_interval=0,
-    on_attempt_drained=lambda state, _o: drained.append(state.attempt_id),
+    on_job_drained=lambda state, _o: drained.append(state.job_id),
   )
 
   async def _run():
     await runtime._dispatch_available()
-    sched.patch("att-001", paused=True)
+    sched.patch("job-001", paused=True)
     await runtime._poll_all()
 
   asyncio.run(_run())
   # Pause blocks FUTURE dispatch; with everything terminal it must
   # not block finalisation — and drain must not unpause.
-  assert drained == ["att-001"]
-  assert sched.attempt_paused("att-001") is True
+  assert drained == ["job-001"]
+  assert sched.job_paused("job-001") is True
 
 
 def test_resolver_applies_pause_before_completion_callbacks(
   tmp_path: Path,
 ):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1", "t2"], max_concurrent=1))
+  sched.submit(mk_job(tmp_path, ["t1", "t2"], max_concurrent=1))
   action = sched.dispatch_one()
   assert action is not None
-  sched.transition_trial(
-    attempt_id="att-001",
+  sched.transition_instance(
+    job_id="job-001",
     task_id="t1",
     from_state="running",
     to_state="unknown",
@@ -212,28 +212,28 @@ def test_resolver_applies_pause_before_completion_callbacks(
     sched,
     self_host="ml10",
     poll=lambda _p: errored(),
-    on_trial_completed=lambda state, _o: callback_pause_states.append(
+    on_instance_completed=lambda state, _o: callback_pause_states.append(
       state.paused
     ),
-    on_attempt_drained=lambda state, _o: drained.append(state.attempt_id),
+    on_job_drained=lambda state, _o: drained.append(state.job_id),
   )
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["done_err"] == 1
   assert callback_pause_states == [True]
-  assert sched.attempt_paused("att-001") is True
-  assert sched.attempt_view("att-001").pending == ["t2"]
+  assert sched.job_paused("job-001") is True
+  assert sched.job_view("job-001").pending == ["t2"]
   assert drained == []
 
 
 def test_resolver_drains_last_error_without_pausing(tmp_path: Path):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"], max_concurrent=1))
+  sched.submit(mk_job(tmp_path, ["t1"], max_concurrent=1))
   action = sched.dispatch_one()
   assert action is not None
-  sched.transition_trial(
-    attempt_id="att-001",
+  sched.transition_instance(
+    job_id="job-001",
     task_id="t1",
     from_state="running",
     to_state="unknown",
@@ -243,7 +243,7 @@ def test_resolver_drains_last_error_without_pausing(tmp_path: Path):
     sched,
     self_host="ml10",
     poll=lambda _p: errored(),
-    on_attempt_drained=lambda state, _o: drained_pause_states.append(
+    on_job_drained=lambda state, _o: drained_pause_states.append(
       state.paused
     ),
   )
@@ -252,7 +252,7 @@ def test_resolver_drains_last_error_without_pausing(tmp_path: Path):
   )
   assert outcomes["done_err"] == 1
   assert drained_pause_states == [False]
-  assert sched.attempt_paused("att-001") is False
+  assert sched.job_paused("job-001") is False
 
 
 def test_live_and_resolver_share_terminal_pipeline(
@@ -271,7 +271,7 @@ def test_live_and_resolver_share_terminal_pipeline(
   for mode in ("live", "resolver"):
     sched = mk_sched(1)
     home = tmp_path / mode
-    sched.submit(mk_attempt(home, ["t1", "t2"], max_concurrent=1))
+    sched.submit(mk_job(home, ["t1", "t2"], max_concurrent=1))
     action = sched.dispatch_one()
     assert action is not None
     snapshot = errored()
@@ -293,16 +293,16 @@ def test_live_and_resolver_share_terminal_pipeline(
     monkeypatch.setattr(runtime, "_apply_terminal_transition", record)
     if mode == "live":
       asyncio.run(
-        runtime._apply_trial_completion(
-          action.attempt_id,
+        runtime._apply_instance_completion(
+          action.job_id,
           action.task_id,
-          action.trial_id,
+          action.instance_id,
           snapshot,
         )
       )
     else:
-      sched.transition_trial(
-        attempt_id="att-001",
+      sched.transition_instance(
+        job_id="job-001",
         task_id="t1",
         from_state="running",
         to_state="unknown",
@@ -311,8 +311,8 @@ def test_live_and_resolver_share_terminal_pipeline(
         runtime.resolve_state_once(max_concurrent_probes=1)
       )
       assert outcomes["done_err"] == 1
-    assert metrics.get("att-001").err == 1
-    assert sched.attempt_paused("att-001") is True
+    assert metrics.get("job-001").err == 1
+    assert sched.job_paused("job-001") is True
     event_orders[mode] = event_types
 
   assert observed == [
@@ -320,8 +320,8 @@ def test_live_and_resolver_share_terminal_pipeline(
     ("resolver", "unknown", "done_err"),
   ]
   assert event_orders == {
-    "live": ["trial_completed", "attempt_paused_on_error"],
-    "resolver": ["trial_reclassified", "attempt_paused_on_error"],
+    "live": ["instance_completed", "job_paused_on_error"],
+    "resolver": ["instance_reclassified", "job_paused_on_error"],
   }
 
 
@@ -329,11 +329,11 @@ def test_live_and_resolver_share_terminal_pipeline(
 
 
 def _seed_unknown(sched: Scheduler, home: Path) -> DispatchEntry:
-  sched.submit(mk_attempt(home, ["t1"]))
+  sched.submit(mk_job(home, ["t1"]))
   action = sched.dispatch_one()
   assert action is not None
-  sched.transition_trial(
-    attempt_id="att-001",
+  sched.transition_instance(
+    job_id="job-001",
     task_id="t1",
     from_state="running",
     to_state="unknown",
@@ -348,10 +348,10 @@ def test_resolver_promotes_definitively_dead_to_ghosted(
   sched = mk_sched(1)
   _seed_unknown(sched, tmp_path)
 
-  async def fake_probe(host, trial_id, *, self_host, **kw):
+  async def fake_probe(host, instance_id, *, self_host, **kw):
     return status
 
-  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_instance", fake_probe)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -359,7 +359,7 @@ def test_resolver_promotes_definitively_dead_to_ghosted(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["ghosted"] == 1, outcomes
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.ghosted) == {"t1"}
   assert set(view.unknown) == set()
 
@@ -373,10 +373,10 @@ def test_resolver_leaves_transient_states_in_unknown(
   sched = mk_sched(1)
   _seed_unknown(sched, tmp_path)
 
-  async def fake_probe(host, trial_id, *, self_host, **kw):
+  async def fake_probe(host, instance_id, *, self_host, **kw):
     return status
 
-  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_instance", fake_probe)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -384,7 +384,7 @@ def test_resolver_leaves_transient_states_in_unknown(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["unchanged"] == 1, outcomes
-  assert set(sched.attempt_view("att-001").unknown) == {"t1"}
+  assert set(sched.job_view("job-001").unknown) == {"t1"}
 
 
 def test_resolver_adopts_still_running_container(
@@ -393,10 +393,10 @@ def test_resolver_adopts_still_running_container(
   sched = mk_sched(1)
   _seed_unknown(sched, tmp_path)
 
-  async def fake_probe(host, trial_id, *, self_host, **kw):
+  async def fake_probe(host, instance_id, *, self_host, **kw):
     return "running"
 
-  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_instance", fake_probe)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -404,7 +404,7 @@ def test_resolver_adopts_still_running_container(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["running"] == 1
-  assert set(sched.attempt_view("att-001").running) == {"t1"}
+  assert set(sched.job_view("job-001").running) == {"t1"}
   # Host slot re-booked.
   assert sched.running_per_host()["ml10"] == 1
 
@@ -414,8 +414,8 @@ def test_resolver_adopts_still_running_container(
 
 def _seed_ghosted(sched: Scheduler, home: Path) -> None:
   _seed_unknown(sched, home)
-  sched.transition_trial(
-    attempt_id="att-001",
+  sched.transition_instance(
+    job_id="job-001",
     task_id="t1",
     from_state="unknown",
     to_state="ghosted",
@@ -435,8 +435,8 @@ def test_ghosted_re_poll_stays_ghosted_without_outcome(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["unchanged"] == 1
-  assert set(sched.attempt_view("att-001").ghosted) == {"t1"}
-  m = metrics.get("att-001")
+  assert set(sched.job_view("job-001").ghosted) == {"t1"}
+  m = metrics.get("job-001")
   assert m.ok == 0 and m.err == 0
 
 
@@ -454,10 +454,10 @@ def test_ghosted_re_poll_promotes_on_late_error(tmp_path: Path):
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["done_err"] == 1
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.done_err) == {"t1"}
   assert set(view.ghosted) == set()
-  assert metrics.get("att-001").err == 1
+  assert metrics.get("job-001").err == 1
 
 
 def test_ghosted_re_poll_promotes_on_late_ok(tmp_path: Path):
@@ -474,7 +474,7 @@ def test_ghosted_re_poll_promotes_on_late_ok(tmp_path: Path):
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["done_ok"] == 1
-  m = metrics.get("att-001")
+  m = metrics.get("job-001")
   assert m.ok == 1
   assert m.means == {"reward": 1.0}
 
@@ -482,11 +482,11 @@ def test_ghosted_re_poll_promotes_on_late_ok(tmp_path: Path):
 # ── docker die handler ───────────────────────────────────────────
 
 
-def _die_event(trial_id: str, exit_code: str) -> dict:
+def _die_event(instance_id: str, exit_code: str) -> dict:
   return {
     "Actor": {
       "Attributes": {
-        labels.TRIAL: trial_id,
+        labels.INSTANCE: instance_id,
         "exitCode": exit_code,
       }
     }
@@ -495,10 +495,10 @@ def _die_event(trial_id: str, exit_code: str) -> dict:
 
 def _sched_with_running(home: Path) -> tuple[Scheduler, str]:
   sched = mk_sched(1)
-  sched.submit(mk_attempt(home, ["t1"]))
+  sched.submit(mk_job(home, ["t1"]))
   action = sched.dispatch_one()
   assert action is not None
-  return sched, action.trial_id
+  return sched, action.instance_id
 
 
 def test_die_nonzero_exit_with_clean_outcome_is_done_ok(
@@ -506,42 +506,44 @@ def test_die_nonzero_exit_with_clean_outcome_is_done_ok(
 ):
   # Sibling teardown can SIGKILL (137) after the work finished and
   # wrote its envelope — the envelope wins.
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_id, "137"))
+    runtime.handle_docker_die("ml10", _die_event(instance_id, "137"))
   )
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.done_ok) == {"t1"}
   assert set(view.done_err) == set()
 
 
 def test_die_with_error_outcome_stays_done_err(tmp_path: Path):
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: errored()
   )
-  asyncio.run(runtime.handle_docker_die("ml10", _die_event(trial_id, "1")))
-  assert set(sched.attempt_view("att-001").done_err) == {"t1"}
+  asyncio.run(
+    runtime.handle_docker_die("ml10", _die_event(instance_id, "1"))
+  )
+  assert set(sched.job_view("job-001").done_err) == {"t1"}
 
 
 def test_die_without_outcome_goes_to_unknown(tmp_path: Path):
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   runtime._NFS_POLL_RETRY_DELAYS = ()  # no sleeping in tests
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_id, "137"))
+    runtime.handle_docker_die("ml10", _die_event(instance_id, "137"))
   )
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.unknown) == {"t1"}
 
 
-def test_die_for_foreign_trial_is_ignored(tmp_path: Path):
-  sched, _trial = _sched_with_running(tmp_path)
+def test_die_for_foreign_instance_is_ignored(tmp_path: Path):
+  sched, _instance = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
@@ -549,34 +551,34 @@ def test_die_for_foreign_trial_is_ignored(tmp_path: Path):
     runtime.handle_docker_die("ml10", _die_event("not-ours", "0"))
   )
   # Still running — nothing moved.
-  assert set(sched.attempt_view("att-001").running) == {"t1"}
+  assert set(sched.job_view("job-001").running) == {"t1"}
 
 
 def test_duplicate_die_is_ignored(tmp_path: Path):
   # docker --since replay can double-fire across reconnects; the
-  # second event finds no running trial and drops.
-  sched, trial_id = _sched_with_running(tmp_path)
+  # second event finds no running instance and drops.
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
-  ev = _die_event(trial_id, "0")
+  ev = _die_event(instance_id, "0")
   asyncio.run(runtime.handle_docker_die("ml10", ev))
   asyncio.run(runtime.handle_docker_die("ml10", ev))
-  assert set(sched.attempt_view("att-001").done_ok) == {"t1"}
+  assert set(sched.job_view("job-001").done_ok) == {"t1"}
 
 
 # ── infra requeue flows ──────────────────────────────────────────
 
 
 def test_envelope_infra_requeues_instead_of_scoring(tmp_path: Path):
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: errored(infra=True)
   )
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_id, "75"))
+    runtime.handle_docker_die("ml10", _die_event(instance_id, "75"))
   )
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert view.pending == ["t1"]
   assert not view.done_err
 
@@ -587,25 +589,25 @@ def test_infra_exit_without_outcome_requeues_at_ghost_promotion(
   # 137-killed container, no envelope: park unknown first (the
   # outcome may be NFS-lagged), requeue only once the container is
   # confirmed gone and the file still isn't there.
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   runtime._NFS_POLL_RETRY_DELAYS = ()
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_id, "137"))
+    runtime.handle_docker_die("ml10", _die_event(instance_id, "137"))
   )
-  assert set(sched.attempt_view("att-001").unknown) == {"t1"}
+  assert set(sched.job_view("job-001").unknown) == {"t1"}
 
   async def fake_probe(host, tn, *, self_host, **kw):
     return "gone"
 
-  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_instance", fake_probe)
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["requeued"] == 1
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert view.pending == ["t1"]
   assert not view.ghosted
 
@@ -613,29 +615,31 @@ def test_infra_exit_without_outcome_requeues_at_ghost_promotion(
 def test_non_infra_exit_without_outcome_ghosts(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   runtime._NFS_POLL_RETRY_DELAYS = ()
-  asyncio.run(runtime.handle_docker_die("ml10", _die_event(trial_id, "1")))
+  asyncio.run(
+    runtime.handle_docker_die("ml10", _die_event(instance_id, "1"))
+  )
 
   async def fake_probe(host, tn, *, self_host, **kw):
     return "gone"
 
-  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_instance", fake_probe)
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
   assert outcomes["ghosted"] == 1
-  assert set(sched.attempt_view("att-001").ghosted) == {"t1"}
+  assert set(sched.job_view("job-001").ghosted) == {"t1"}
 
 
 def test_infra_requeue_budget_exhaustion_scores_done_err(
   tmp_path: Path,
 ):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  sched.submit(mk_job(tmp_path, ["t1"]))
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: errored(infra=True)
   )
@@ -643,14 +647,14 @@ def test_infra_requeue_budget_exhaustion_scores_done_err(
     action = sched.dispatch_one()
     assert action is not None, f"round {i}"
     asyncio.run(
-      runtime._apply_trial_completion(
-        action.attempt_id,
+      runtime._apply_instance_completion(
+        action.job_id,
         action.task_id,
-        action.trial_id,
+        action.instance_id,
         errored(infra=True),
       )
     )
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.done_err) == {"t1"}
   assert view.pending == []
 
@@ -660,7 +664,7 @@ def test_infra_requeue_budget_exhaustion_scores_done_err(
 
 def test_dispatch_failure_requeues(tmp_path: Path):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  sched.submit(mk_job(tmp_path, ["t1"]))
 
   async def failing_dispatch(action, state) -> None:
     raise DispatchError("no such image")
@@ -671,7 +675,7 @@ def test_dispatch_failure_requeues(tmp_path: Path):
   asyncio.run(runtime._dispatch_available())
   # Requeued up to the budget, then parked in unknown — never a
   # silent drop, never scored as the work's failure.
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.unknown) == {"t1"}
   assert view.running == {}
 
@@ -682,7 +686,7 @@ def test_dispatch_failure_does_not_log_phantom_dispatch(
   from dispatcher.core.event_log import RUN_LOG_FILENAME, read_events
 
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  sched.submit(mk_job(tmp_path, ["t1"]))
 
   async def failing_dispatch(action, state) -> None:
     raise DispatchError("boom")
@@ -703,25 +707,27 @@ def test_dispatch_failure_does_not_log_phantom_dispatch(
 def test_reconcile_from_census_scores_exited_container(
   tmp_path: Path,
 ):
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
   containers = [
     {
       "State": {"Status": "exited", "ExitCode": 0},
-      "Config": {"Labels": {labels.MANAGED: "1", labels.TRIAL: trial_id}},
+      "Config": {
+        "Labels": {labels.MANAGED: "1", labels.INSTANCE: instance_id}
+      },
     },
     {"State": {"Status": "running"}, "Config": {"Labels": {}}},
   ]
   asyncio.run(runtime.reconcile_from_census("ml10", containers))
-  assert set(sched.attempt_view("att-001").done_ok) == {"t1"}
+  assert set(sched.job_view("job-001").done_ok) == {"t1"}
 
 
 def test_reconcile_remembers_infra_exit_code(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -729,16 +735,18 @@ def test_reconcile_remembers_infra_exit_code(
   containers = [
     {
       "State": {"Status": "exited", "ExitCode": 137},
-      "Config": {"Labels": {labels.MANAGED: "1", labels.TRIAL: trial_id}},
+      "Config": {
+        "Labels": {labels.MANAGED: "1", labels.INSTANCE: instance_id}
+      },
     }
   ]
   asyncio.run(runtime.reconcile_from_census("ml10", containers))
-  assert set(sched.attempt_view("att-001").unknown) == {"t1"}
+  assert set(sched.job_view("job-001").unknown) == {"t1"}
 
   async def fake_probe(host, tn, *, self_host, **kw):
     return "exited"
 
-  monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
+  monkeypatch.setattr("dispatcher.core.runtime.probe_instance", fake_probe)
   outcomes = asyncio.run(
     runtime.resolve_state_once(max_concurrent_probes=1)
   )
@@ -748,82 +756,82 @@ def test_reconcile_remembers_infra_exit_code(
 # ── stale observations (async windows + latent 7s die window) ───
 
 
-def test_stale_die_observation_cannot_score_new_trial(
+def test_stale_die_observation_cannot_score_new_instance(
   tmp_path: Path,
 ):
-  # A die observation for trial N arriving AFTER the task was
-  # requeued and re-dispatched as trial N+1 must be dropped —
-  # applying it would score the NEW trial with the OLD trial's
+  # A die observation for instance N arriving AFTER the task was
+  # requeued and re-dispatched as instance N+1 must be dropped —
+  # applying it would score the NEW instance with the OLD instance's
   # outcome. This window existed even pre-async (the die
   # handler's NFS retry pause); the guard closes it.
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  sched.submit(mk_job(tmp_path, ["t1"]))
   first = sched.dispatch_one()
   assert first is not None
   # Task goes back to pending (infra requeue) and gets a fresh
-  # trial while the old die observation is still in flight.
-  assert sched.requeue_after_infra_failure("att-001", "t1", "running")
+  # instance while the old die observation is still in flight.
+  assert sched.requeue_after_infra_failure("job-001", "t1", "running")
   second = sched.dispatch_one()
   assert second is not None
-  assert second.trial_id != first.trial_id
+  assert second.instance_id != first.instance_id
 
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
-  # Old trial's completion lands late.
+  # Old instance's completion lands late.
   asyncio.run(
-    runtime._apply_trial_completion(
-      "att-001", "t1", first.trial_id, clean({"reward": 0.0})
+    runtime._apply_instance_completion(
+      "job-001", "t1", first.instance_id, clean({"reward": 0.0})
     )
   )
-  view = sched.attempt_view("att-001")
-  # New trial still running, untouched; nothing scored.
+  view = sched.job_view("job-001")
+  # New instance still running, untouched; nothing scored.
   assert set(view.running) == {"t1"}
-  assert view.running["t1"].trial_id == second.trial_id
+  assert view.running["t1"].instance_id == second.instance_id
   assert not view.done_ok and not view.done_err
 
 
-def test_stale_infra_observation_cannot_requeue_new_trial(
+def test_stale_infra_observation_cannot_requeue_new_instance(
   tmp_path: Path,
 ):
   sched = mk_sched(1)
-  sched.submit(mk_attempt(tmp_path, ["t1"]))
+  sched.submit(mk_job(tmp_path, ["t1"]))
   first = sched.dispatch_one()
   assert first is not None
-  sched.requeue_after_infra_failure("att-001", "t1", "running")
+  sched.requeue_after_infra_failure("job-001", "t1", "running")
   second = sched.dispatch_one()
   assert second is not None
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   asyncio.run(
-    runtime._apply_trial_completion(
-      "att-001", "t1", first.trial_id, errored(infra=True)
+    runtime._apply_instance_completion(
+      "job-001", "t1", first.instance_id, errored(infra=True)
     )
   )
-  view = sched.attempt_view("att-001")
-  # The stale infra report must not bounce the LIVE trial.
-  assert view.running["t1"].trial_id == second.trial_id
+  view = sched.job_view("job-001")
+  # The stale infra report must not bounce the LIVE instance.
+  assert view.running["t1"].instance_id == second.instance_id
 
 
 # ── NFS cache bust in the retry ladder ──────────────────────────
 
 
-def test_retry_ladder_busts_cache_between_attempts(tmp_path: Path):
+def test_retry_ladder_busts_cache_between_jobs(tmp_path: Path):
   # Simulates the measured failure: the file "exists" but the
   # client cache answers miss until a bust invalidates it. The
   # die handler must land done_ok on its own, without parking in
   # unknown for the resolver.
-  sched, trial_id = _sched_with_running(tmp_path)
+  sched, instance_id = _sched_with_running(tmp_path)
   busted = [False]
 
-  def fake_poll(trial_home):
+  def fake_poll(instance_home):
     return clean({"reward": 1.0}) if busted[0] else None
 
   runtime = DispatcherRuntime(sched, self_host="ml10", poll=fake_poll)
   runtime._NFS_POLL_RETRY_DELAYS = (0.0,)
 
-  def fake_bust(trial_home) -> None:
+  def fake_bust(instance_home) -> None:
     busted[0] = True
 
   import dispatcher.core.runtime as rt
@@ -832,11 +840,11 @@ def test_retry_ladder_busts_cache_between_attempts(tmp_path: Path):
   rt.bust_dir_cache = fake_bust
   try:
     asyncio.run(
-      runtime.handle_docker_die("ml10", _die_event(trial_id, "0"))
+      runtime.handle_docker_die("ml10", _die_event(instance_id, "0"))
     )
   finally:
     rt.bust_dir_cache = orig
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   assert set(view.done_ok) == {"t1"}
   assert not view.unknown
 

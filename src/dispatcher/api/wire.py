@@ -11,25 +11,25 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher.api.settings import Settings
-from dispatcher.core.metrics import AttemptMetrics, MetricsCache
+from dispatcher.core.metrics import JobMetrics, MetricsCache
 
 if TYPE_CHECKING:
-  from dispatcher.core.models import TrialView
+  from dispatcher.core.models import InstanceView
   from dispatcher.core.scheduler import Scheduler
 
 
 class RetryDoneErrRequest(BaseModel):
-  """Empty body = retry every done_err trial. `trial_ids`
+  """Empty body = retry every done_err instance. `instance_ids`
   overrides the host/since filters."""
 
   model_config = ConfigDict(extra="forbid")
 
   host: str | None = None
   since_iso: datetime | None = None
-  trial_ids: list[str] | None = None
+  instance_ids: list[str] | None = None
 
 
-class AttemptCountsOut(BaseModel):
+class JobCountsOut(BaseModel):
   pending: int
   running: int
   done_ok: int
@@ -39,14 +39,14 @@ class AttemptCountsOut(BaseModel):
   total: int
 
 
-class AttemptSummaryOut(BaseModel):
-  attempt_id: str
+class JobSummaryOut(BaseModel):
+  job_id: str
   label: str
   weight: int
   max_concurrent: int | None
   pause_on_error: bool | None
   paused: bool
-  counts: AttemptCountsOut
+  counts: JobCountsOut
   home_root: str
   alias: str
   scope: str = ""
@@ -58,26 +58,26 @@ class AttemptSummaryOut(BaseModel):
   archive_kind: str = ""
 
 
-class AttemptSummaryWithMetricsOut(AttemptSummaryOut):
-  metrics: AttemptMetrics
+class JobSummaryWithMetricsOut(JobSummaryOut):
+  metrics: JobMetrics
 
 
-class TrialViewOut(BaseModel):
-  trial_id: str
+class InstanceViewOut(BaseModel):
+  instance_id: str
   host: str
   dispatched_at: datetime
-  # Outcome `values` for terminal trials whose envelope is cached;
+  # Outcome `values` for terminal instances whose envelope is cached;
   # None before then.
   values: dict[str, float] | None = None
 
 
-class FullAttemptOut(AttemptSummaryOut):
+class FullJobOut(JobSummaryOut):
   pending: list[str] = Field(default_factory=list)
-  running: dict[str, TrialViewOut] = Field(default_factory=dict)
-  done_ok: dict[str, TrialViewOut] = Field(default_factory=dict)
-  done_err: dict[str, TrialViewOut] = Field(default_factory=dict)
-  ghosted: dict[str, TrialViewOut] = Field(default_factory=dict)
-  unknown: dict[str, TrialViewOut] = Field(default_factory=dict)
+  running: dict[str, InstanceViewOut] = Field(default_factory=dict)
+  done_ok: dict[str, InstanceViewOut] = Field(default_factory=dict)
+  done_err: dict[str, InstanceViewOut] = Field(default_factory=dict)
+  ghosted: dict[str, InstanceViewOut] = Field(default_factory=dict)
+  unknown: dict[str, InstanceViewOut] = Field(default_factory=dict)
 
 
 class ClusterSnapshotOut(BaseModel):
@@ -93,11 +93,11 @@ class ClusterSnapshotOut(BaseModel):
 
 
 class StateOut(ClusterSnapshotOut):
-  attempts: list[AttemptSummaryOut]
+  jobs: list[JobSummaryOut]
 
 
 class MonitorOut(ClusterSnapshotOut):
-  attempts: list[AttemptSummaryWithMetricsOut]
+  jobs: list[JobSummaryWithMetricsOut]
 
 
 class HealthOut(BaseModel):
@@ -107,12 +107,10 @@ class HealthOut(BaseModel):
 # ── snapshot builders ────────────────────────────────────────────
 
 
-def attempt_counts(
-  scheduler: Scheduler, attempt_id: str
-) -> AttemptCountsOut:
-  state = scheduler.attempt_state(attempt_id)
-  view = scheduler.attempt_view(attempt_id)
-  return AttemptCountsOut(
+def job_counts(scheduler: Scheduler, job_id: str) -> JobCountsOut:
+  state = scheduler.job_state(job_id)
+  view = scheduler.job_view(job_id)
+  return JobCountsOut(
     pending=len(view.pending),
     running=len(view.running),
     done_ok=len(view.done_ok),
@@ -123,18 +121,16 @@ def attempt_counts(
   )
 
 
-def snapshot_attempt(
-  scheduler: Scheduler, attempt_id: str
-) -> AttemptSummaryOut:
-  state = scheduler.attempt_state(attempt_id)
-  return AttemptSummaryOut(
-    attempt_id=attempt_id,
+def snapshot_job(scheduler: Scheduler, job_id: str) -> JobSummaryOut:
+  state = scheduler.job_state(job_id)
+  return JobSummaryOut(
+    job_id=job_id,
     label=state.label,
     weight=state.weight,
     max_concurrent=state.max_concurrent,
     pause_on_error=state.pause_on_error,
     paused=state.paused,
-    counts=attempt_counts(scheduler, attempt_id),
+    counts=job_counts(scheduler, job_id),
     home_root=str(state.home_root),
     alias=state.alias,
     scope=state.scope,
@@ -147,12 +143,12 @@ def snapshot_attempt(
   )
 
 
-def snapshot_attempt_with_metrics(
-  scheduler: Scheduler, metrics: MetricsCache, attempt_id: str
-) -> AttemptSummaryWithMetricsOut:
-  base = snapshot_attempt(scheduler, attempt_id)
-  return AttemptSummaryWithMetricsOut(
-    **base.model_dump(), metrics=metrics.get(attempt_id)
+def snapshot_job_with_metrics(
+  scheduler: Scheduler, metrics: MetricsCache, job_id: str
+) -> JobSummaryWithMetricsOut:
+  base = snapshot_job(scheduler, job_id)
+  return JobSummaryWithMetricsOut(
+    **base.model_dump(), metrics=metrics.get(job_id)
   )
 
 
@@ -168,14 +164,12 @@ def cluster_snapshot(
   )
 
 
-def full_attempt_view(
-  scheduler: Scheduler, attempt_id: str
-) -> FullAttemptOut:
-  view = scheduler.attempt_view(attempt_id)
-  base = snapshot_attempt(scheduler, attempt_id)
+def full_job_view(scheduler: Scheduler, job_id: str) -> FullJobOut:
+  view = scheduler.job_view(job_id)
+  base = snapshot_job(scheduler, job_id)
 
   def _values_for(task_id: str) -> dict[str, float] | None:
-    outcome = scheduler.outcome_of(attempt_id, task_id)
+    outcome = scheduler.outcome_of(job_id, task_id)
     if outcome is None:
       return None
     return {
@@ -185,11 +179,11 @@ def full_attempt_view(
     }
 
   def _bucket(
-    d: dict[str, TrialView],
-  ) -> dict[str, TrialViewOut]:
+    d: dict[str, InstanceView],
+  ) -> dict[str, InstanceViewOut]:
     return {
-      tn: TrialViewOut(
-        trial_id=tv.trial_id,
+      tn: InstanceViewOut(
+        instance_id=tv.instance_id,
         host=tv.host,
         dispatched_at=tv.dispatched_at,
         values=_values_for(tn),
@@ -197,7 +191,7 @@ def full_attempt_view(
       for tn, tv in d.items()
     }
 
-  return FullAttemptOut(
+  return FullJobOut(
     **base.model_dump(),
     pending=list(view.pending),
     running=_bucket(view.running),
@@ -208,26 +202,20 @@ def full_attempt_view(
   )
 
 
-def full_attempt_bytes(scheduler: Scheduler, attempt_id: str) -> bytes:
-  if scheduler.is_archived(attempt_id):
-    return scheduler.archived_bytes(attempt_id)
-  return (
-    full_attempt_view(scheduler, attempt_id)
-    .model_dump_json()
-    .encode("utf-8")
-  )
+def full_job_bytes(scheduler: Scheduler, job_id: str) -> bytes:
+  if scheduler.is_archived(job_id):
+    return scheduler.archived_bytes(job_id)
+  return full_job_view(scheduler, job_id).model_dump_json().encode("utf-8")
 
 
-def build_full_attempts_body(
-  scheduler: Scheduler, aids: list[str]
-) -> bytes:
-  """Concatenated JSON array; archived attempts splice their
+def build_full_jobs_body(scheduler: Scheduler, aids: list[str]) -> bytes:
+  """Concatenated JSON array; archived jobs splice their
   cached bytes verbatim so the hot path never rebuilds them."""
   parts: list[bytes] = [b"["]
   for i, aid in enumerate(aids):
     if i > 0:
       parts.append(b",")
-    parts.append(full_attempt_bytes(scheduler, aid))
+    parts.append(full_job_bytes(scheduler, aid))
   parts.append(b"]")
   return b"".join(parts)
 

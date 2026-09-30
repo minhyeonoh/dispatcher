@@ -1,12 +1,12 @@
 """Everything that talks to docker daemons: the per-host `docker
 events` stream (edge-triggered completion detection), the one-shot
-census (level-triggered reconcile), the per-trial state probe, and
+census (level-triggered reconcile), the per-instance state probe, and
 label parsing helpers.
 
 All lookups key on `dispatcher.*` labels, never container names —
 docker/compose rewrite names (lowercasing, suffixes) and every
 name-keyed lookup the old router had eventually killed a live
-trial or missed a dead one.
+instance or missed a dead one.
 """
 
 from __future__ import annotations
@@ -404,26 +404,26 @@ async def census_host(
   return [r for r in rows if isinstance(r, dict)]
 
 
-async def probe_trial(
+async def probe_instance(
   host: str,
-  trial_id: str,
+  instance_id: str,
   *,
   self_host: str,
   timeout_sec: float = 10.0,
 ) -> str:
-  """State of a trial's MAIN container: docker's own status word,
+  """State of an instance's MAIN container: docker's own status word,
   or "gone" when docker has no record. Raises RuntimeError on a
   real infra problem (never guesses "gone" from a failed ssh)."""
   cmd = (
     "ids=$(docker ps -aq --filter "
-    + shlex.quote(f"label={labels.TRIAL}={trial_id}")
+    + shlex.quote(f"label={labels.INSTANCE}={instance_id}")
     + '); if [ -n "$ids" ]; then '
     "docker inspect --format '{{.State.Status}}' $ids; fi"
   )
   r = await run_on(host, self_host, cmd, timeout=timeout_sec)
   if r.returncode != 0:
     raise RuntimeError(
-      f"docker probe on {host!r} for trial {trial_id!r} exited "
+      f"docker probe on {host!r} for instance {instance_id!r} exited "
       f"{r.returncode}: {r.stderr.strip()[:500]}"
     )
   states = [s.strip() for s in r.stdout.splitlines() if s.strip()]
@@ -434,23 +434,23 @@ async def probe_trial(
   return states[0]
 
 
-async def remove_trial_sets(
+async def remove_instance_sets(
   host: str,
-  trial_ids: list[str],
+  instance_ids: list[str],
   *,
   self_host: str,
 ) -> int:
-  """`docker rm -f` every container carrying a trial's SET label
+  """`docker rm -f` every container carrying an instance's SET label
   (main + siblings). Returns the count of removed container ids;
   non-fatal on failure (partial removals still counted — docker
   prints each removed id even when others in the batch fail)."""
-  if not trial_ids:
+  if not instance_ids:
     return 0
   inner = "\n".join(
     "ids=$(docker ps -aq --filter "
     + shlex.quote(f"label={labels.SET}={name}")
     + '); [ -n "$ids" ] && docker rm -f $ids'
-    for name in trial_ids
+    for name in instance_ids
   )
   argv = (
     ["bash", "-c", inner]
@@ -491,7 +491,7 @@ def resolve_image_id(ref: str, *, self_host: str) -> str:
   on the launcher. Runs synchronously (called from the submit
   path; ~50ms). Raises RuntimeError when the image isn't present
   — the submitter must build/load it on the launcher first, and
-  a loud 400 at submit beats trials failing host by host."""
+  a loud 400 at submit beats instances failing host by host."""
   import subprocess
 
   r = subprocess.run(
@@ -523,7 +523,7 @@ async def ensure_image_on_host(
   Environment images are few and change rarely, so the transfer
   is a once-per-(image, host) event. Raises RuntimeError on
   failure — the dispatch path turns that into a requeue, never a
-  half-started trial."""
+  half-started instance."""
   probe = await run_on(
     host,
     self_host,

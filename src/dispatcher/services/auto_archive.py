@@ -1,4 +1,4 @@
-"""Auto-archive: freeze fully-terminal, long-idle attempts off
+"""Auto-archive: freeze fully-terminal, long-idle jobs off
 the hot serialization path. Optional — off until
 `archive.auto_after_days > 0`."""
 
@@ -57,7 +57,7 @@ async def archive_loop(
   """`archive_one(aid)` applies one auto-archive (the server's
   operation, shared with the endpoint). It raises LoopSkip when a
   precondition re-check fails — a resolver may have re-flipped a
-  trial between scan and apply."""
+  instance between scan and apply."""
 
   async def tick() -> None:
     threshold_days = settings.auto_after_days
@@ -72,12 +72,12 @@ async def archive_loop(
         await archive_one(aid)
         archived += 1
       except LoopSkip as exc:
-        logger.info("auto-archive skipped attempt=%s: %s", aid, exc)
+        logger.info("auto-archive skipped job=%s: %s", aid, exc)
       except Exception:
-        logger.exception("auto-archive failed attempt=%s", aid)
+        logger.exception("auto-archive failed job=%s", aid)
     if archived:
       logger.warning(
-        "auto-archive: promoted %d attempt(s) (threshold=%d days)",
+        "auto-archive: promoted %d job(s) (threshold=%d days)",
         archived,
         threshold_days,
       )
@@ -94,18 +94,18 @@ def scan_auto_archive_candidates(
   now: datetime,
   threshold_days: int,
 ) -> list[str]:
-  """Live attempts that are fully terminal AND whose event log
+  """Live jobs that are fully terminal AND whose event log
   has been idle past the threshold (every dispatch/patch/
   transition appends, so log mtime is 'last activity')."""
   threshold_dt = now - timedelta(days=threshold_days)
   out: list[str] = []
-  for aid in list(scheduler.iter_attempt_ids()):
+  for aid in list(scheduler.iter_job_ids()):
     if scheduler.is_archived(aid):
       continue
-    view = scheduler.attempt_view(aid)
+    view = scheduler.job_view(aid)
     if view.pending or view.running or view.unknown or view.ghosted:
       continue
-    log_path = event_log_path_for(scheduler.attempt_state(aid))
+    log_path = event_log_path_for(scheduler.job_state(aid))
     try:
       mtime = clock.from_timestamp(log_path.stat().st_mtime)
     except OSError:

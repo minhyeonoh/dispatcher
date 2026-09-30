@@ -13,7 +13,7 @@ from dispatcher_sdk import (
   EX_INFRA,
   InfraFailure,
   Result,
-  load_trial,
+  load_instance,
   run,
 )
 
@@ -24,22 +24,22 @@ if TYPE_CHECKING:
 def _spec(home: Path, payload=None) -> dict:
   home.mkdir(parents=True, exist_ok=True)
   spec = {
-    "attempt_id": "att-1",
+    "job_id": "job-1",
     "task_id": "t1",
-    "trial_id": "t1__0000001",
+    "instance_id": "t1__0000001",
     "home": str(home),
     "payload": payload,
   }
-  (home / "trial.json").write_text(json.dumps(spec))
+  (home / "instance.json").write_text(json.dumps(spec))
   return spec
 
 
 def _env(home: Path) -> dict[str, str]:
   return {
     "DISPATCHER_HOME": str(home),
-    "DISPATCHER_ATTEMPT": "att-1",
+    "DISPATCHER_JOB": "job-1",
     "DISPATCHER_TASK": "t1",
-    "DISPATCHER_TRIAL": "t1__0000001",
+    "DISPATCHER_INSTANCE": "t1__0000001",
     "DISPATCHER_SET_LABEL": "dispatcher.set=t1__0000001",
   }
 
@@ -63,20 +63,20 @@ def _run(work, home: Path) -> tuple[int, dict | None]:
   return codes[0], outcome
 
 
-def test_load_trial_reads_spec_and_env(tmp_path: Path):
+def test_load_instance_reads_spec_and_env(tmp_path: Path):
   _spec(tmp_path, payload={"n": 3})
-  trial = load_trial(env=_env(tmp_path))
-  assert trial.task == "t1"
-  assert trial.trial == "t1__0000001"
-  assert trial.attempt == "att-1"
-  assert trial.payload == {"n": 3}
-  assert trial.home == tmp_path
-  assert trial.set_label == "dispatcher.set=t1__0000001"
+  instance = load_instance(env=_env(tmp_path))
+  assert instance.task == "t1"
+  assert instance.instance == "t1__0000001"
+  assert instance.job == "job-1"
+  assert instance.payload == {"n": 3}
+  assert instance.home == tmp_path
+  assert instance.set_label == "dispatcher.set=t1__0000001"
 
 
-def test_load_trial_missing_spec_raises_infra(tmp_path: Path):
+def test_load_instance_missing_spec_raises_infra(tmp_path: Path):
   with pytest.raises(InfraFailure):
-    load_trial(env=_env(tmp_path), timeout_s=0.1)
+    load_instance(env=_env(tmp_path), timeout_s=0.1)
 
 
 def test_ok_result_roundtrips_through_dispatcher_reader(

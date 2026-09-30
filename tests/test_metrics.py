@@ -34,7 +34,7 @@ def test_single_ok_value_gives_that_value_as_mean():
   assert c.get("A").means == {"reward": 0.5}
 
 
-def test_mean_over_ok_trials_reporting_the_key():
+def test_mean_over_ok_instances_reporting_the_key():
   c = MetricsCache()
   c.record_completion("A", snap(values={"reward": 1.0}))
   c.record_completion("A", snap(values={"reward": 0.0}))
@@ -61,7 +61,7 @@ def test_error_completion_increments_err_only():
 
 
 def test_completion_without_outcome_is_a_no_op():
-  # The trial is `unknown` — no evidence, no contribution. A later
+  # The instance is `unknown` — no evidence, no contribution. A later
   # reclassify adds it, so err never inflates on NFS lag.
   c = MetricsCache()
   c.record_completion("A", snap(exists=False))
@@ -85,12 +85,12 @@ def test_multiple_value_keys_accumulate_independently():
   assert m.means == {"reward": 0.5, "steps": 10.0}
 
 
-def test_get_of_unknown_attempt_returns_zero_metrics():
+def test_get_of_unknown_job_returns_zero_metrics():
   m = MetricsCache().get("nope")
   assert m.ok == 0 and m.err == 0
 
 
-def test_multiple_attempts_are_isolated():
+def test_multiple_jobs_are_isolated():
   c = MetricsCache()
   c.record_completion("A", snap(values={"r": 1.0}))
   c.record_completion("B", snap(error=True))
@@ -98,14 +98,14 @@ def test_multiple_attempts_are_isolated():
   assert c.get("B").ok == 0 and c.get("B").err == 1
 
 
-def test_remove_clears_the_attempt():
+def test_remove_clears_the_job():
   c = MetricsCache()
   c.record_completion("A", snap())
   c.remove("A")
   assert c.get("A").ok == 0
 
 
-def test_remove_unknown_attempt_is_noop():
+def test_remove_unknown_job_is_noop():
   MetricsCache().remove("nope")
 
 
@@ -167,7 +167,7 @@ def test_means_all_counts_err_as_zero_but_not_ghosted():
   c = MetricsCache()
   c.record_completion("A", snap(values={"reward": 1.0}))
   c.record_completion("A", snap(error=True))
-  # A ghosted trial contributes nothing anywhere.
+  # A ghosted instance contributes nothing anywhere.
   c.reclassify_from_unknown("A", to_state="ghosted", values=None)
   m = c.get("A")
   assert m.means == {"reward": 1.0}

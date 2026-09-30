@@ -25,16 +25,16 @@ def test_parse_probe_positional_sections():
   assert s.nproc == 64
   assert s.disk_root_total_bytes == 1000000000000
   assert s.disk_root_free_bytes == 600000000000
-  assert [t.name for t in s.trials] == ["c1", "c2"]
-  assert s.trials[0].cpu_percent == 3.5
-  assert s.trials[0].rss_bytes == int(2.5 * 1024**3)
-  assert s.trials[1].rss_bytes == int(219.2 * 1024**2)
+  assert [t.name for t in s.instances] == ["c1", "c2"]
+  assert s.instances[0].cpu_percent == 3.5
+  assert s.instances[0].rss_bytes == int(2.5 * 1024**3)
+  assert s.instances[1].rss_bytes == int(219.2 * 1024**2)
 
 
 def test_parse_probe_no_containers():
   head = "\n".join(PROBE_OUT.splitlines()[:5]) + "\n"
   s = _parse_probe(head)
-  assert s.trials == ()
+  assert s.instances == ()
 
 
 def test_parse_probe_short_output_raises():
@@ -44,7 +44,7 @@ def test_parse_probe_short_output_raises():
 
 def test_parse_probe_skips_bad_stats_line():
   s = _parse_probe(PROBE_OUT + "garbage-line-no-pipes\n")
-  assert [t.name for t in s.trials] == ["c1", "c2"]
+  assert [t.name for t in s.instances] == ["c1", "c2"]
 
 
 def test_parse_size_units():

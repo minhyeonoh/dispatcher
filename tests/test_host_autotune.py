@@ -9,7 +9,7 @@ import pytest
 
 from dispatcher.services.host_autotune import (
   HostAutotuneState,
-  TrialPeak,
+  InstancePeak,
   advised_cap,
   append_peak,
   load_ring,
@@ -18,7 +18,7 @@ from dispatcher.services.host_autotune import (
   truncate_ring_file,
   update_tracker,
 )
-from dispatcher.services.host_metrics import HostSample, TrialStat
+from dispatcher.services.host_metrics import HostSample, InstanceStat
 
 if TYPE_CHECKING:
   from pathlib import Path
@@ -27,10 +27,10 @@ GIB = 1024**3
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 
 
-def _peak(rss: int, host: str = "h", name: str = "t") -> TrialPeak:
-  return TrialPeak(
+def _peak(rss: int, host: str = "h", name: str = "t") -> InstancePeak:
+  return InstancePeak(
     host=host,
-    trial_id=name,
+    instance_id=name,
     peak_rss=rss,
     sample_count=3,
     first_seen=NOW,
@@ -38,7 +38,7 @@ def _peak(rss: int, host: str = "h", name: str = "t") -> TrialPeak:
   )
 
 
-def _sample(trials: list[TrialStat]) -> HostSample:
+def _sample(instances: list[InstanceStat]) -> HostSample:
   return HostSample(
     host="h",
     mem_total_bytes=256 * GIB,
@@ -47,7 +47,7 @@ def _sample(trials: list[TrialStat]) -> HostSample:
     loadavg_5m=1.0,
     disk_root_free_bytes=GIB,
     disk_root_total_bytes=10 * GIB,
-    trials=tuple(trials),
+    instances=tuple(instances),
   )
 
 
@@ -156,7 +156,7 @@ def _state(tmp_path: Path) -> HostAutotuneState:
 def test_update_tracker_new_container_seeds_max(tmp_path: Path):
   state = _state(tmp_path)
   update_tracker(
-    state, "h", _sample([TrialStat("c1", 0.0, 5 * GIB)]), NOW, 50
+    state, "h", _sample([InstanceStat("c1", 0.0, 5 * GIB)]), NOW, 50
   )
   assert state.tracked["h"]["c1"].max_rss == 5 * GIB
   assert state.tracked["h"]["c1"].sample_count == 1
@@ -167,19 +167,19 @@ def test_update_tracker_persistent_container_grows_max(
 ):
   state = _state(tmp_path)
   update_tracker(
-    state, "h", _sample([TrialStat("c1", 0.0, 5 * GIB)]), NOW, 50
+    state, "h", _sample([InstanceStat("c1", 0.0, 5 * GIB)]), NOW, 50
   )
   update_tracker(
     state,
     "h",
-    _sample([TrialStat("c1", 0.0, 7 * GIB)]),
+    _sample([InstanceStat("c1", 0.0, 7 * GIB)]),
     NOW + timedelta(minutes=1),
     50,
   )
   update_tracker(
     state,
     "h",
-    _sample([TrialStat("c1", 0.0, 6 * GIB)]),
+    _sample([InstanceStat("c1", 0.0, 6 * GIB)]),
     NOW + timedelta(minutes=2),
     50,
   )
@@ -193,12 +193,12 @@ def test_update_tracker_vanished_container_flushes_to_ring(
 ):
   state = _state(tmp_path)
   update_tracker(
-    state, "h", _sample([TrialStat("c1", 0.0, 5 * GIB)]), NOW, 50
+    state, "h", _sample([InstanceStat("c1", 0.0, 5 * GIB)]), NOW, 50
   )
   completed = update_tracker(
     state, "h", _sample([]), NOW + timedelta(minutes=1), 50
   )
-  assert [p.trial_id for p in completed] == ["c1"]
+  assert [p.instance_id for p in completed] == ["c1"]
   assert [p.peak_rss for p in state.ring["h"]] == [5 * GIB]
   assert state.tracked["h"] == {}
 
@@ -209,7 +209,7 @@ def test_update_tracker_ring_trims_to_size(tmp_path: Path):
     update_tracker(
       state,
       "h",
-      _sample([TrialStat(f"c{i}", 0.0, GIB)]),
+      _sample([InstanceStat(f"c{i}", 0.0, GIB)]),
       NOW + timedelta(minutes=i),
       50,
     )
@@ -235,7 +235,7 @@ def test_append_then_load_round_trips(tmp_path: Path):
   append_peak(f, _peak(5 * GIB, name="a"))
   append_peak(f, _peak(6 * GIB, name="b"))
   ring = load_ring(f, 50)
-  assert [p.trial_id for p in ring["h"]] == ["a", "b"]
+  assert [p.instance_id for p in ring["h"]] == ["a", "b"]
 
 
 def test_load_ring_trims_per_host(tmp_path: Path):
@@ -243,7 +243,7 @@ def test_load_ring_trims_per_host(tmp_path: Path):
   for i in range(10):
     append_peak(f, _peak(i * GIB, name=f"t{i}"))
   ring = load_ring(f, 3)
-  assert [p.trial_id for p in ring["h"]] == ["t7", "t8", "t9"]
+  assert [p.instance_id for p in ring["h"]] == ["t7", "t8", "t9"]
 
 
 def test_load_ring_skips_malformed_line(tmp_path: Path):
@@ -252,7 +252,7 @@ def test_load_ring_skips_malformed_line(tmp_path: Path):
   with f.open("a") as fh:
     fh.write("{truncat\n")
   ring = load_ring(f, 50)
-  assert [p.trial_id for p in ring["h"]] == ["good"]
+  assert [p.instance_id for p in ring["h"]] == ["good"]
 
 
 def test_truncate_ring_file_shrinks_disk(tmp_path: Path):

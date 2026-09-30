@@ -15,8 +15,8 @@ class Config(BaseModel):
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
   self_host: str
-  # Dispatcher-owned state (attempts index, settings.json,
-  # blobs). Attempt homes live wherever each submission says.
+  # Dispatcher-owned state (jobs index, settings.json,
+  # blobs). Job homes live wherever each submission says.
   data_dir: Path
   tick_interval: float = 0.5
   use_docker_events: bool = True

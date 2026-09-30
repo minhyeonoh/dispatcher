@@ -1,18 +1,18 @@
-"""Attempt-level weighted-round-robin scheduler.
+"""Job-level weighted-round-robin scheduler.
 
 Pure in-memory state machine: owns the RR cursor and the
-pending/running/terminal partition per attempt. Never touches the
+pending/running/terminal partition per job. Never touches the
 filesystem, ssh, or docker — the runtime executes each returned
-DispatchEntry and feeds trial transitions back in.
+DispatchEntry and feeds instance transitions back in.
 
-Bucket semantics (see also AttemptView):
+Bucket semantics (see also JobView):
 - running  → unknown | done_ok | done_err
 - unknown  → running | ghosted | done_ok | done_err
 - ghosted  → done_ok | done_err
 Only the running→* edge releases a host/pool slot; unknown→running
-re-acquires one. `unknown` and `ghosted` block both attempt drain
-and archive — resolving them is the resolver's job, and draining
-past them would silently drop trials from the record.
+re-acquires one. `unknown` and `ghosted` block both job drain
+and archive — resolving them is what the resolver is for, and
+draining past them would silently drop instances from the record.
 """
 
 from __future__ import annotations
@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING
 from coolname import generate_slug
 
 from dispatcher.core.models import (
-  AttemptState,
-  AttemptView,
   DispatchEntry,
   HostSettings,
-  TrialView,
-  TrialViewState,
+  InstanceView,
+  InstanceViewState,
+  JobState,
+  JobView,
 )
 from dispatcher.core.pick_host import pick_host
 
@@ -52,19 +52,19 @@ class AliasFormatError(ValueError):
 
 
 class NotArchivableError(ValueError):
-  """Attempt still has pending/running/unknown/ghosted trials.
+  """Job still has pending/running/unknown/ghosted instances.
   done_err does not disqualify."""
 
-  def __init__(self, attempt_id: str, reason: str) -> None:
-    super().__init__(f"{attempt_id}: {reason}")
-    self.attempt_id = attempt_id
+  def __init__(self, job_id: str, reason: str) -> None:
+    super().__init__(f"{job_id}: {reason}")
+    self.job_id = job_id
     self.reason = reason
 
 
 class NotArchivedError(ValueError):
-  def __init__(self, attempt_id: str) -> None:
-    super().__init__(attempt_id)
-    self.attempt_id = attempt_id
+  def __init__(self, job_id: str) -> None:
+    super().__init__(job_id)
+    self.job_id = job_id
 
 
 if TYPE_CHECKING:
@@ -75,25 +75,25 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class _AttemptRuntime:
-  """Per-attempt bookkeeping. `pending` preserves task_ids order;
+class _JobRuntime:
+  """Per-job bookkeeping. `pending` preserves task_ids order;
   other buckets are keyed by task_id. `outcomes` caches the
   parsed envelope per terminal task so read paths never re-hit
   NFS."""
 
-  state: AttemptState
+  state: JobState
   pending: list[str] = field(default_factory=list)
-  running: dict[str, TrialView] = field(default_factory=dict)
-  done_ok: dict[str, TrialView] = field(default_factory=dict)
-  done_err: dict[str, TrialView] = field(default_factory=dict)
-  ghosted: dict[str, TrialView] = field(default_factory=dict)
-  unknown: dict[str, TrialView] = field(default_factory=dict)
+  running: dict[str, InstanceView] = field(default_factory=dict)
+  done_ok: dict[str, InstanceView] = field(default_factory=dict)
+  done_err: dict[str, InstanceView] = field(default_factory=dict)
+  ghosted: dict[str, InstanceView] = field(default_factory=dict)
+  unknown: dict[str, InstanceView] = field(default_factory=dict)
   outcomes: dict[str, Outcome | None] = field(default_factory=dict)
 
 
 class Scheduler:
   MAX_INFRA_RETRIES = 5
-  """Requeue budget per task for host-killed trials. Past it the
+  """Requeue budget per task for host-killed instances. Past it the
   done_err stands — endless "infra" readings mean the reading is
   wrong."""
 
@@ -110,7 +110,7 @@ class Scheduler:
     pool_caps: dict[str, int] | None = None,
   ) -> None:
     self._max_concurrent = max_concurrent
-    # Pools: an attempt whose pool has no declared cap is
+    # Pools: a job whose pool has no declared cap is
     # unbounded at this layer (global + host caps still apply).
     self._pool_caps: dict[str, int] = dict(pool_caps or {})
     self._pool_running: dict[str, int] = {}
@@ -123,14 +123,14 @@ class Scheduler:
     self._clock = clock
     self._id_gen = id_gen
 
-    self._attempts: dict[str, _AttemptRuntime] = {}
-    # RR rotation (live attempts only) + full submission order
+    self._jobs: dict[str, _JobRuntime] = {}
+    # RR rotation (live jobs only) + full submission order
     # (live + archived; cancel removes from both).
     self._active_order: list[str] = []
     self._all_order: list[str] = []
-    # Pre-serialized wire blob per archived attempt.
+    # Pre-serialized wire blob per archived job.
     self._archived_bytes: dict[str, bytes] = {}
-    # attempt_id → task_id → infra-requeue count.
+    # job_id → task_id → infra-requeue count.
     self._infra_retries: dict[str, dict[str, int]] = {}
     self._cursor = 0
     self._turns_taken = 0
@@ -138,37 +138,35 @@ class Scheduler:
 
   # ── mutations ──────────────────────────────────────────────
 
-  def submit(self, attempt: AttemptState) -> None:
-    """Register at the tail of the rotation. `attempt.alias` must
+  def submit(self, job: JobState) -> None:
+    """Register at the tail of the rotation. `job.alias` must
     already be minted — it has to live in the persisted submit
     event, or a restart re-mints the handle under the operator."""
-    if attempt.attempt_id in self._attempts:
+    if job.job_id in self._jobs:
+      raise ValueError(f"job already submitted: {job.job_id!r}")
+    if not job.alias:
       raise ValueError(
-        f"attempt already submitted: {attempt.attempt_id!r}"
-      )
-    if not attempt.alias:
-      raise ValueError(
-        f"attempt {attempt.attempt_id!r} submitted with empty "
+        f"job {job.job_id!r} submitted with empty "
         f"alias — mint via mint_alias() before the submit event"
       )
-    if attempt.alias in self._alias_to_id:
-      raise AliasCollisionError(attempt.alias)
-    self._alias_to_id[attempt.alias] = attempt.attempt_id
-    self._attempts[attempt.attempt_id] = _AttemptRuntime(
-      state=attempt, pending=list(attempt.task_ids)
+    if job.alias in self._alias_to_id:
+      raise AliasCollisionError(job.alias)
+    self._alias_to_id[job.alias] = job.job_id
+    self._jobs[job.job_id] = _JobRuntime(
+      state=job, pending=list(job.task_ids)
     )
-    self._active_order.append(attempt.attempt_id)
-    self._all_order.append(attempt.attempt_id)
+    self._active_order.append(job.job_id)
+    self._all_order.append(job.job_id)
 
   def restore(
     self,
-    attempt: AttemptState,
+    job: JobState,
     *,
-    running: dict[str, TrialView],
-    done_ok: dict[str, TrialView],
-    done_err: dict[str, TrialView],
-    ghosted: dict[str, TrialView] | None = None,
-    unknown: dict[str, TrialView] | None = None,
+    running: dict[str, InstanceView],
+    done_ok: dict[str, InstanceView],
+    done_err: dict[str, InstanceView],
+    ghosted: dict[str, InstanceView] | None = None,
+    unknown: dict[str, InstanceView] | None = None,
   ) -> None:
     """Register with pre-populated buckets (startup restore).
     `pending` is derived as task_ids minus every bucketed task.
@@ -178,17 +176,15 @@ class Scheduler:
     restart-adopted unknown whose container is still executing is
     re-counted when the resolver moves it back to running; the
     server runs that resolver pass before dispatch starts."""
-    if attempt.attempt_id in self._attempts:
-      raise ValueError(
-        f"attempt already submitted: {attempt.attempt_id!r}"
-      )
+    if job.job_id in self._jobs:
+      raise ValueError(f"job already submitted: {job.job_id!r}")
     # Pre-alias logs replay with alias="" — mint here; the caller
     # persists the backfill.
-    if not attempt.alias:
-      attempt.alias = self.mint_alias(attempt.attempt_id)
-    elif attempt.alias in self._alias_to_id:
-      raise AliasCollisionError(attempt.alias)
-    self._alias_to_id[attempt.alias] = attempt.attempt_id
+    if not job.alias:
+      job.alias = self.mint_alias(job.job_id)
+    elif job.alias in self._alias_to_id:
+      raise AliasCollisionError(job.alias)
+    self._alias_to_id[job.alias] = job.job_id
     ghosted = ghosted or {}
     unknown = unknown or {}
     reserved = (
@@ -198,9 +194,9 @@ class Scheduler:
       | set(ghosted)
       | set(unknown)
     )
-    pending = [t for t in attempt.task_ids if t not in reserved]
-    self._attempts[attempt.attempt_id] = _AttemptRuntime(
-      state=attempt,
+    pending = [t for t in job.task_ids if t not in reserved]
+    self._jobs[job.job_id] = _JobRuntime(
+      state=job,
       pending=pending,
       running=dict(running),
       done_ok=dict(done_ok),
@@ -208,11 +204,11 @@ class Scheduler:
       ghosted=dict(ghosted),
       unknown=dict(unknown),
     )
-    self._active_order.append(attempt.attempt_id)
-    self._all_order.append(attempt.attempt_id)
+    self._active_order.append(job.job_id)
+    self._all_order.append(job.job_id)
     for tv in running.values():
       self._host_running[tv.host] = self._host_running.get(tv.host, 0) + 1
-      self._pool_bump(attempt.attempt_id, 1)
+      self._pool_bump(job.job_id, 1)
 
   # ── alias ──────────────────────────────────────────────────
 
@@ -232,34 +228,34 @@ class Scheduler:
       )
     return fallback
 
-  def set_alias(self, attempt_id: str, new_alias: str) -> str:
+  def set_alias(self, job_id: str, new_alias: str) -> str:
     """Rename; returns the previous value. No-op rename is
     accepted."""
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     if not new_alias or len(new_alias) > self._ALIAS_MAX_LEN:
       raise AliasFormatError(new_alias)
     current = runtime.state.alias
     if new_alias == current:
       return current
     other = self._alias_to_id.get(new_alias)
-    if other is not None and other != attempt_id:
+    if other is not None and other != job_id:
       raise AliasCollisionError(new_alias)
-    if current and self._alias_to_id.get(current) == attempt_id:
+    if current and self._alias_to_id.get(current) == job_id:
       del self._alias_to_id[current]
-    self._alias_to_id[new_alias] = attempt_id
+    self._alias_to_id[new_alias] = job_id
     runtime.state.alias = new_alias
     return current
 
-  def attempt_id_of_alias(self, alias: str) -> str | None:
+  def job_id_of_alias(self, alias: str) -> str | None:
     return self._alias_to_id.get(alias)
 
   # ── knobs ──────────────────────────────────────────────────
 
-  def patch(self, attempt_id: str, **fields: object) -> None:
-    """Mutate scheduler knobs. A pool change moves the attempt's
+  def patch(self, job_id: str, **fields: object) -> None:
+    """Mutate scheduler knobs. A pool change moves the job's
     running count between pool ledgers, or completions would
     decrement the wrong pool and drift it permanently."""
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     for key, value in fields.items():
       if key not in _KNOB_FIELDS:
         raise ValueError(f"unknown scheduler knob: {key!r}")
@@ -279,19 +275,19 @@ class Scheduler:
             )
       setattr(runtime.state, key, value)
 
-  def cancel(self, attempt_id: str) -> _AttemptRuntime:
-    """Drop the attempt; returns its runtime so the caller can
-    kill remote trials. Slots of still-running trials are
+  def cancel(self, job_id: str) -> _JobRuntime:
+    """Drop the job; returns its runtime so the caller can
+    kill remote instances. Slots of still-running instances are
     released."""
-    runtime = self._attempts.pop(attempt_id)
+    runtime = self._jobs.pop(job_id)
     alias = runtime.state.alias
-    if alias and self._alias_to_id.get(alias) == attempt_id:
+    if alias and self._alias_to_id.get(alias) == job_id:
       del self._alias_to_id[alias]
-    if attempt_id in self._active_order:
-      self._remove_from_rotation(attempt_id)
-    if attempt_id in self._all_order:
-      self._all_order.remove(attempt_id)
-    self._archived_bytes.pop(attempt_id, None)
+    if job_id in self._active_order:
+      self._remove_from_rotation(job_id)
+    if job_id in self._all_order:
+      self._all_order.remove(job_id)
+    self._archived_bytes.pop(job_id, None)
     pool = runtime.state.pool or "default"
     for tv in runtime.running.values():
       self._host_running[tv.host] = max(
@@ -302,12 +298,12 @@ class Scheduler:
       )
     return runtime
 
-  def _remove_from_rotation(self, attempt_id: str) -> None:
+  def _remove_from_rotation(self, job_id: str) -> None:
     """Remove from _active_order preserving the cursor invariant:
     removal before the cursor shifts it; removal at the cursor
-    lets the next attempt slide in; clamp on empty."""
-    cur_index = self._active_order.index(attempt_id)
-    self._active_order.remove(attempt_id)
+    lets the next job slide in; clamp on empty."""
+    cur_index = self._active_order.index(job_id)
+    self._active_order.remove(job_id)
     if not self._active_order:
       self._cursor = 0
     elif cur_index < self._cursor:
@@ -317,33 +313,34 @@ class Scheduler:
 
   # ── archive ────────────────────────────────────────────────
 
-  def archive_attempt(
+  def archive_job(
     self,
-    attempt_id: str,
+    job_id: str,
     *,
     at: datetime,
     kind: str,
     payload_bytes: bytes,
   ) -> None:
-    """Freeze a fully-terminal attempt off the dispatch cursor and
+    """Freeze a fully-terminal job off the dispatch cursor and
     the live serialization path. Idempotent (bytes refresh)."""
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     if runtime.pending:
       raise NotArchivableError(
-        attempt_id, f"{len(runtime.pending)} trial(s) still pending"
+        job_id, f"{len(runtime.pending)} instance(s) still pending"
       )
     if runtime.running:
       raise NotArchivableError(
-        attempt_id, f"{len(runtime.running)} trial(s) still running"
+        job_id, f"{len(runtime.running)} instance(s) still running"
       )
     if runtime.unknown:
       raise NotArchivableError(
-        attempt_id,
-        f"{len(runtime.unknown)} trial(s) in unknown (resolver pending)",
+        job_id,
+        f"{len(runtime.unknown)} instance(s) in unknown "
+        "(resolver pending)",
       )
     if runtime.ghosted:
       raise NotArchivableError(
-        attempt_id, f"{len(runtime.ghosted)} trial(s) in ghosted"
+        job_id, f"{len(runtime.ghosted)} instance(s) in ghosted"
       )
     kind = kind or "manual"
     if kind not in ("manual", "auto"):
@@ -352,38 +349,38 @@ class Scheduler:
       )
     runtime.state.archived_at = at
     runtime.state.archive_kind = kind
-    self._archived_bytes[attempt_id] = payload_bytes
-    if attempt_id in self._active_order:
-      self._remove_from_rotation(attempt_id)
+    self._archived_bytes[job_id] = payload_bytes
+    if job_id in self._active_order:
+      self._remove_from_rotation(job_id)
 
-  def unarchive_attempt(self, attempt_id: str) -> None:
-    runtime = self._attempts[attempt_id]
+  def unarchive_job(self, job_id: str) -> None:
+    runtime = self._jobs[job_id]
     if runtime.state.archived_at is None:
-      raise NotArchivedError(attempt_id)
+      raise NotArchivedError(job_id)
     runtime.state.archived_at = None
     runtime.state.archive_kind = ""
-    self._archived_bytes.pop(attempt_id, None)
-    if attempt_id not in self._active_order:
-      self._active_order.append(attempt_id)
+    self._archived_bytes.pop(job_id, None)
+    if job_id not in self._active_order:
+      self._active_order.append(job_id)
 
-  def is_archived(self, attempt_id: str) -> bool:
-    runtime = self._attempts.get(attempt_id)
+  def is_archived(self, job_id: str) -> bool:
+    runtime = self._jobs.get(job_id)
     return runtime is not None and runtime.state.archived_at is not None
 
-  def archived_bytes(self, attempt_id: str) -> bytes:
-    return self._archived_bytes[attempt_id]
+  def archived_bytes(self, job_id: str) -> bytes:
+    return self._archived_bytes[job_id]
 
-  def all_attempt_ids(self) -> list[str]:
-    """Every attempt (live + archived) in submission order."""
+  def all_job_ids(self) -> list[str]:
+    """Every job (live + archived) in submission order."""
     return list(self._all_order)
 
   # ── pools ──────────────────────────────────────────────────
 
-  def _pool_of(self, attempt_id: str) -> str:
-    return self._attempts[attempt_id].state.pool or "default"
+  def _pool_of(self, job_id: str) -> str:
+    return self._jobs[job_id].state.pool or "default"
 
-  def _pool_bump(self, attempt_id: str, delta: int) -> None:
-    pool = self._pool_of(attempt_id)
+  def _pool_bump(self, job_id: str, delta: int) -> None:
+    pool = self._pool_of(job_id)
     self._pool_running[pool] = max(
       0, self._pool_running.get(pool, 0) + delta
     )
@@ -397,7 +394,7 @@ class Scheduler:
   def set_pool_caps(self, caps: dict[str, int]) -> dict[str, int]:
     """Whole-dict replacement; returns the previous caps. A cap
     below the current running count stops new dispatch until the
-    count drops — running trials are never killed."""
+    count drops — running instances are never killed."""
     for name, cap in caps.items():
       if cap < 0:
         raise ValueError(
@@ -459,15 +456,15 @@ class Scheduler:
   # ── dispatch ───────────────────────────────────────────────
 
   def dispatch_one(self) -> DispatchEntry | None:
-    """Dispatch one trial, advancing the RR cursor one turn
-    against the attempt's weight. None when nothing is
+    """Dispatch one instance, advancing the RR cursor one turn
+    against the job's weight. None when nothing is
     dispatchable (caps, pauses, no hosts, no work)."""
     if self.running_total >= self._max_concurrent:
       return None
     if not self._active_order:
       return None
 
-    picked = self._find_next_dispatchable_attempt()
+    picked = self._find_next_dispatchable_job()
     if picked is None:
       return None
     aid, runtime = picked
@@ -477,12 +474,12 @@ class Scheduler:
       return None
 
     task_id = runtime.pending.pop(0)
-    trial_id = self._id_gen(task_id)
+    instance_id = self._id_gen(task_id)
     dispatched_at = self._clock()
-    runtime.running[task_id] = TrialView(
+    runtime.running[task_id] = InstanceView(
       task_id=task_id,
       state="running",
-      trial_id=trial_id,
+      instance_id=instance_id,
       host=host,
       dispatched_at=dispatched_at,
     )
@@ -494,73 +491,73 @@ class Scheduler:
       self._advance_cursor()
 
     return DispatchEntry(
-      attempt_id=aid,
+      job_id=aid,
       task_id=task_id,
-      trial_id=trial_id,
+      instance_id=instance_id,
       host=host,
       dispatched_at=dispatched_at,
     )
 
   # ── transitions ────────────────────────────────────────────
 
-  def transition_trial(
+  def transition_instance(
     self,
     *,
-    attempt_id: str,
+    job_id: str,
     task_id: str,
-    from_state: TrialViewState,
-    to_state: TrialViewState,
+    from_state: InstanceViewState,
+    to_state: InstanceViewState,
     outcome: Outcome | None = None,
   ) -> bool:
     """The single bucket-move primitive for live completion and
     resolver reclassification. Owns edge validation, slot
     accounting, the outcome cache, and the pause-on-error
     postcondition. Returns whether this transition newly
-    auto-paused the attempt."""
+    auto-paused the job."""
     allowed_targets = {
       "running": {"unknown", "done_ok", "done_err"},
       "unknown": {"running", "ghosted", "done_ok", "done_err"},
       "ghosted": {"done_ok", "done_err"},
     }
     if from_state not in allowed_targets:
-      raise ValueError(f"unsupported trial source: {from_state!r}")
+      raise ValueError(f"unsupported instance source: {from_state!r}")
     if to_state not in allowed_targets[from_state]:
       raise ValueError(
-        f"unsupported trial transition: {from_state!r} → {to_state!r}"
+        f"unsupported instance transition: {from_state!r} → {to_state!r}"
       )
 
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     source = getattr(runtime, from_state)
-    trial_view = source.pop(task_id)
-    host = trial_view.host
+    instance_view = source.pop(task_id)
+    host = instance_view.host
     if from_state == "running":
       self._host_running[host] = max(
         0, self._host_running.get(host, 0) - 1
       )
-      self._pool_bump(attempt_id, -1)
+      self._pool_bump(job_id, -1)
 
     destination = getattr(runtime, to_state)
-    destination[task_id] = TrialView(
+    destination[task_id] = InstanceView(
       task_id=task_id,
       state=to_state,
-      trial_id=trial_view.trial_id,
+      instance_id=instance_view.instance_id,
       host=host,
-      dispatched_at=trial_view.dispatched_at,
+      dispatched_at=instance_view.dispatched_at,
     )
     if to_state == "running":
       self._host_running[host] = self._host_running.get(host, 0) + 1
-      self._pool_bump(attempt_id, 1)
+      self._pool_bump(job_id, 1)
     else:
       runtime.outcomes[task_id] = outcome
 
-    return self._apply_pause_on_error(attempt_id, to_state)
+    return self._apply_pause_on_error(job_id, to_state)
 
-  def trial_view_in(
-    self, attempt_id: str, state: TrialViewState, task_id: str
-  ) -> TrialView | None:
-    """The TrialView sitting in one bucket, or None — lets event
+  def instance_view_in(
+    self, job_id: str, state: InstanceViewState, task_id: str
+  ) -> InstanceView | None:
+    """The InstanceView sitting in one bucket, or None — lets event
     consumers read host/dispatched_at back after a transition."""
-    runtime = self._attempts.get(attempt_id)
+    runtime = self._jobs.get(job_id)
     if runtime is None:
       return None
     bucket = getattr(runtime, state, None)
@@ -568,66 +565,66 @@ class Scheduler:
       return None
     return bucket.get(task_id)
 
-  def attempt_outcomes(self, attempt_id: str) -> list[Outcome]:
+  def job_outcomes(self, job_id: str) -> list[Outcome]:
     """Every cached non-None Outcome, in task-id order."""
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     return [
       o for _, o in sorted(runtime.outcomes.items()) if o is not None
     ]
 
-  def outcome_of(self, attempt_id: str, task_id: str) -> Outcome | None:
-    runtime = self._attempts.get(attempt_id)
+  def outcome_of(self, job_id: str, task_id: str) -> Outcome | None:
+    runtime = self._jobs.get(job_id)
     if runtime is None:
       return None
     return runtime.outcomes.get(task_id)
 
   def seed_outcome(
-    self, attempt_id: str, task_id: str, outcome: Outcome
+    self, job_id: str, task_id: str, outcome: Outcome
   ) -> None:
-    """Startup restore: preload a completed trial's parsed
+    """Startup restore: preload a completed instance's parsed
     envelope. Idempotent."""
-    self._attempts[attempt_id].outcomes[task_id] = outcome
+    self._jobs[job_id].outcomes[task_id] = outcome
 
   # ── requeue / retry / reclaim ──────────────────────────────
 
   def requeue_after_infra_failure(
     self,
-    attempt_id: str,
+    job_id: str,
     task_id: str,
-    from_state: TrialViewState = "running",
+    from_state: InstanceViewState = "running",
   ) -> bool:
-    """Move a host-killed trial back to pending instead of
+    """Move a host-killed instance back to pending instead of
     scoring it. Callable from `running` (live path) AND from
     `unknown`/`ghosted` (resolver path — under load the outcome is
     rarely visible at first look, and a requeue rule that only the
     live path applies silently scores the common case). One retry
     budget across all entry points; returns False once exhausted
-    or when the trial already left the source bucket."""
-    seen = self._infra_retries.setdefault(attempt_id, {})
+    or when the instance already left the source bucket."""
+    seen = self._infra_retries.setdefault(job_id, {})
     if seen.get(task_id, 0) >= self.MAX_INFRA_RETRIES:
       return False
     reclaimed = (
-      self.reclaim_from_running(attempt_id, task_id)
+      self.reclaim_from_running(job_id, task_id)
       if from_state == "running"
-      else self.reclaim_from_parked(attempt_id, task_id, from_state)
+      else self.reclaim_from_parked(job_id, task_id, from_state)
     )
     if not reclaimed:
       return False
     seen[task_id] = seen.get(task_id, 0) + 1
     logger.warning(
-      "infra failure requeued (%d/%d): attempt=%s task=%s",
+      "infra failure requeued (%d/%d): job=%s task=%s",
       seen[task_id],
       self.MAX_INFRA_RETRIES,
-      attempt_id,
+      job_id,
       task_id,
     )
     return True
 
-  def retry_from_done_err(self, attempt_id: str, task_id: str) -> bool:
+  def retry_from_done_err(self, job_id: str, task_id: str) -> bool:
     """Operator retry: done_err → pending (outcome cache entry
-    dropped). Re-dispatch mints a fresh trial_id, so the old
-    trial dir is never reused."""
-    runtime = self._attempts[attempt_id]
+    dropped). Re-dispatch mints a fresh instance_id, so the old
+    instance dir is never reused."""
+    runtime = self._jobs[job_id]
     if task_id not in runtime.done_err:
       return False
     runtime.done_err.pop(task_id)
@@ -635,36 +632,36 @@ class Scheduler:
     self._rebuild_pending(runtime)
     return True
 
-  def reclaim_from_running(self, attempt_id: str, task_id: str) -> bool:
+  def reclaim_from_running(self, job_id: str, task_id: str) -> bool:
     """Undo a dispatch: running → pending, releasing the slot.
-    False when the trial already left running (completion won the
+    False when the instance already left running (completion won the
     race — treat as no-op)."""
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     if task_id not in runtime.running:
       return False
     tv = runtime.running.pop(task_id)
     self._host_running[tv.host] = max(
       0, self._host_running.get(tv.host, 0) - 1
     )
-    self._pool_bump(attempt_id, -1)
+    self._pool_bump(job_id, -1)
     self._rebuild_pending(runtime)
     return True
 
   def reclaim_from_parked(
     self,
-    attempt_id: str,
+    job_id: str,
     task_id: str,
-    from_state: TrialViewState,
+    from_state: InstanceViewState,
   ) -> bool:
     """`reclaim_from_running` for unknown/ghosted — with NO slot
-    release: the slot went back when the trial left `running`, and
+    release: the slot went back when the instance left `running`, and
     releasing again would let the host over-dispatch for the rest
     of the run."""
     if from_state not in ("unknown", "ghosted"):
       raise ValueError(
         f"reclaim_from_parked expects unknown/ghosted, got {from_state!r}"
       )
-    runtime = self._attempts[attempt_id]
+    runtime = self._jobs[job_id]
     bucket = getattr(runtime, from_state)
     if task_id not in bucket:
       return False
@@ -672,7 +669,7 @@ class Scheduler:
     self._rebuild_pending(runtime)
     return True
 
-  def _rebuild_pending(self, runtime: _AttemptRuntime) -> None:
+  def _rebuild_pending(self, runtime: _JobRuntime) -> None:
     """Recompute pending from task_ids order minus everything
     still bucketed — keeps requeue insertion at list position and
     self-heals any drift."""
@@ -691,14 +688,14 @@ class Scheduler:
 
   @property
   def running_total(self) -> int:
-    return sum(len(r.running) for r in self._attempts.values())
+    return sum(len(r.running) for r in self._jobs.values())
 
   def running_per_host(self) -> dict[str, int]:
     return dict(self._host_running)
 
-  def attempt_view(self, attempt_id: str) -> AttemptView:
-    runtime = self._attempts[attempt_id]
-    return AttemptView(
+  def job_view(self, job_id: str) -> JobView:
+    runtime = self._jobs[job_id]
+    return JobView(
       pending=list(runtime.pending),
       running=dict(runtime.running),
       done_ok=dict(runtime.done_ok),
@@ -707,31 +704,31 @@ class Scheduler:
       unknown=dict(runtime.unknown),
     )
 
-  def attempt_state(self, attempt_id: str) -> AttemptState:
-    return self._attempts[attempt_id].state
+  def job_state(self, job_id: str) -> JobState:
+    return self._jobs[job_id].state
 
-  def attempt_paused(self, attempt_id: str) -> bool:
-    return self._attempts[attempt_id].state.paused
+  def job_paused(self, job_id: str) -> bool:
+    return self._jobs[job_id].state.paused
 
-  def has_attempt(self, attempt_id: str) -> bool:
-    return attempt_id in self._attempts
+  def has_job(self, job_id: str) -> bool:
+    return job_id in self._jobs
 
-  def iter_attempt_ids(self) -> Iterator[str]:
-    yield from self._attempts
+  def iter_job_ids(self) -> Iterator[str]:
+    yield from self._jobs
 
-  def iter_running(self) -> Iterator[tuple[str, TrialView]]:
-    for aid, runtime in self._attempts.items():
-      for trial_view in runtime.running.values():
-        yield aid, trial_view
+  def iter_running(self) -> Iterator[tuple[str, InstanceView]]:
+    for aid, runtime in self._jobs.items():
+      for instance_view in runtime.running.values():
+        yield aid, instance_view
 
-  def iter_unknown(self) -> Iterator[tuple[str, str, TrialView]]:
+  def iter_unknown(self) -> Iterator[tuple[str, str, InstanceView]]:
     """Snapshotted so callers may reclassify during iteration."""
-    for aid, runtime in list(self._attempts.items()):
+    for aid, runtime in list(self._jobs.items()):
       for task_id, tv in list(runtime.unknown.items()):
         yield aid, task_id, tv
 
-  def iter_ghosted(self) -> Iterator[tuple[str, str, TrialView]]:
-    for aid, runtime in list(self._attempts.items()):
+  def iter_ghosted(self) -> Iterator[tuple[str, str, InstanceView]]:
+    for aid, runtime in list(self._jobs.items()):
       for task_id, tv in list(runtime.ghosted.items()):
         yield aid, task_id, tv
 
@@ -739,7 +736,7 @@ class Scheduler:
     """unknown and ghosted both count as work: they must be
     resolved into evidence-based terminal states, never silently
     dropped."""
-    for runtime in self._attempts.values():
+    for runtime in self._jobs.values():
       if (
         runtime.pending
         or runtime.running
@@ -751,21 +748,21 @@ class Scheduler:
 
   # ── internals ──────────────────────────────────────────────
 
-  def _find_next_dispatchable_attempt(
+  def _find_next_dispatchable_job(
     self,
-  ) -> tuple[str, _AttemptRuntime] | None:
-    """Advance the cursor to the next dispatchable attempt (one
+  ) -> tuple[str, _JobRuntime] | None:
+    """Advance the cursor to the next dispatchable job (one
     full rotation max). Skipping resets owed turns."""
     n = len(self._active_order)
     for _ in range(n):
       aid = self._active_order[self._cursor]
-      runtime = self._attempts[aid]
-      if self._attempt_dispatchable(runtime):
+      runtime = self._jobs[aid]
+      if self._job_dispatchable(runtime):
         return aid, runtime
       self._advance_cursor()
     return None
 
-  def _attempt_dispatchable(self, runtime: _AttemptRuntime) -> bool:
+  def _job_dispatchable(self, runtime: _JobRuntime) -> bool:
     if runtime.state.paused:
       return False
     if not runtime.pending:
@@ -778,7 +775,7 @@ class Scheduler:
     if pool_cap is not None:
       if self._pool_running.get(pool, 0) >= pool_cap:
         return False
-    # Unresolved trials might still become done_err; dispatching
+    # Unresolved instances might still become done_err; dispatching
     # ahead of that resolution would race the pause the operator
     # asked for.
     if self._effective_pause_on_error(runtime.state):
@@ -793,19 +790,19 @@ class Scheduler:
     self._turns_taken = 0
 
   @staticmethod
-  def _effective_pause_on_error(state: AttemptState) -> bool:
+  def _effective_pause_on_error(state: JobState) -> bool:
     if state.pause_on_error is not None:
       return state.pause_on_error
     return state.max_concurrent == 1
 
   def _apply_pause_on_error(
-    self, attempt_id: str, to_state: TrialViewState
+    self, job_id: str, to_state: InstanceViewState
   ) -> bool:
     """Returns True only when this transition flipped paused
     False→True. Only done_err with pending work triggers —
     unknown must NOT pause (an NFS-lag false negative would pause
-    every sequential attempt)."""
-    runtime = self._attempts[attempt_id]
+    every sequential job)."""
+    runtime = self._jobs[job_id]
     if (
       to_state != "done_err"
       or not runtime.pending

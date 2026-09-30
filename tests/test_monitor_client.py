@@ -38,20 +38,20 @@ def test_state_apply_snapshot_and_updates():
   assert s.cluster == {"running_total": 1}
   s.apply("cluster_updated", {"running_total": 2})
   assert s.cluster["running_total"] == 2
-  s.apply("attempt_updated", {"attempt_id": "A", "label": "x"})
-  s.apply("attempt_submitted", {"attempt_id": "B", "label": "y"})
-  assert s.attempt_order == ["A", "B"]
+  s.apply("job_updated", {"job_id": "A", "label": "x"})
+  s.apply("job_submitted", {"job_id": "B", "label": "y"})
+  assert s.job_order == ["A", "B"]
   # Update in place keeps order stable.
-  s.apply("attempt_updated", {"attempt_id": "A", "label": "x2"})
-  assert s.attempt_order == ["A", "B"]
-  assert s.attempts["A"]["label"] == "x2"
+  s.apply("job_updated", {"job_id": "A", "label": "x2"})
+  assert s.job_order == ["A", "B"]
+  assert s.jobs["A"]["label"] == "x2"
 
 
 def test_state_cancelled_badges_last_snapshot():
   s = MonitorState()
-  s.apply("attempt_updated", {"attempt_id": "A", "label": "x"})
-  s.apply("attempt_cancelled", {"attempt_id": "A"})
-  assert s.attempts["A"]["cancelled"] is True
+  s.apply("job_updated", {"job_id": "A", "label": "x"})
+  s.apply("job_cancelled", {"job_id": "A"})
+  assert s.jobs["A"]["cancelled"] is True
 
 
 def test_state_heartbeat_recorded():
@@ -95,9 +95,9 @@ def test_renderers_do_not_crash_on_empty_and_full_state():
     },
   )
   s.apply(
-    "attempt_updated",
+    "job_updated",
     {
-      "attempt_id": "A",
+      "job_id": "A",
       "alias": "brave-otter",
       "label": "demo",
       "paused": False,

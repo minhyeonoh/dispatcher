@@ -1,5 +1,5 @@
 """Per-host resource sampling: one ssh round-trip collects
-mem/load/disk plus per-trial-container `docker stats` (filtered
+mem/load/disk plus per-instance-container `docker stats` (filtered
 by the managed label). Measurement only — cap policy lives in
 host_autotune."""
 
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class TrialStat:
+class InstanceStat:
   """`docker stats` snapshot for one container. CPU% is a spike
-  detector, not a steady-state measure — IO-bound trials sitting
+  detector, not a steady-state measure — IO-bound instances sitting
   on an LLM call read 0%."""
 
   name: str
@@ -37,7 +37,7 @@ class HostSample:
   loadavg_5m: float
   disk_root_free_bytes: int
   disk_root_total_bytes: int
-  trials: tuple[TrialStat, ...]
+  instances: tuple[InstanceStat, ...]
 
 
 # One shell script, one ssh. `docker stats` gets explicit ids —
@@ -103,7 +103,7 @@ def _parse_probe(out: str) -> HostSample:
   df_fields = lines[4].split()
   disk_total = int(df_fields[1])
   disk_free = int(df_fields[3])
-  trials: list[TrialStat] = []
+  instances: list[InstanceStat] = []
   for line in lines[5:]:
     line = line.strip()
     if not line:
@@ -113,8 +113,8 @@ def _parse_probe(out: str) -> HostSample:
       logger.warning("skipping unparseable docker stats line: %r", line)
       continue
     name, cpu_s, mem_s = parts
-    trials.append(
-      TrialStat(
+    instances.append(
+      InstanceStat(
         name=name,
         cpu_percent=float(cpu_s.rstrip("%")),
         rss_bytes=_parse_size(mem_s.split("/")[0]),
@@ -128,7 +128,7 @@ def _parse_probe(out: str) -> HostSample:
     loadavg_5m=loadavg_5m,
     disk_root_free_bytes=disk_free,
     disk_root_total_bytes=disk_total,
-    trials=tuple(trials),
+    instances=tuple(instances),
   )
 
 
@@ -153,7 +153,7 @@ async def sample_host(
     loadavg_5m=sample.loadavg_5m,
     disk_root_free_bytes=sample.disk_root_free_bytes,
     disk_root_total_bytes=sample.disk_root_total_bytes,
-    trials=sample.trials,
+    instances=sample.instances,
   )
 
 

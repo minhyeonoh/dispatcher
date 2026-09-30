@@ -33,7 +33,7 @@ from dispatcher.api import ops
 # must stay runtime imports.
 from dispatcher.api.config import Config  # noqa: TC001
 from dispatcher.api.ops import ServerState
-from dispatcher.api.restore import restore_attempts_from_disk
+from dispatcher.api.restore import restore_jobs_from_disk
 from dispatcher.api.settings import (
   Settings,
   SettingsPatch,
@@ -42,17 +42,17 @@ from dispatcher.api.settings import (
   save_settings,
 )
 from dispatcher.api.wire import (
-  AttemptSummaryOut,
-  FullAttemptOut,
+  FullJobOut,
   HealthOut,
+  JobSummaryOut,
   MonitorOut,
   RetryDoneErrRequest,
   StateOut,
-  build_full_attempts_body,
+  build_full_jobs_body,
   cluster_snapshot,
-  full_attempt_view,
-  snapshot_attempt,
-  snapshot_attempt_with_metrics,
+  full_job_view,
+  snapshot_job,
+  snapshot_job_with_metrics,
   sse,
 )
 from dispatcher.core import clock as clock_mod
@@ -134,7 +134,7 @@ def create_app(
       max_concurrent=settings.max_concurrent,
       hosts=settings.hosts,
       clock=clock_fn,
-      id_gen=lambda task: server_state.next_trial_id(task),
+      id_gen=lambda task: server_state.next_instance_id(task),
       pool_caps=dict(settings.pool_caps),
     )
     docker_events: DockerEventStreamManager | None = None
@@ -171,18 +171,18 @@ def create_app(
       resolve_image=resolver,
     )
     app.state.dispatcher = server_state
-    # Restore before anything can dispatch: rebuild AttemptStates
+    # Restore before anything can dispatch: rebuild JobStates
     # from event logs, buckets from outcome files, and push the
-    # trial-id counter past every name on disk.
+    # instance-id counter past every name on disk.
     server_state.advance_seq_to(
-      restore_attempts_from_disk(scheduler, metrics, config.data_dir)
+      restore_jobs_from_disk(scheduler, metrics, config.data_dir)
     )
     if docker_events is not None:
       # Census BEFORE the stream: docker's event buffer may have
       # rolled past completions that fired during downtime.
       await _run_startup_census(runtime, config, settings)
       docker_events.start(list(settings.hosts.keys()))
-    # Blocking resolver pass so restart-adopted running trials
+    # Blocking resolver pass so restart-adopted running instances
     # re-book their slots before the dispatch loop reads them.
     startup_outcomes = await runtime.resolve_state_once(
       max_concurrent_probes=(
@@ -221,7 +221,7 @@ def create_app(
 
     async def _auto_archive_one(aid: str) -> None:
       try:
-        await ops.archive_attempt(server_state, aid, clock_fn, kind="auto")
+        await ops.archive_job(server_state, aid, clock_fn, kind="auto")
       except ops.OpError as exc:
         # Precondition re-check lost a race with the resolver —
         # skip this tick, not an error.
@@ -307,9 +307,9 @@ def create_app(
     )
     return StateOut(
       **cluster.model_dump(),
-      attempts=[
-        snapshot_attempt(st.scheduler, aid)
-        for aid in st.scheduler.all_attempt_ids()
+      jobs=[
+        snapshot_job(st.scheduler, aid)
+        for aid in st.scheduler.all_job_ids()
       ],
     )
 
@@ -321,9 +321,9 @@ def create_app(
     )
     return MonitorOut(
       **cluster.model_dump(),
-      attempts=[
-        snapshot_attempt_with_metrics(st.scheduler, st.metrics, aid)
-        for aid in st.scheduler.all_attempt_ids()
+      jobs=[
+        snapshot_job_with_metrics(st.scheduler, st.metrics, aid)
+        for aid in st.scheduler.all_job_ids()
       ],
     )
 
@@ -334,19 +334,19 @@ def create_app(
 
     state_change_events = frozenset(
       {
-        "trial_dispatched",
-        "trial_completed",
-        "trial_reclassified",
-        "trial_requeued",
-        "attempt_paused_on_error",
-        "attempt_submitted",
-        "attempt_patched",
-        "attempt_cancelled",
-        "attempt_reclaimed",
-        "attempt_retried",
-        "attempt_archived",
-        "attempt_unarchived",
-        "attempt_drained",
+        "instance_dispatched",
+        "instance_completed",
+        "instance_reclassified",
+        "instance_requeued",
+        "job_paused_on_error",
+        "job_submitted",
+        "job_patched",
+        "job_cancelled",
+        "job_reclaimed",
+        "job_retried",
+        "job_archived",
+        "job_unarchived",
+        "job_drained",
       }
     )
 
@@ -356,10 +356,10 @@ def create_app(
           "snapshot",
           cluster_snapshot(st.config.self_host, st.settings, st.scheduler),
         )
-        for aid in list(st.scheduler.all_attempt_ids()):
+        for aid in list(st.scheduler.all_job_ids()):
           yield sse(
-            "attempt_updated",
-            snapshot_attempt_with_metrics(st.scheduler, st.metrics, aid),
+            "job_updated",
+            snapshot_job_with_metrics(st.scheduler, st.metrics, aid),
           )
         while True:
           ev = None
@@ -369,13 +369,11 @@ def create_app(
             yield sse("heartbeat", {"at": clock_fn().isoformat()})
             continue
           if ev.type in state_change_events:
-            aid = ev.payload.get("attempt_id")
-            if aid and st.scheduler.has_attempt(aid):
+            aid = ev.payload.get("job_id")
+            if aid and st.scheduler.has_job(aid):
               yield sse(
-                "attempt_updated",
-                snapshot_attempt_with_metrics(
-                  st.scheduler, st.metrics, aid
-                ),
+                "job_updated",
+                snapshot_job_with_metrics(st.scheduler, st.metrics, aid),
               )
             yield sse(
               "cluster_updated",
@@ -396,94 +394,88 @@ def create_app(
       },
     )
 
-  @app.get("/attempts", response_model=None)
-  async def list_attempts(
+  @app.get("/jobs", response_model=None)
+  async def list_jobs(
     full: bool = False, scope: str = ""
-  ) -> list[AttemptSummaryOut] | Response:
+  ) -> list[JobSummaryOut] | Response:
     st = _get_state(app)
-    aids = st.scheduler.all_attempt_ids()
+    aids = st.scheduler.all_job_ids()
     if scope:
       aids = [
-        aid
-        for aid in aids
-        if st.scheduler.attempt_state(aid).scope == scope
+        aid for aid in aids if st.scheduler.job_state(aid).scope == scope
       ]
     if full:
       body = await asyncio.to_thread(
-        build_full_attempts_body, st.scheduler, aids
+        build_full_jobs_body, st.scheduler, aids
       )
       return Response(content=body, media_type="application/json")
     return await asyncio.to_thread(
-      lambda: [snapshot_attempt(st.scheduler, aid) for aid in aids]
+      lambda: [snapshot_job(st.scheduler, aid) for aid in aids]
     )
 
-  @app.get("/attempts/{attempt_id}", response_model=None)
-  async def get_attempt(
-    attempt_id: str,
-  ) -> FullAttemptOut | Response:
+  @app.get("/jobs/{job_id}", response_model=None)
+  async def get_job(
+    job_id: str,
+  ) -> FullJobOut | Response:
     st = _get_state(app)
-    if not st.scheduler.has_attempt(attempt_id):
+    if not st.scheduler.has_job(job_id):
       raise HTTPException(
-        status_code=404, detail=f"attempt {attempt_id!r} not found"
+        status_code=404, detail=f"job {job_id!r} not found"
       )
-    if st.scheduler.is_archived(attempt_id):
+    if st.scheduler.is_archived(job_id):
       return Response(
-        content=st.scheduler.archived_bytes(attempt_id),
+        content=st.scheduler.archived_bytes(job_id),
         media_type="application/json",
       )
-    return full_attempt_view(st.scheduler, attempt_id)
+    return full_job_view(st.scheduler, job_id)
 
-  @app.post("/attempts")
-  async def submit_attempt(
+  @app.post("/jobs")
+  async def submit_job(
     payload: dict[str, Any],
   ) -> dict[str, Any]:
-    return await ops.submit_attempt(_get_state(app), payload, clock_fn)
+    return await ops.submit_job(_get_state(app), payload, clock_fn)
 
-  @app.patch("/attempts/{attempt_id}")
-  async def patch_attempt(
-    attempt_id: str, payload: dict[str, Any]
-  ) -> AttemptSummaryOut:
-    return await ops.patch_attempt(
-      _get_state(app), attempt_id, payload, clock_fn
-    )
+  @app.patch("/jobs/{job_id}")
+  async def patch_job(
+    job_id: str, payload: dict[str, Any]
+  ) -> JobSummaryOut:
+    return await ops.patch_job(_get_state(app), job_id, payload, clock_fn)
 
-  @app.delete("/attempts/{attempt_id}")
-  async def cancel_attempt(attempt_id: str) -> dict[str, Any]:
-    return await ops.cancel_attempt(_get_state(app), attempt_id, clock_fn)
+  @app.delete("/jobs/{job_id}")
+  async def cancel_job(job_id: str) -> dict[str, Any]:
+    return await ops.cancel_job(_get_state(app), job_id, clock_fn)
 
-  @app.post("/attempts/{attempt_id}/reclaim")
-  async def reclaim_attempt(attempt_id: str) -> dict[str, Any]:
-    return await ops.reclaim_attempt(_get_state(app), attempt_id, clock_fn)
+  @app.post("/jobs/{job_id}/reclaim")
+  async def reclaim_job(job_id: str) -> dict[str, Any]:
+    return await ops.reclaim_job(_get_state(app), job_id, clock_fn)
 
-  @app.post("/attempts/{attempt_id}/trials/{trial_id}/reclaim")
-  async def reclaim_trial(
-    attempt_id: str, trial_id: str
+  @app.post("/jobs/{job_id}/instances/{instance_id}/reclaim")
+  async def reclaim_instance(
+    job_id: str, instance_id: str
   ) -> dict[str, Any]:
-    return await ops.reclaim_trial(
-      _get_state(app), attempt_id, trial_id, clock_fn
+    return await ops.reclaim_instance(
+      _get_state(app), job_id, instance_id, clock_fn
     )
 
-  @app.post("/attempts/{attempt_id}/retry-done-err")
+  @app.post("/jobs/{job_id}/retry-done-err")
   async def retry_done_err(
-    attempt_id: str, payload: RetryDoneErrRequest | None = None
+    job_id: str, payload: RetryDoneErrRequest | None = None
   ) -> dict[str, Any]:
     return await ops.retry_done_err(
-      _get_state(app), attempt_id, payload, clock_fn
+      _get_state(app), job_id, payload, clock_fn
     )
 
-  @app.post("/attempts/{attempt_id}/archive")
-  async def archive_attempt_ep(attempt_id: str) -> dict[str, Any]:
-    return await ops.archive_attempt(
-      _get_state(app), attempt_id, clock_fn, kind="manual"
+  @app.post("/jobs/{job_id}/archive")
+  async def archive_job_ep(job_id: str) -> dict[str, Any]:
+    return await ops.archive_job(
+      _get_state(app), job_id, clock_fn, kind="manual"
     )
 
-  @app.post("/attempts/{attempt_id}/unarchive")
-  async def unarchive_attempt_ep(
-    attempt_id: str,
+  @app.post("/jobs/{job_id}/unarchive")
+  async def unarchive_job_ep(
+    job_id: str,
   ) -> dict[str, Any]:
-    return await ops.unarchive_attempt(
-      _get_state(app), attempt_id, clock_fn
-    )
+    return await ops.unarchive_job(_get_state(app), job_id, clock_fn)
 
   @app.patch("/settings")
   async def patch_settings(payload: SettingsPatch) -> Settings:

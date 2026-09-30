@@ -35,7 +35,7 @@ def _sse_worker(
   state_lock: threading.Lock,
   stop_flag: threading.Event,
 ) -> None:
-  attempt = 0
+  job = 0
   while not stop_flag.is_set():
     try:
       with httpx.Client(timeout=None) as client:
@@ -52,7 +52,7 @@ def _sse_worker(
             with state_lock:
               state.connected = True
               state.connection_error = None
-            attempt = 0
+            job = 0
             for event_type, payload in parse_sse_lines(
               response.iter_lines()
             ):
@@ -67,8 +67,8 @@ def _sse_worker(
 
     if stop_flag.is_set():
       return
-    delay = _BACKOFFS[min(attempt, len(_BACKOFFS) - 1)]
-    attempt += 1
+    delay = _BACKOFFS[min(job, len(_BACKOFFS) - 1)]
+    job += 1
     slept = 0.0
     while slept < delay and not stop_flag.is_set():
       time.sleep(0.05)

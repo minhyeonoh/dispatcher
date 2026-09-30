@@ -277,27 +277,25 @@ def test_scan_candidates_terminal_and_idle_only(tmp_path: Path):
   from datetime import UTC, datetime
 
   from dispatcher.core.models import Outcome
-  from tests.test_runtime import mk_attempt, mk_sched
+  from tests.test_runtime import mk_job, mk_sched
   from tests.test_scheduler import complete_ok
 
   sched = mk_sched(10)
   # idle-done: terminal, old log.
-  sched.submit(mk_attempt(tmp_path / "old", ["t1"], attempt_id="att-old"))
+  sched.submit(mk_job(tmp_path / "old", ["t1"], job_id="job-old"))
   # fresh-done: terminal, recent log.
-  sched.submit(mk_attempt(tmp_path / "new", ["t1"], attempt_id="att-new"))
+  sched.submit(mk_job(tmp_path / "new", ["t1"], job_id="job-new"))
   # busy: still pending.
-  sched.submit(
-    mk_attempt(tmp_path / "busy", ["t1"], attempt_id="att-busy")
-  )
-  for aid, home in (("att-old", "old"), ("att-new", "new")):
+  sched.submit(mk_job(tmp_path / "busy", ["t1"], job_id="job-busy"))
+  for aid, home in (("job-old", "old"), ("job-new", "new")):
     action = None
     while True:
       action = sched.dispatch_one()
       assert action is not None
-      if action.attempt_id == aid:
+      if action.job_id == aid:
         break
-      sched.transition_trial(
-        attempt_id=action.attempt_id,
+      sched.transition_instance(
+        job_id=action.job_id,
         task_id=action.task_id,
         from_state="running",
         to_state="done_ok",
@@ -315,4 +313,4 @@ def test_scan_candidates_terminal_and_idle_only(tmp_path: Path):
   out = scan_auto_archive_candidates(
     sched, datetime.now(UTC), threshold_days=7
   )
-  assert out == ["att-old"]
+  assert out == ["job-old"]

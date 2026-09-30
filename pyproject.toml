@@ -1,11 +1,11 @@
 [project]
 name = "dispatcher"
 version = "0.0.0"
-description = "Experiment dispatcher — schedules trials across a host fleet, independent of any one research repo"
+description = "Experiment dispatcher — schedules instances across a host fleet, independent of any one research repo"
 requires-python = ">=3.12"
 
 # Deliberately thin. The dispatcher schedules work and reports state;
-# it does not know what a trial computes, how its config is assembled,
+# it does not know what an instance computes, how its config is assembled,
 # or what its results mean. Anything benchmark-, harness-, or
 # repo-specific belongs in an adapter on the research-repo side.
 dependencies = [

@@ -2,7 +2,7 @@
 then exec the real command.
 
     command: ["python", "-m", "dispatcher_sdk.bootstrap", "--",
-              "python", "-m", "myrepo.trial"]
+              "python", "-m", "myrepo.worker"]
 
 Reads `$DISPATCHER_SOURCE` (the ro-mounted `.source.tar`), untars
 it to container-LOCAL fs (`$DISPATCHER_SOURCE_DEST`, default

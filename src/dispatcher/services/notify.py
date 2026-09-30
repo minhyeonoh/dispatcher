@@ -1,6 +1,6 @@
-"""Attempt-progress notifications to Telegram.
+"""Job-progress notifications to Telegram.
 
-Fires when an attempt's evidence-based completion ratio
+Fires when a job's evidence-based completion ratio
 (done_ok + done_err over task_ids; unknown/ghosted excluded —
 no evidence, no announcement) first crosses a threshold. Fired
 thresholds persist as `notify_fired` events so restarts never
@@ -28,7 +28,7 @@ from dispatcher.core.event_log import (
 if TYPE_CHECKING:
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.metrics import MetricsCache
-  from dispatcher.core.models import AttemptState, AttemptView
+  from dispatcher.core.models import JobState, JobView
   from dispatcher.core.scheduler import Scheduler
 
 
@@ -133,17 +133,17 @@ class NotifyManager:
     try:
       async for ev in sub:
         if ev.type not in (
-          "trial_completed",
-          "trial_reclassified",
+          "instance_completed",
+          "instance_reclassified",
         ):
           continue
-        aid = ev.payload.get("attempt_id")
+        aid = ev.payload.get("job_id")
         if not isinstance(aid, str):
           continue
         try:
           await self.check(aid)
         except Exception:
-          logger.exception("notify check failed attempt=%s", aid)
+          logger.exception("notify check failed job=%s", aid)
     finally:
       sub.close()
       if self._send_tasks:
@@ -160,13 +160,13 @@ class NotifyManager:
 
   async def check(self, aid: str) -> None:
     try:
-      state = self._sched.attempt_state(aid)
+      state = self._sched.job_state(aid)
     except KeyError:
       return  # cancelled between event and lookup
     total = len(state.task_ids)
     if total <= 0:
       return
-    view = self._sched.attempt_view(aid)
+    view = self._sched.job_view(aid)
     done = len(view.done_ok) + len(view.done_err)
     ratio = done / total
     thresholds = sorted(
@@ -182,8 +182,8 @@ class NotifyManager:
 
   async def _fire(
     self,
-    state: AttemptState,
-    view: AttemptView,
+    state: JobState,
+    view: JobView,
     *,
     threshold: float,
     done: int,
@@ -195,15 +195,15 @@ class NotifyManager:
         event_log_path_for(state),
         {
           "type": "notify_fired",
-          "attempt_id": state.attempt_id,
+          "job_id": state.job_id,
           "threshold": threshold,
           "fired_at": fired_at,
         },
       )
     except OSError:
       logger.exception(
-        "notify_fired append failed attempt=%s threshold=%.4f",
-        state.attempt_id,
+        "notify_fired append failed job=%s threshold=%.4f",
+        state.job_id,
         threshold,
       )
       return
@@ -222,8 +222,8 @@ class NotifyManager:
 
   def _format_message(
     self,
-    state: AttemptState,
-    view: AttemptView,
+    state: JobState,
+    view: JobView,
     *,
     threshold: float,
     done: int,
@@ -238,7 +238,7 @@ class NotifyManager:
     ]
     if self._metrics is not None:
       try:
-        m = self._metrics.get(state.attempt_id)
+        m = self._metrics.get(state.job_id)
       except Exception:
         m = None
       if m is not None:

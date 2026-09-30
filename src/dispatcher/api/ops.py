@@ -22,10 +22,10 @@ from dispatcher.api.settings import (
 )
 from dispatcher.api.wire import (
   RetryDoneErrRequest,
-  attempt_counts,
-  full_attempt_view,
-  snapshot_attempt,
-  snapshot_attempt_with_metrics,
+  full_job_view,
+  job_counts,
+  snapshot_job,
+  snapshot_job_with_metrics,
 )
 from dispatcher.core import clock
 from dispatcher.core.event_log import (
@@ -46,10 +46,10 @@ if TYPE_CHECKING:
   from datetime import datetime
 
   from dispatcher.api.config import Config
-  from dispatcher.api.wire import AttemptSummaryOut
+  from dispatcher.api.wire import JobSummaryOut
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.metrics import MetricsCache
-  from dispatcher.core.models import AttemptState, TrialView
+  from dispatcher.core.models import InstanceView, JobState
   from dispatcher.core.runtime import DispatcherRuntime
   from dispatcher.core.scheduler import Scheduler
   from dispatcher.services.notify import TelegramSender
@@ -94,7 +94,7 @@ class ServerState:
   resolve_image: Callable[[str], str] | None = None
   _seq: int = field(default=0)
 
-  def next_trial_id(self, task_id: str) -> str:
+  def next_instance_id(self, task_id: str) -> str:
     """`<task[:32]>__<7-digit seq>` — deterministic, monotonic."""
     self._seq += 1
     truncated = task_id[:32].rstrip("_-")
@@ -103,7 +103,7 @@ class ServerState:
   def advance_seq_to(self, seq: int) -> None:
     """The counter lives in memory only; restore pushes it past
     every name on disk — re-minting a used name would read the
-    OLD trial dir's outcome as the new trial's before it runs."""
+    OLD instance dir's outcome as the new instance's before it runs."""
     self._seq = max(self._seq, seq)
 
 
@@ -128,7 +128,7 @@ def apply_settings(st: ServerState, patch: SettingsPatch) -> None:
       st.settings.hosts[host] = new.model_copy()
       docker_events = st.runtime._docker_events
       if docker_events is not None:
-        # Streams stay up for inactive hosts too: trials already
+        # Streams stay up for inactive hosts too: instances already
         # dispatched there still emit die events we must catch.
         docker_events.ensure_host(host)
   if patch.max_concurrent is not None:
@@ -144,9 +144,7 @@ def apply_settings(st: ServerState, patch: SettingsPatch) -> None:
 
 def _prepare_submit(payload: dict[str, Any]) -> dict[str, Any]:
   out = dict(payload)
-  out.setdefault(
-    "attempt_id", _mk_attempt_id(payload.get("label", "attempt"))
-  )
+  out.setdefault("job_id", _mk_job_id(payload.get("label", "job")))
   out.setdefault("submitted_at", clock.now().isoformat())
   return out
 
@@ -159,15 +157,15 @@ def _validate_submit(st: ServerState, payload: dict[str, Any]) -> None:
     raise Invalid(
       f"home_root must be absolute (got {home_root!r})",
     )
-  # One home_root per attempt, ever: two attempts sharing one
-  # would interleave trial dirs and merge their event logs — the
+  # One home_root per job, ever: two jobs sharing one
+  # would interleave instance dirs and merge their event logs — the
   # kind of silent cross-contamination no readout would catch.
   resolved = str(Path(home_root))
-  for aid in st.scheduler.iter_attempt_ids():
-    other = st.scheduler.attempt_state(aid)
+  for aid in st.scheduler.iter_job_ids():
+    other = st.scheduler.job_state(aid)
     if str(other.home_root) == resolved:
       raise Conflict(
-        (f"home_root {home_root!r} already belongs to attempt {aid!r}"),
+        (f"home_root {home_root!r} already belongs to job {aid!r}"),
       )
   task_ids = payload.get("task_ids")
   if not isinstance(task_ids, list) or not task_ids:
@@ -193,7 +191,7 @@ _SOURCE_TAR_MAX_BYTES = 256 * 1024 * 1024
 
 def _decode_source_tar(payload: dict[str, Any]) -> bytes | None:
   """Pop + decode `source_tar_b64`. The archive is both the code
-  DELIVERY (mounted ro into every trial) and the arm RECORD (it
+  DELIVERY (mounted ro into every instance) and the arm RECORD (it
   outlives any docker prune on plain NFS)."""
   raw = payload.pop("source_tar_b64", None)
   if raw is None:
@@ -215,7 +213,7 @@ def _decode_source_tar(payload: dict[str, Any]) -> bytes | None:
   return blob
 
 
-async def submit_attempt(
+async def submit_job(
   st: ServerState,
   payload: dict[str, Any],
   clock_fn: Callable[[], datetime],
@@ -237,7 +235,7 @@ async def submit_attempt(
     prepared["source_sha256"] = hashlib.sha256(source_blob).hexdigest()
   # Pin the image to its immutable ID so a tag re-pushed
   # mid-sweep can't change what runs. Loud 400 when the image
-  # isn't on the launcher — better than trials dying host by
+  # isn't on the launcher — better than instances dying host by
   # host later.
   if st.resolve_image is not None and not prepared.get("image_id"):
     container = prepared.get("container") or {}
@@ -250,25 +248,25 @@ async def submit_attempt(
   # Alias minted BEFORE the submit event so the handle the
   # operator uses lives on disk from birth.
   if not prepared.get("alias"):
-    prepared["alias"] = st.scheduler.mint_alias(prepared["attempt_id"])
+    prepared["alias"] = st.scheduler.mint_alias(prepared["job_id"])
   events: list[dict[str, Any]] = [{"type": "submit", **prepared}]
   replay_out = replay_events(events)
   if replay_out is None:  # pragma: no cover — no cancel possible
     raise Internal("internal")
-  attempt, _ = replay_out
+  job, _ = replay_out
   try:
-    st.scheduler.submit(attempt)
+    st.scheduler.submit(job)
   except AliasCollisionError as exc:
     raise Conflict(f"alias {exc.alias!r} already in use") from exc
   except ValueError as exc:
     raise Conflict(str(exc)) from exc
   # Source archive written AFTER scheduler accepted (a 409 must
-  # leave nothing on disk) and BEFORE the event log (an attempt
+  # leave nothing on disk) and BEFORE the event log (a job
   # whose log exists must have its recorded archive). A write
-  # failure unwinds the submit — accepting an attempt without
+  # failure unwinds the submit — accepting a job without
   # the record it promised would be a silent contract break.
   if source_blob is not None:
-    source_path = attempt.home_root / SOURCE_TAR_FILENAME
+    source_path = job.home_root / SOURCE_TAR_FILENAME
 
     def _write_source() -> None:
       source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -280,32 +278,32 @@ async def submit_attempt(
       # Off the loop (R5): this can be hundreds of MB onto NFS.
       await asyncio.to_thread(_write_source)
     except OSError as exc:
-      st.scheduler.cancel(attempt.attempt_id)
+      st.scheduler.cancel(job.job_id)
       raise Internal(f"source archive write failed: {exc}") from exc
   # Log written AFTER scheduler accepted, so a 409 leaves no
   # orphan log; index after the log so a crash between the two is
   # recoverable from the log side.
-  log_path = event_log_path_for(attempt)
+  log_path = event_log_path_for(job)
   for ev in events:
     await append_event_async(log_path, ev)
   await append_index_entry_async(
     st.config.data_dir,
     {
       "event": "submit",
-      "attempt_id": attempt.attempt_id,
+      "job_id": job.job_id,
       "log_path": str(log_path),
       "at": clock_fn().isoformat(),
     },
   )
   st.event_bus.publish(
-    "attempt_submitted",
-    snapshot_attempt_with_metrics(
-      st.scheduler, st.metrics, attempt.attempt_id
+    "job_submitted",
+    snapshot_job_with_metrics(
+      st.scheduler, st.metrics, job.job_id
     ).model_dump(mode="json"),
   )
   return {
-    "attempt_id": attempt.attempt_id,
-    "alias": attempt.alias,
+    "job_id": job.job_id,
+    "alias": job.alias,
     "status": "submitted",
   }
 
@@ -323,12 +321,12 @@ _ALLOWED_PATCH_KNOBS = frozenset(
 )
 
 
-async def patch_attempt(
+async def patch_job(
   st: ServerState,
-  attempt_id: str,
+  job_id: str,
   payload: dict[str, Any],
   clock_fn: Callable[[], datetime],
-) -> AttemptSummaryOut:
+) -> JobSummaryOut:
   if not isinstance(payload, dict) or not payload:
     raise Invalid(
       "body must be a non-empty {knob: value} object",
@@ -341,13 +339,12 @@ async def patch_attempt(
         f"allowed: {sorted(_ALLOWED_PATCH_KNOBS)}"
       ),
     )
-  if not st.scheduler.has_attempt(attempt_id):
-    raise NotFound(f"attempt {attempt_id!r} not found")
-  if st.scheduler.is_archived(attempt_id):
+  if not st.scheduler.has_job(job_id):
+    raise NotFound(f"job {job_id!r} not found")
+  if st.scheduler.is_archived(job_id):
     raise Conflict(
       (
-        f"attempt {attempt_id!r} is archived — POST "
-        f"/attempts/{attempt_id}/unarchive first"
+        f"job {job_id!r} is archived — POST /jobs/{job_id}/unarchive first"
       ),
     )
   # Alias goes through the uniqueness-enforcing entry point.
@@ -356,15 +353,15 @@ async def patch_attempt(
     if not isinstance(alias_value, str):
       raise Invalid("alias must be a string")
     try:
-      st.scheduler.set_alias(attempt_id, alias_value)
+      st.scheduler.set_alias(job_id, alias_value)
     except AliasFormatError as exc:
       raise Invalid(
         (f"alias {exc.alias!r} invalid: non-empty, ≤120 chars"),
       ) from exc
     except AliasCollisionError as exc:
-      other = st.scheduler.attempt_id_of_alias(exc.alias)
+      other = st.scheduler.job_id_of_alias(exc.alias)
       raise Conflict(
-        (f"alias {exc.alias!r} already used by attempt {other!r}"),
+        (f"alias {exc.alias!r} already used by job {other!r}"),
       ) from exc
   if "pool" in payload:
     raw_pool = payload["pool"]
@@ -388,12 +385,12 @@ async def patch_attempt(
     payload["tags"] = cleaned
   try:
     if payload:
-      st.scheduler.patch(attempt_id, **payload)
+      st.scheduler.patch(job_id, **payload)
   except ValueError as exc:
     raise Invalid(str(exc)) from exc
   if alias_value is not None:
     payload["alias"] = alias_value
-  state = st.scheduler.attempt_state(attempt_id)
+  state = st.scheduler.job_state(job_id)
   log_path = event_log_path_for(state)
   at = clock_fn().isoformat()
   for knob, value in payload.items():
@@ -401,38 +398,38 @@ async def patch_attempt(
       log_path,
       {
         "type": "patch",
-        "attempt_id": attempt_id,
+        "job_id": job_id,
         "at": at,
         knob: value,
       },
     )
   st.event_bus.publish(
-    "attempt_patched",
-    snapshot_attempt_with_metrics(
-      st.scheduler, st.metrics, attempt_id
-    ).model_dump(mode="json"),
+    "job_patched",
+    snapshot_job_with_metrics(st.scheduler, st.metrics, job_id).model_dump(
+      mode="json"
+    ),
   )
-  return snapshot_attempt(st.scheduler, attempt_id)
+  return snapshot_job(st.scheduler, job_id)
 
 
-async def cancel_attempt(
+async def cancel_job(
   st: ServerState,
-  attempt_id: str,
+  job_id: str,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  if not st.scheduler.has_attempt(attempt_id):
-    raise NotFound(f"attempt {attempt_id!r} not found")
-  final_snapshot = snapshot_attempt(st.scheduler, attempt_id)
-  state = st.scheduler.attempt_state(attempt_id)
-  runtime_state = st.scheduler.cancel(attempt_id)
+  if not st.scheduler.has_job(job_id):
+    raise NotFound(f"job {job_id!r} not found")
+  final_snapshot = snapshot_job(st.scheduler, job_id)
+  state = st.scheduler.job_state(job_id)
+  runtime_state = st.scheduler.cancel(job_id)
   # Fire-and-forget remote kill; the GC catches stragglers.
-  st.runtime.fire_kill_trials(runtime_state.running)
+  st.runtime.fire_kill_instances(runtime_state.running)
   log_path = event_log_path_for(state)
   await append_event_async(
     log_path,
     {
       "type": "cancel",
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "at": clock_fn().isoformat(),
     },
   )
@@ -440,17 +437,17 @@ async def cancel_attempt(
     st.config.data_dir,
     {
       "event": "cancel",
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "at": clock_fn().isoformat(),
     },
   )
   final_json = final_snapshot.model_dump(mode="json")
   st.event_bus.publish(
-    "attempt_cancelled",
-    {"attempt_id": attempt_id, "final": final_json},
+    "job_cancelled",
+    {"job_id": job_id, "final": final_json},
   )
   return {
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "status": "cancelled",
     "final": final_json,
     "killed": len(runtime_state.running),
@@ -458,58 +455,54 @@ async def cancel_attempt(
 
 
 def _require_paused_live(
-  st: ServerState, attempt_id: str, verb: str
-) -> AttemptState:
+  st: ServerState, job_id: str, verb: str
+) -> JobState:
   try:
-    state = st.scheduler.attempt_state(attempt_id)
+    state = st.scheduler.job_state(job_id)
   except KeyError as exc:
-    raise NotFound(f"attempt {attempt_id!r} not found") from exc
-  if st.scheduler.is_archived(attempt_id):
+    raise NotFound(f"job {job_id!r} not found") from exc
+  if st.scheduler.is_archived(job_id):
     raise Conflict(
-      (
-        f"attempt {attempt_id!r} is archived; POST "
-        f"/attempts/{attempt_id}/unarchive first"
-      ),
+      (f"job {job_id!r} is archived; POST /jobs/{job_id}/unarchive first"),
     )
   if not state.paused:
     raise Conflict(
       (
-        f'attempt {attempt_id!r} is not paused; PATCH {{"paused": '
+        f'job {job_id!r} is not paused; PATCH {{"paused": '
         f"true}} first so {verb} doesn't race the dispatch loop"
       ),
     )
   return state
 
 
-async def reclaim_trial(
+async def reclaim_instance(
   st: ServerState,
-  attempt_id: str,
-  trial_id: str,
+  job_id: str,
+  instance_id: str,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  """Kill ONE running trial and put its task back on pending —
+  """Kill ONE running instance and put its task back on pending —
   the surgical version of /reclaim, for a zombie sitting on a
-  slot without taking the attempt's healthy trials down with it.
+  slot without taking the job's healthy instances down with it.
 
   No pause required: the freed task may re-dispatch on the next
-  tick with a fresh trial name and home, which is usually the
+  tick with a fresh instance name and home, which is usually the
   point ("kill it and run it again"). The old container's late
   die event / outcome cannot touch the successor — the
-  stale-observation guard drops signals whose trial_id no
+  stale-observation guard drops signals whose instance_id no
   longer occupies the bucket."""
   try:
-    state = st.scheduler.attempt_state(attempt_id)
+    state = st.scheduler.job_state(job_id)
   except KeyError as exc:
-    raise NotFound(f"attempt {attempt_id!r} not found") from exc
-  if st.scheduler.is_archived(attempt_id):
+    raise NotFound(f"job {job_id!r} not found") from exc
+  if st.scheduler.is_archived(job_id):
     raise Conflict(
-      f"attempt {attempt_id!r} is archived; POST "
-      f"/attempts/{attempt_id}/unarchive first"
+      f"job {job_id!r} is archived; POST /jobs/{job_id}/unarchive first"
     )
-  view = st.scheduler.attempt_view(attempt_id)
-  match: tuple[str, TrialView] | None = None
+  view = st.scheduler.job_view(job_id)
+  match: tuple[str, InstanceView] | None = None
   for task_id, tv in view.running.items():
-    if tv.trial_id == trial_id:
+    if tv.instance_id == instance_id:
       match = (task_id, tv)
       break
   if match is None:
@@ -517,91 +510,90 @@ async def reclaim_trial(
     # need different operator reactions.
     for bucket in ("done_ok", "done_err", "unknown", "ghosted"):
       if any(
-        tv.trial_id == trial_id for tv in getattr(view, bucket).values()
+        tv.instance_id == instance_id
+        for tv in getattr(view, bucket).values()
       ):
         raise Conflict(
-          f"trial {trial_id!r} is not running (state={bucket})"
+          f"instance {instance_id!r} is not running (state={bucket})"
         )
-    raise NotFound(
-      f"trial {trial_id!r} not found in attempt {attempt_id!r}"
-    )
+    raise NotFound(f"instance {instance_id!r} not found in job {job_id!r}")
   task_id, tv = match
-  # Kill first, then reclaim — same order as attempt-level
+  # Kill first, then reclaim — same order as job-level
   # reclaim, so the container set is already being torn down
   # when the task becomes dispatchable again.
-  st.runtime.fire_kill_trials({task_id: tv})
-  reclaimed = st.scheduler.reclaim_from_running(attempt_id, task_id)
+  st.runtime.fire_kill_instances({task_id: tv})
+  reclaimed = st.scheduler.reclaim_from_running(job_id, task_id)
   if not reclaimed:
     # Natural completion won the race between snapshot and now.
     raise Conflict(
-      f"trial {trial_id!r} completed before it could be reclaimed"
+      f"instance {instance_id!r} completed before it could be reclaimed"
     )
   await append_event_async(
     event_log_path_for(state),
     {
       "type": "reclaim",
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "task_id": task_id,
-      "trial_id": trial_id,
+      "instance_id": instance_id,
       "at": clock_fn().isoformat(),
     },
   )
   st.event_bus.publish(
-    "attempt_reclaimed",
+    "job_reclaimed",
     {
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "reclaimed": [task_id],
       "skipped_completed": [],
     },
   )
   return {
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "task_id": task_id,
-    "trial_id": trial_id,
+    "instance_id": instance_id,
     "status": "reclaimed",
   }
 
 
-async def reclaim_attempt(
+async def reclaim_job(
   st: ServerState,
-  attempt_id: str,
+  job_id: str,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  state = _require_paused_live(st, attempt_id, "reclaim")
+  state = _require_paused_live(st, job_id, "reclaim")
   # Snapshot before any mutation so the remote kill and the
   # scheduler bookkeeping see the same running set.
-  view = st.scheduler.attempt_view(attempt_id)
-  running_snapshot: dict[str, TrialView] = dict(view.running)
-  st.runtime.fire_kill_trials(running_snapshot)
+  view = st.scheduler.job_view(job_id)
+  running_snapshot: dict[str, InstanceView] = dict(view.running)
+  st.runtime.fire_kill_instances(running_snapshot)
   log_path = event_log_path_for(state)
   at = clock_fn().isoformat()
   reclaimed: list[str] = []
   skipped: list[str] = []
   for task_id, tv in running_snapshot.items():
-    if st.scheduler.reclaim_from_running(attempt_id, task_id):
+    if st.scheduler.reclaim_from_running(job_id, task_id):
       reclaimed.append(task_id)
       await append_event_async(
         log_path,
         {
           "type": "reclaim",
-          "attempt_id": attempt_id,
+          "job_id": job_id,
           "task_id": task_id,
-          "trial_id": tv.trial_id,
+          "instance_id": tv.instance_id,
           "at": at,
         },
       )
     else:
       skipped.append(task_id)
   st.event_bus.publish(
-    "attempt_reclaimed",
+    "job_reclaimed",
     {
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "reclaimed": reclaimed,
       "skipped_completed": skipped,
     },
   )
   return {
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "reclaimed": reclaimed,
     "skipped_completed": skipped,
     "total": len(running_snapshot),
@@ -610,20 +602,20 @@ async def reclaim_attempt(
 
 async def retry_done_err(
   st: ServerState,
-  attempt_id: str,
+  job_id: str,
   payload: RetryDoneErrRequest | None,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
-  state = _require_paused_live(st, attempt_id, "retry")
+  state = _require_paused_live(st, job_id, "retry")
   payload = payload or RetryDoneErrRequest()
-  view = st.scheduler.attempt_view(attempt_id)
-  done_err_snapshot: dict[str, TrialView] = dict(view.done_err)
+  view = st.scheduler.job_view(job_id)
+  done_err_snapshot: dict[str, InstanceView] = dict(view.done_err)
 
-  targets: list[tuple[str, TrialView]] = []
-  if payload.trial_ids:
-    wanted = set(payload.trial_ids)
+  targets: list[tuple[str, InstanceView]] = []
+  if payload.instance_ids:
+    wanted = set(payload.instance_ids)
     for task_id, tv in done_err_snapshot.items():
-      if tv.trial_id in wanted:
+      if tv.instance_id in wanted:
         targets.append((task_id, tv))
   else:
     since_epoch = (
@@ -635,7 +627,7 @@ async def retry_done_err(
       if payload.host is not None and tv.host != payload.host:
         continue
       if since_epoch is not None:
-        outcome_path = state.home_root / tv.trial_id / "outcome.json"
+        outcome_path = state.home_root / tv.instance_id / "outcome.json"
         try:
           mtime = await asyncio.to_thread(
             lambda p=outcome_path: p.stat().st_mtime
@@ -653,79 +645,77 @@ async def retry_done_err(
   retried: list[str] = []
   skipped: list[str] = []
   for task_id, tv in targets:
-    if st.scheduler.retry_from_done_err(attempt_id, task_id):
+    if st.scheduler.retry_from_done_err(job_id, task_id):
       retried.append(task_id)
-      st.metrics.undo_done_err(attempt_id)
+      st.metrics.undo_done_err(job_id)
       await append_event_async(
         log_path,
         {
           "type": "retry",
-          "attempt_id": attempt_id,
+          "job_id": job_id,
           "task_id": task_id,
-          "trial_id": tv.trial_id,
+          "instance_id": tv.instance_id,
           "at": at,
         },
       )
     else:
       skipped.append(task_id)
   st.event_bus.publish(
-    "attempt_retried",
+    "job_retried",
     {
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "retried": retried,
       "skipped": skipped,
     },
   )
   return {
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "retried": retried,
     "skipped": skipped,
     "total_targets": len(targets),
   }
 
 
-async def archive_attempt(
+async def archive_job(
   st: ServerState,
-  attempt_id: str,
+  job_id: str,
   clock_fn: Callable[[], datetime],
   *,
   kind: str = "manual",
 ) -> dict[str, Any]:
   try:
-    view = full_attempt_view(st.scheduler, attempt_id)
+    view = full_job_view(st.scheduler, job_id)
   except KeyError as exc:
-    raise NotFound(f"attempt {attempt_id!r} not found") from exc
+    raise NotFound(f"job {job_id!r} not found") from exc
   payload_bytes = view.model_dump_json().encode("utf-8")
   now = clock_fn()
   try:
-    st.scheduler.archive_attempt(
-      attempt_id, at=now, kind=kind, payload_bytes=payload_bytes
+    st.scheduler.archive_job(
+      job_id, at=now, kind=kind, payload_bytes=payload_bytes
     )
   except NotArchivableError as exc:
     raise Conflict(exc.reason) from exc
-  state = st.scheduler.attempt_state(attempt_id)
+  state = st.scheduler.job_state(job_id)
   await append_event_async(
     event_log_path_for(state),
     {
       "type": "archive",
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "kind": kind,
       "at": clock_fn().isoformat(),
     },
   )
-  counts = attempt_counts(st.scheduler, attempt_id)
+  counts = job_counts(st.scheduler, job_id)
   warnings: list[str] = []
   if counts.done_err > 0:
     warnings.append(
-      f"{counts.done_err} trial(s) ended in done_err — archived "
+      f"{counts.done_err} instance(s) ended in done_err — archived "
       f"anyway (unarchive at any time to inspect / retry)"
     )
-  snapshot = snapshot_attempt(st.scheduler, attempt_id)
-  st.event_bus.publish(
-    "attempt_archived", {"attempt_id": attempt_id, "kind": kind}
-  )
+  snapshot = snapshot_job(st.scheduler, job_id)
+  st.event_bus.publish("job_archived", {"job_id": job_id, "kind": kind})
   return {
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "status": "archived",
     "kind": kind,
     "archived_at": (
@@ -736,39 +726,39 @@ async def archive_attempt(
   }
 
 
-async def unarchive_attempt(
+async def unarchive_job(
   st: ServerState,
-  attempt_id: str,
+  job_id: str,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
   try:
-    st.scheduler.unarchive_attempt(attempt_id)
+    st.scheduler.unarchive_job(job_id)
   except KeyError as exc:
-    raise NotFound(f"attempt {attempt_id!r} not found") from exc
+    raise NotFound(f"job {job_id!r} not found") from exc
   except NotArchivedError as exc:
     raise Conflict(
-      f"attempt {exc.attempt_id!r} is not archived",
+      f"job {exc.job_id!r} is not archived",
     ) from exc
-  state = st.scheduler.attempt_state(attempt_id)
+  state = st.scheduler.job_state(job_id)
   await append_event_async(
     event_log_path_for(state),
     {
       "type": "unarchive",
-      "attempt_id": attempt_id,
+      "job_id": job_id,
       "at": clock_fn().isoformat(),
     },
   )
-  snapshot = snapshot_attempt(st.scheduler, attempt_id)
-  st.event_bus.publish("attempt_unarchived", {"attempt_id": attempt_id})
+  snapshot = snapshot_job(st.scheduler, job_id)
+  st.event_bus.publish("job_unarchived", {"job_id": job_id})
   return {
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "status": "unarchived",
     "final": snapshot.model_dump(mode="json"),
   }
 
 
-def _mk_attempt_id(label: str) -> str:
+def _mk_job_id(label: str) -> str:
   # KST timestamp; no Z suffix — these are +09:00 times.
-  return clock.now().strftime("att-%Y%m%dT%H%M%S%f-") + label.replace(
+  return clock.now().strftime("job-%Y%m%dT%H%M%S%f-") + label.replace(
     "/", "-"
   ).replace(" ", "-")

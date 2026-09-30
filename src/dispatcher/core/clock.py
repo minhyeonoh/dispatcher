@@ -1,7 +1,7 @@
 """One timezone for the whole system: Asia/Seoul.
 
 Every timestamp the dispatcher mints — event logs, wire
-responses, attempt ids, notify records — is timezone-AWARE KST,
+responses, job ids, notify records — is timezone-AWARE KST,
 so ISO strings carry +09:00 and stay unambiguous. Timestamps
 read from outside (docker's RFC3339, file mtimes, docker-events
 epoch seconds) are converted to KST at the boundary. Arithmetic

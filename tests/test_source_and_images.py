@@ -21,7 +21,7 @@ from dispatcher.core.dispatch import (
 )
 from dispatcher.core.models import DispatchEntry
 from dispatcher.core.runtime import DispatcherRuntime
-from tests.test_runtime import mk_attempt, mk_sched
+from tests.test_runtime import mk_job, mk_sched
 from tests.test_server import mk_client, payload
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ def test_submit_stores_source_tar_and_sha(tmp_path: Path):
   blob = _tar_bytes({"mod.py": b"X = 1\n"})
   with mk_client(tmp_path) as client:
     resp = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(
         task_ids=["t1"],
         home_root=tmp_path / "a",
@@ -60,23 +60,23 @@ def test_submit_stores_source_tar_and_sha(tmp_path: Path):
       ),
     )
     assert resp.status_code == 200
-    aid = resp.json()["attempt_id"]
+    aid = resp.json()["job_id"]
     # The archive is on plain NFS-side storage — docker prune
     # can never touch the arm record.
     stored = (tmp_path / "a" / ".source.tar").read_bytes()
     assert stored == blob
-    detail = client.get(f"/attempts/{aid}").json()
+    detail = client.get(f"/jobs/{aid}").json()
     assert detail["source_sha256"] == hashlib.sha256(blob).hexdigest()
 
 
 def test_submit_source_survives_restart(tmp_path: Path):
   with mk_client(tmp_path) as client:
     client.post(
-      "/attempts",
+      "/jobs",
       json=payload(
         task_ids=["t1"],
         home_root=tmp_path / "a",
-        attempt_id="A",
+        job_id="A",
         extra={
           "paused": True,
           "source_tar_b64": _b64({"m.py": b"pass\n"}),
@@ -84,7 +84,7 @@ def test_submit_source_survives_restart(tmp_path: Path):
       ),
     )
   with mk_client(tmp_path) as client2:
-    detail = client2.get("/attempts/A").json()
+    detail = client2.get("/jobs/A").json()
     assert detail["source_sha256"] != ""
     assert (tmp_path / "a" / ".source.tar").is_file()
 
@@ -92,7 +92,7 @@ def test_submit_source_survives_restart(tmp_path: Path):
 def test_submit_bad_base64_is_400(tmp_path: Path):
   with mk_client(tmp_path) as client:
     resp = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(
         task_ids=["t1"],
         home_root=tmp_path / "a",
@@ -106,13 +106,13 @@ def test_require_source_rejects_bare_submit(tmp_path: Path):
   with mk_client(tmp_path) as client:
     client.patch("/settings", json={"require_source": True})
     resp = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     )
     assert resp.status_code == 400
     assert "source" in resp.json()["detail"]
     ok = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(
         task_ids=["t1"],
         home_root=tmp_path / "b",
@@ -146,14 +146,14 @@ def test_submit_pins_image_id_via_resolver(tmp_path: Path):
   )
   with TestClient(app) as client:
     aid = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(
         task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
-    ).json()["attempt_id"]
-    detail = client.get(f"/attempts/{aid}").json()
+    ).json()["job_id"]
+    detail = client.get(f"/jobs/{aid}").json()
     assert detail["image_id"] == "sha256:pinned-img"
 
 
@@ -178,7 +178,7 @@ def test_submit_unresolvable_image_is_400(tmp_path: Path):
   )
   with TestClient(app) as client:
     resp = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(task_ids=["t1"], home_root=tmp_path / "a"),
     )
     assert resp.status_code == 400
@@ -188,14 +188,14 @@ def test_submit_unresolvable_image_is_400(tmp_path: Path):
 def test_fake_dispatch_mode_pins_nothing(tmp_path: Path):
   with mk_client(tmp_path) as client:
     aid = client.post(
-      "/attempts",
+      "/jobs",
       json=payload(
         task_ids=["t1"],
         home_root=tmp_path / "a",
         extra={"paused": True},
       ),
-    ).json()["attempt_id"]
-    assert client.get(f"/attempts/{aid}").json()["image_id"] == ""
+    ).json()["job_id"]
+    assert client.get(f"/jobs/{aid}").json()["image_id"] == ""
 
 
 # ── dispatch command: pinned id + source mount ───────────────────
@@ -205,34 +205,40 @@ def _action() -> DispatchEntry:
   from datetime import UTC, datetime
 
   return DispatchEntry(
-    attempt_id="att-001",
+    job_id="job-001",
     task_id="t1",
-    trial_id="t1__0000001",
+    instance_id="t1__0000001",
     host="ml9",
     dispatched_at=datetime.now(UTC),
   )
 
 
 def test_command_runs_pinned_id_not_tag(tmp_path: Path):
-  state = mk_attempt(tmp_path, ["t1"])
+  state = mk_job(tmp_path, ["t1"])
   state.image_id = "sha256:deadbeef"
-  cmd = build_remote_command(_action(), state, trial_home=tmp_path / "t")
+  cmd = build_remote_command(
+    _action(), state, instance_home=tmp_path / "t"
+  )
   assert "sha256:deadbeef" in cmd
   # The mutable tag must not be what runs.
   assert " img " not in f" {cmd} "
 
 
 def test_command_mounts_source_when_present(tmp_path: Path):
-  state = mk_attempt(tmp_path, ["t1"])
+  state = mk_job(tmp_path, ["t1"])
   state.source_sha256 = "abc"
-  cmd = build_remote_command(_action(), state, trial_home=tmp_path / "t")
+  cmd = build_remote_command(
+    _action(), state, instance_home=tmp_path / "t"
+  )
   assert f"{tmp_path}/.source.tar:/dispatcher/source.tar:ro" in cmd
   assert "DISPATCHER_SOURCE=/dispatcher/source.tar" in cmd
 
 
 def test_command_no_source_no_mount(tmp_path: Path):
-  state = mk_attempt(tmp_path, ["t1"])
-  cmd = build_remote_command(_action(), state, trial_home=tmp_path / "t")
+  state = mk_job(tmp_path, ["t1"])
+  cmd = build_remote_command(
+    _action(), state, instance_home=tmp_path / "t"
+  )
   assert ".source.tar" not in cmd
   assert "DISPATCHER_SOURCE" not in cmd
 
@@ -244,9 +250,9 @@ def test_ensure_image_runs_once_per_image_host(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
   sched = mk_sched(2)
-  attempt = mk_attempt(tmp_path, ["t1", "t2"])
-  attempt.image_id = "sha256:env1"
-  sched.submit(attempt)
+  job = mk_job(tmp_path, ["t1", "t2"])
+  job.image_id = "sha256:env1"
+  sched.submit(job)
   ensured: list[tuple[str, str]] = []
 
   async def fake_ensure(host, image_id, *, self_host, **kw):
@@ -258,7 +264,7 @@ def test_ensure_image_runs_once_per_image_host(
   shipped: list[str] = []
 
   async def fake_docker_dispatch(action, state, **kw):
-    shipped.append(action.trial_id)
+    shipped.append(action.instance_id)
 
   monkeypatch.setattr(
     "dispatcher.core.runtime.docker_dispatch",
@@ -269,7 +275,7 @@ def test_ensure_image_runs_once_per_image_host(
   )
   asyncio.run(runtime._dispatch_available())
   assert len(shipped) == 2
-  # Two trials, same image, same host → ONE ensure.
+  # Two instances, same image, same host → ONE ensure.
   assert ensured == [("ml10", "sha256:env1")]
 
 
@@ -277,9 +283,9 @@ def test_ensure_image_failure_requeues_not_scores(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
   sched = mk_sched(1)
-  attempt = mk_attempt(tmp_path, ["t1"])
-  attempt.image_id = "sha256:gone"
-  sched.submit(attempt)
+  job = mk_job(tmp_path, ["t1"])
+  job.image_id = "sha256:gone"
+  sched.submit(job)
 
   async def fail_ensure(host, image_id, *, self_host, **kw):
     raise RuntimeError("ship failed")
@@ -291,7 +297,7 @@ def test_ensure_image_failure_requeues_not_scores(
     sched, self_host="ml10", poll=lambda _p: None
   )
   asyncio.run(runtime._dispatch_available())
-  view = sched.attempt_view("att-001")
+  view = sched.job_view("job-001")
   # Bounded requeues exhausted → parked unknown; never done_err.
   assert set(view.unknown) == {"t1"}
   assert not view.done_err
@@ -307,9 +313,9 @@ def test_dispatch_error_carries_ensure_reason(
     "dispatcher.core.runtime.ensure_image_on_host", fail_ensure
   )
   sched = mk_sched(1)
-  attempt = mk_attempt(tmp_path, ["t1"])
-  attempt.image_id = "sha256:x"
-  sched.submit(attempt)
+  job = mk_job(tmp_path, ["t1"])
+  job.image_id = "sha256:x"
+  sched.submit(job)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )

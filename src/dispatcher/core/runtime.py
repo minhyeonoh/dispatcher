@@ -3,7 +3,7 @@ against real docker dispatch and outcome polling.
 
     Scheduler                      (in-memory state machine)
       ↓ dispatch_one()
-    runtime._do_dispatch           (write trial.json, docker run -d)
+    runtime._do_dispatch           (write instance.json, docker run -d)
       ↓
     main container on host        (worker runs, writes outcome.json,
       ↓ die event                  exits)
@@ -27,7 +27,7 @@ Evidence rules, in one place:
     otherwise             → ghosted ("maybe ghosted": every
     resolver tick re-polls it, so a late NFS commit still
     upgrades it to done_ok/done_err).
-- dispatch itself failed  → the trial never started; requeue
+- dispatch itself failed  → the instance never started; requeue
   (bounded), else park unknown for the operator.
 """
 
@@ -45,7 +45,7 @@ from dispatcher.core import clock, labels
 from dispatcher.core.containers import (
   container_labels,
   ensure_image_on_host,
-  probe_trial,
+  probe_instance,
 )
 from dispatcher.core.dispatch import DispatchError, docker_dispatch
 from dispatcher.core.event_log import (
@@ -54,13 +54,13 @@ from dispatcher.core.event_log import (
 )
 from dispatcher.core.models import (
   INFRA_EXIT_CODES,
-  TRIAL_SPEC_FILENAME,
+  INSTANCE_SPEC_FILENAME,
 )
 from dispatcher.core.outcome import (
   CompletionSnapshot,
   bust_dir_cache,
+  instance_home_for,
   read_completion,
-  trial_home_for,
 )
 
 if TYPE_CHECKING:
@@ -71,19 +71,17 @@ if TYPE_CHECKING:
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.metrics import MetricsCache
   from dispatcher.core.models import (
-    AttemptState,
     DispatchEntry,
+    InstanceView,
+    InstanceViewState,
+    JobState,
     Outcome,
-    TrialView,
-    TrialViewState,
   )
   from dispatcher.core.scheduler import Scheduler
 
-  DispatchCallable = Callable[
-    [DispatchEntry, AttemptState], Awaitable[None]
-  ]
+  DispatchCallable = Callable[[DispatchEntry, JobState], Awaitable[None]]
   PollCallable = Callable[[Path], CompletionSnapshot | None]
-  AttemptHook = Callable[[AttemptState, list[Outcome]], None]
+  JobHook = Callable[[JobState, list[Outcome]], None]
 
 
 logger = logging.getLogger(__name__)
@@ -113,7 +111,7 @@ def apply_state_reconciliation_patch(
     settings.seconds_between_probes = patch.seconds_between_probes
 
 
-def classify(snapshot: CompletionSnapshot | None) -> TrialViewState:
+def classify(snapshot: CompletionSnapshot | None) -> InstanceViewState:
   """The one copy of the terminal classification rule."""
   if snapshot is None or not snapshot.outcome_exists:
     return "unknown"
@@ -127,7 +125,7 @@ class DispatcherRuntime:
   # event and the outcome.json becoming visible to this client.
   # Each retry is preceded by a directory cache bust (see
   # `bust_dir_cache`) — without it these retries just re-ask the
-  # local cache, which is how 43% of the old router's trials
+  # local cache, which is how 43% of the old router's instances
   # parked in unknown over files that already existed. The
   # ladder is insurance for the bust not taking; misses still
   # fall to `unknown` and the resolver catches up.
@@ -143,8 +141,8 @@ class DispatcherRuntime:
     tick_interval: float = 0.5,
     metrics: MetricsCache | None = None,
     event_bus: EventBus | None = None,
-    on_attempt_drained: AttemptHook | None = None,
-    on_trial_completed: AttemptHook | None = None,
+    on_job_drained: JobHook | None = None,
+    on_instance_completed: JobHook | None = None,
     docker_event_manager: DockerEventStreamManager | None = None,
   ) -> None:
     self._sched = scheduler
@@ -154,15 +152,15 @@ class DispatcherRuntime:
     self._tick_interval = tick_interval
     self._metrics = metrics
     self._event_bus = event_bus
-    self._on_attempt_drained = on_attempt_drained
-    self._on_trial_completed = on_trial_completed
+    self._on_job_drained = on_job_drained
+    self._on_instance_completed = on_instance_completed
     self._docker_events = docker_event_manager
     # (image_id, host) pairs verified present. Restart clears it;
     # re-verification is one cheap inspect per pair.
     self._images_ensured: set[tuple[str, str]] = set()
     self._image_locks: dict[tuple[str, str], asyncio.Lock] = {}
-    # (attempt_id, trial_id) → main-container exit code, kept
-    # while the trial sits in unknown so the resolver can requeue
+    # (job_id, instance_id) → main-container exit code, kept
+    # while the instance sits in unknown so the resolver can requeue
     # infra kills (75/137/143/255) instead of ghosting them.
     # Restart loses it; the startup census re-supplies exit codes.
     self._last_exit: dict[tuple[str, str], int] = {}
@@ -197,12 +195,12 @@ class DispatcherRuntime:
       await self._do_dispatch(action)
 
   async def _do_dispatch(self, action: DispatchEntry) -> None:
-    state = self._sched.attempt_state(action.attempt_id)
-    trial_home = trial_home_for(state.home_root, action.trial_id)
+    state = self._sched.job_state(action.job_id)
+    instance_home = instance_home_for(state.home_root, action.instance_id)
     spec = {
-      "attempt_id": action.attempt_id,
+      "job_id": action.job_id,
       "task_id": action.task_id,
-      "trial_id": action.trial_id,
+      "instance_id": action.instance_id,
       "home": state.container.home_mount,
       "payload": state.payloads.get(action.task_id),
     }
@@ -210,8 +208,8 @@ class DispatcherRuntime:
     def _stage() -> None:
       # NFS writes off the loop (R5): a slow write stalls this
       # dispatch, not the whole runtime.
-      trial_home.mkdir(parents=True, exist_ok=True)
-      (trial_home / TRIAL_SPEC_FILENAME).write_text(
+      instance_home.mkdir(parents=True, exist_ok=True)
+      (instance_home / INSTANCE_SPEC_FILENAME).write_text(
         json.dumps(spec, indent=2)
       )
 
@@ -224,30 +222,30 @@ class DispatcherRuntime:
       # budget, park in unknown so the resolver/operator sees it
       # instead of a silent drop.
       logger.warning(
-        "dispatch failed: attempt=%s task=%s host=%s: %s",
-        action.attempt_id,
+        "dispatch failed: job=%s task=%s host=%s: %s",
+        action.job_id,
         action.task_id,
         action.host,
         exc,
       )
       if not self._sched.requeue_after_infra_failure(
-        action.attempt_id, action.task_id, "running"
+        action.job_id, action.task_id, "running"
       ):
         await self._apply_terminal_transition(
-          aid=action.attempt_id,
+          aid=action.job_id,
           task_id=action.task_id,
-          trial_id=action.trial_id,
+          instance_id=action.instance_id,
           from_state="running",
           to_state="unknown",
           snapshot=None,
         )
       elif self._event_bus is not None:
         self._event_bus.publish(
-          "trial_requeued",
+          "instance_requeued",
           {
-            "attempt_id": action.attempt_id,
+            "job_id": action.job_id,
             "task_id": action.task_id,
-            "trial_id": action.trial_id,
+            "instance_id": action.instance_id,
             "from_state": "running",
           },
         )
@@ -261,34 +259,34 @@ class DispatcherRuntime:
       event_log_path_for(state),
       {
         "type": "dispatch",
-        "attempt_id": action.attempt_id,
+        "job_id": action.job_id,
         "task_id": action.task_id,
-        "trial_id": action.trial_id,
+        "instance_id": action.instance_id,
         "host": action.host,
         "at": action.dispatched_at.isoformat(),
       },
     )
     if self._event_bus is not None:
       self._event_bus.publish(
-        "trial_dispatched",
+        "instance_dispatched",
         {
-          "attempt_id": action.attempt_id,
+          "job_id": action.job_id,
           "task_id": action.task_id,
-          "trial_id": action.trial_id,
+          "instance_id": action.instance_id,
           "host": action.host,
           "dispatched_at": action.dispatched_at.isoformat(),
         },
       )
 
   async def _default_dispatch(
-    self, action: DispatchEntry, state: AttemptState
+    self, action: DispatchEntry, state: JobState
   ) -> None:
     if state.image_id:
       await self._ensure_image(action.host, state.image_id)
     await docker_dispatch(
       action,
       state,
-      trial_home=trial_home_for(state.home_root, action.trial_id),
+      instance_home=instance_home_for(state.home_root, action.instance_id),
       self_host=self._self_host,
     )
 
@@ -315,16 +313,18 @@ class DispatcherRuntime:
   # ── completion: poll fallback ──────────────────────────────
 
   async def _poll_all(self) -> None:
-    for aid, trial_view in list(self._sched.iter_running()):
-      state = self._sched.attempt_state(aid)
-      trial_home = trial_home_for(state.home_root, trial_view.trial_id)
-      snapshot = await asyncio.to_thread(self._poll, trial_home)
+    for aid, instance_view in list(self._sched.iter_running()):
+      state = self._sched.job_state(aid)
+      instance_home = instance_home_for(
+        state.home_root, instance_view.instance_id
+      )
+      snapshot = await asyncio.to_thread(self._poll, instance_home)
       if snapshot is None:
         continue
-      await self._apply_trial_completion(
+      await self._apply_instance_completion(
         aid,
-        trial_view.task_id,
-        trial_view.trial_id,
+        instance_view.task_id,
+        instance_view.instance_id,
         snapshot,
       )
 
@@ -333,13 +333,13 @@ class DispatcherRuntime:
   async def handle_docker_die(
     self, host: str, event: dict[str, Any]
   ) -> None:
-    """Silently ignores events for trials we don't know — another
+    """Silently ignores events for instances we don't know — another
     dispatcher sharing the cluster, or a duplicate from docker's
     --since replay across reconnects."""
     actor = event.get("Actor") or {}
     attrs = actor.get("Attributes") or {}
-    trial_id = attrs.get(labels.TRIAL) or ""
-    if not trial_id:
+    instance_id = attrs.get(labels.INSTANCE) or ""
+    if not instance_id:
       return
     try:
       exit_code = int(attrs.get("exitCode") or "0")
@@ -348,16 +348,16 @@ class DispatcherRuntime:
 
     match: tuple[str, str] | None = None
     for aid, tv in self._sched.iter_running():
-      if tv.trial_id == trial_id:
+      if tv.instance_id == instance_id:
         match = (aid, tv.task_id)
         break
     if match is None:
       return
     aid, task_id = match
 
-    state = self._sched.attempt_state(aid)
-    trial_home = trial_home_for(state.home_root, trial_id)
-    snapshot = await self._poll_with_nfs_retry(trial_home)
+    state = self._sched.job_state(aid)
+    instance_home = instance_home_for(state.home_root, instance_id)
+    snapshot = await self._poll_with_nfs_retry(instance_home)
     if snapshot is None:
       snapshot = CompletionSnapshot(
         outcome_exists=False,
@@ -366,13 +366,15 @@ class DispatcherRuntime:
       )
       # Remember the exit for the resolver's ghost-or-requeue
       # decision.
-      self._last_exit[(aid, trial_id)] = exit_code
+      self._last_exit[(aid, instance_id)] = exit_code
     else:
       # A readable envelope wins over the exit code: the work
       # finished and wrote its result; whatever killed the
       # container afterwards is teardown bookkeeping.
       snapshot.exit_code = exit_code
-    await self._apply_trial_completion(aid, task_id, trial_id, snapshot)
+    await self._apply_instance_completion(
+      aid, task_id, instance_id, snapshot
+    )
 
   async def reconcile_from_census(
     self, host: str, containers: list[dict[str, Any]]
@@ -384,8 +386,8 @@ class DispatcherRuntime:
       state = c.get("State") or {}
       if state.get("Status") != "exited":
         continue
-      trial_id = container_labels(c).get(labels.TRIAL)
-      if not trial_id:
+      instance_id = container_labels(c).get(labels.INSTANCE)
+      if not instance_id:
         continue
       exit_code = state.get("ExitCode")
       if not isinstance(exit_code, int):
@@ -393,7 +395,7 @@ class DispatcherRuntime:
       synthetic = {
         "Actor": {
           "Attributes": {
-            labels.TRIAL: trial_id,
+            labels.INSTANCE: instance_id,
             "exitCode": str(exit_code),
           }
         }
@@ -414,65 +416,65 @@ class DispatcherRuntime:
       )
 
   async def _poll_with_nfs_retry(
-    self, trial_home: Path
+    self, instance_home: Path
   ) -> CompletionSnapshot | None:
-    snapshot = await asyncio.to_thread(self._poll, trial_home)
+    snapshot = await asyncio.to_thread(self._poll, instance_home)
     if snapshot is not None:
       return snapshot
     for delay in self._NFS_POLL_RETRY_DELAYS:
       await asyncio.sleep(delay)
-      snapshot = await asyncio.to_thread(self._poll_busted, trial_home)
+      snapshot = await asyncio.to_thread(self._poll_busted, instance_home)
       if snapshot is not None:
         return snapshot
     return None
 
-  def _poll_busted(self, trial_home: Path) -> CompletionSnapshot | None:
+  def _poll_busted(self, instance_home: Path) -> CompletionSnapshot | None:
     """Cache bust, then poll — one thread hop for both."""
-    bust_dir_cache(trial_home)
-    return self._poll(trial_home)
+    bust_dir_cache(instance_home)
+    return self._poll(instance_home)
 
   # ── terminal pipeline ──────────────────────────────────────
 
   def _observation_is_stale(
-    self, aid: str, task_id: str, trial_id: str, from_state: str
+    self, aid: str, task_id: str, instance_id: str, from_state: str
   ) -> bool:
-    """True when the bucket no longer holds THIS trial — the
+    """True when the bucket no longer holds THIS instance — the
     observation raced a reclaim/requeue/cancel across an await.
-    Acting on it would score a NEW trial with an OLD trial's
+    Acting on it would score a NEW instance with an OLD instance's
     outcome, which is exactly the contamination class this repo
     exists to prevent (latent even pre-async: the die handler's
     7s NFS window). Stale observations are dropped; the current
     occupant's own signals classify it."""
-    tv = self._sched.trial_view_in(aid, from_state, task_id)  # type: ignore[arg-type]
-    if tv is None or tv.trial_id != trial_id:
+    tv = self._sched.instance_view_in(aid, from_state, task_id)  # type: ignore[arg-type]
+    if tv is None or tv.instance_id != instance_id:
       logger.warning(
-        "stale observation dropped: attempt=%s task=%s trial=%s "
+        "stale observation dropped: job=%s task=%s instance=%s "
         "(bucket %s now holds %s)",
         aid,
         task_id,
-        trial_id,
+        instance_id,
         from_state,
-        tv.trial_id if tv else "nothing",
+        tv.instance_id if tv else "nothing",
       )
       return True
     return False
 
-  async def _apply_trial_completion(
+  async def _apply_instance_completion(
     self,
     aid: str,
     task_id: str,
-    trial_id: str,
+    instance_id: str,
     snapshot: CompletionSnapshot,
   ) -> None:
     to_state = classify(snapshot)
     if self._requeued_instead_of_scored(
-      aid, task_id, trial_id, to_state, snapshot, "running"
+      aid, task_id, instance_id, to_state, snapshot, "running"
     ):
       return
     await self._apply_terminal_transition(
       aid=aid,
       task_id=task_id,
-      trial_id=trial_id,
+      instance_id=instance_id,
       from_state="running",
       to_state=to_state,
       snapshot=snapshot,
@@ -482,42 +484,42 @@ class DispatcherRuntime:
     self,
     aid: str,
     task_id: str,
-    trial_id: str,
-    to_state: TrialViewState,
+    instance_id: str,
+    to_state: InstanceViewState,
     snapshot: CompletionSnapshot | None,
-    from_state: TrialViewState,
+    from_state: InstanceViewState,
   ) -> bool:
     """Requeue when the envelope itself says the machine failed.
-    Runs BEFORE the terminal pipeline so a requeued trial leaves
+    Runs BEFORE the terminal pipeline so a requeued instance leaves
     no aggregate, metric, or transition event behind. Shared by
     the live path and both resolver paths — under load the
     outcome is rarely visible at first look, and those parked
-    trials deserve the same rule."""
+    instances deserve the same rule."""
     if to_state != "done_err" or snapshot is None:
       return False
     if not snapshot.infra:
       return False
-    if self._observation_is_stale(aid, task_id, trial_id, from_state):
+    if self._observation_is_stale(aid, task_id, instance_id, from_state):
       return True  # handled: dropped, nothing to score
     if not self._sched.requeue_after_infra_failure(
       aid, task_id, from_state
     ):
       return False
-    self._last_exit.pop((aid, trial_id), None)
+    self._last_exit.pop((aid, instance_id), None)
     logger.warning(
-      "requeued infra failure from %s: attempt=%s task=%s trial=%s",
+      "requeued infra failure from %s: job=%s task=%s instance=%s",
       from_state,
       aid,
       task_id,
-      trial_id,
+      instance_id,
     )
     if self._event_bus is not None:
       self._event_bus.publish(
-        "trial_requeued",
+        "instance_requeued",
         {
-          "attempt_id": aid,
+          "job_id": aid,
           "task_id": task_id,
-          "trial_id": trial_id,
+          "instance_id": instance_id,
           "from_state": from_state,
         },
       )
@@ -528,9 +530,9 @@ class DispatcherRuntime:
     *,
     aid: str,
     task_id: str,
-    trial_id: str,
-    from_state: TrialViewState,
-    to_state: TrialViewState,
+    instance_id: str,
+    from_state: InstanceViewState,
+    to_state: InstanceViewState,
     snapshot: CompletionSnapshot | None,
   ) -> None:
     """One ordered path for every completion-like transition:
@@ -542,20 +544,20 @@ class DispatcherRuntime:
     terminal observations) and keep blocking drain."""
     if to_state in ("done_ok", "done_err") and snapshot is None:
       raise ValueError(f"{to_state} transition requires a snapshot")
-    if self._observation_is_stale(aid, task_id, trial_id, from_state):
+    if self._observation_is_stale(aid, task_id, instance_id, from_state):
       return
 
-    paused_on_error = self._sched.transition_trial(
-      attempt_id=aid,
+    paused_on_error = self._sched.transition_instance(
+      job_id=aid,
       task_id=task_id,
       from_state=from_state,
       to_state=to_state,
       outcome=(snapshot.outcome if snapshot is not None else None),
     )
     if to_state in ("done_ok", "done_err"):
-      self._last_exit.pop((aid, trial_id), None)
+      self._last_exit.pop((aid, instance_id), None)
 
-    state = self._sched.attempt_state(aid)
+    state = self._sched.job_state(aid)
     events_to_append: list[dict] = []
     if to_state == "unknown":
       # Breadcrumb only — restore re-derives the bucket from disk;
@@ -563,18 +565,16 @@ class DispatcherRuntime:
       events_to_append.append(
         {
           "type": "unknown",
-          "attempt_id": aid,
+          "job_id": aid,
           "task_id": task_id,
-          "trial_id": trial_id,
+          "instance_id": instance_id,
           "at": clock.now().isoformat(),
         }
       )
-    if self._on_trial_completed is not None:
-      self._on_trial_completed(state, self._sched.attempt_outcomes(aid))
-    if self._on_attempt_drained is not None or (
-      self._event_bus is not None
-    ):
-      view = self._sched.attempt_view(aid)
+    if self._on_instance_completed is not None:
+      self._on_instance_completed(state, self._sched.job_outcomes(aid))
+    if self._on_job_drained is not None or (self._event_bus is not None):
+      view = self._sched.job_view(aid)
       drained = (
         not view.pending
         and not view.running
@@ -582,12 +582,10 @@ class DispatcherRuntime:
         and not view.ghosted
       )
       if drained:
-        if self._on_attempt_drained is not None:
-          self._on_attempt_drained(
-            state, self._sched.attempt_outcomes(aid)
-          )
+        if self._on_job_drained is not None:
+          self._on_job_drained(state, self._sched.job_outcomes(aid))
         if self._event_bus is not None:
-          self._event_bus.publish("attempt_drained", {"attempt_id": aid})
+          self._event_bus.publish("job_drained", {"job_id": aid})
     if self._metrics is not None and snapshot is not None:
       if from_state == "running":
         self._metrics.record_completion(aid, snapshot)
@@ -603,14 +601,14 @@ class DispatcherRuntime:
       events_to_append.append(
         {
           "type": "pause_on_error",
-          "attempt_id": aid,
+          "job_id": aid,
           "task_id": task_id,
           "at": clock.now().isoformat(),
         }
       )
     if self._event_bus is not None:
-      moved = self._sched.trial_view_in(aid, to_state, task_id)
-      trial_row = {
+      moved = self._sched.instance_view_in(aid, to_state, task_id)
+      instance_row = {
         "host": moved.host if moved is not None else None,
         "dispatched_at": (
           moved.dispatched_at.isoformat() if moved is not None else None
@@ -619,35 +617,35 @@ class DispatcherRuntime:
       if from_state == "running":
         assert snapshot is not None
         self._event_bus.publish(
-          "trial_completed",
+          "instance_completed",
           {
-            "attempt_id": aid,
+            "job_id": aid,
             "task_id": task_id,
-            "trial_id": trial_id,
+            "instance_id": instance_id,
             "outcome_exists": snapshot.outcome_exists,
             "error_present": snapshot.error_present,
             "values": snapshot.values,
             "to_state": to_state,
-            **trial_row,
+            **instance_row,
           },
         )
       else:
         self._event_bus.publish(
-          "trial_reclassified",
+          "instance_reclassified",
           {
-            "attempt_id": aid,
+            "job_id": aid,
             "task_id": task_id,
-            "trial_id": trial_id,
+            "instance_id": instance_id,
             "from_state": from_state,
             "to_state": to_state,
             "values": (snapshot.values if snapshot is not None else None),
-            **trial_row,
+            **instance_row,
           },
         )
       if paused_on_error:
         self._event_bus.publish(
-          "attempt_paused_on_error",
-          {"attempt_id": aid, "task_id": task_id},
+          "job_paused_on_error",
+          {"job_id": aid, "task_id": task_id},
         )
     # Appends LAST: every in-memory mutation (scheduler, metrics,
     # hooks, bus) completed synchronously above, so nothing can
@@ -690,7 +688,9 @@ class DispatcherRuntime:
       return counts
     sem = anyio.Semaphore(max(1, max_concurrent_probes))
 
-    async def probe_unknown(aid: str, task_id: str, tv: TrialView) -> None:
+    async def probe_unknown(
+      aid: str, task_id: str, tv: InstanceView
+    ) -> None:
       async with sem:
         try:
           outcome = await self._resolve_unknown_one(aid, task_id, tv)
@@ -701,7 +701,9 @@ class DispatcherRuntime:
           outcome = "error"
       counts[outcome] = counts.get(outcome, 0) + 1
 
-    async def probe_ghosted(aid: str, task_id: str, tv: TrialView) -> None:
+    async def probe_ghosted(
+      aid: str, task_id: str, tv: InstanceView
+    ) -> None:
       async with sem:
         try:
           outcome = await self._resolve_ghosted_one(aid, task_id, tv)
@@ -720,24 +722,24 @@ class DispatcherRuntime:
     return counts
 
   async def _resolve_ghosted_one(
-    self, aid: str, task_id: str, tv: TrialView
+    self, aid: str, task_id: str, tv: InstanceView
   ) -> str:
-    state = self._sched.attempt_state(aid)
+    state = self._sched.job_state(aid)
     snapshot = await asyncio.to_thread(
       self._poll_busted,
-      trial_home_for(state.home_root, tv.trial_id),
+      instance_home_for(state.home_root, tv.instance_id),
     )
     if snapshot is None:
       return "unchanged"
     to_state = classify(snapshot)
     if self._requeued_instead_of_scored(
-      aid, task_id, tv.trial_id, to_state, snapshot, "ghosted"
+      aid, task_id, tv.instance_id, to_state, snapshot, "ghosted"
     ):
       return "requeued"
     await self._apply_terminal_transition(
       aid=aid,
       task_id=task_id,
-      trial_id=tv.trial_id,
+      instance_id=tv.instance_id,
       from_state="ghosted",
       to_state=to_state,
       snapshot=snapshot,
@@ -745,39 +747,39 @@ class DispatcherRuntime:
     return to_state
 
   async def _resolve_unknown_one(
-    self, aid: str, task_id: str, tv: TrialView
+    self, aid: str, task_id: str, tv: InstanceView
   ) -> str:
-    state = self._sched.attempt_state(aid)
+    state = self._sched.job_state(aid)
     # Cheap NFS look first — catches lag tails past the die
     # handler's retry window. Busted: at 30s cadence the
     # directory cache can still be live (acdirmax up to 60s).
     snapshot = await asyncio.to_thread(
       self._poll_busted,
-      trial_home_for(state.home_root, tv.trial_id),
+      instance_home_for(state.home_root, tv.instance_id),
     )
     if snapshot is not None:
       to_state = classify(snapshot)
       if self._requeued_instead_of_scored(
-        aid, task_id, tv.trial_id, to_state, snapshot, "unknown"
+        aid, task_id, tv.instance_id, to_state, snapshot, "unknown"
       ):
         return "requeued"
       await self._apply_terminal_transition(
         aid=aid,
         task_id=task_id,
-        trial_id=tv.trial_id,
+        instance_id=tv.instance_id,
         from_state="unknown",
         to_state=to_state,
         snapshot=snapshot,
       )
       return to_state
-    status = await probe_trial(
-      tv.host, tv.trial_id, self_host=self._self_host
+    status = await probe_instance(
+      tv.host, tv.instance_id, self_host=self._self_host
     )
     # gone/exited/dead/created: no more output is coming from the
     # container (docker never auto-transitions out of these), so
     # waiting longer in unknown buys nothing.
     if status in ("gone", "exited", "dead", "created"):
-      exit_code = self._last_exit.get((aid, tv.trial_id))
+      exit_code = self._last_exit.get((aid, tv.instance_id))
       if (
         exit_code in INFRA_EXIT_CODES
         and self._sched.requeue_after_infra_failure(
@@ -787,21 +789,21 @@ class DispatcherRuntime:
         # Host-killed (137/143), worker-stated tempfail (75), or
         # ssh-shaped death (255) with no envelope — run it again
         # rather than ghosting a machine failure.
-        self._last_exit.pop((aid, tv.trial_id), None)
+        self._last_exit.pop((aid, tv.instance_id), None)
         logger.warning(
-          "requeued infra exit %s: attempt=%s task=%s trial=%s",
+          "requeued infra exit %s: job=%s task=%s instance=%s",
           exit_code,
           aid,
           task_id,
-          tv.trial_id,
+          tv.instance_id,
         )
         if self._event_bus is not None:
           self._event_bus.publish(
-            "trial_requeued",
+            "instance_requeued",
             {
-              "attempt_id": aid,
+              "job_id": aid,
               "task_id": task_id,
-              "trial_id": tv.trial_id,
+              "instance_id": tv.instance_id,
               "from_state": "unknown",
             },
           )
@@ -809,15 +811,15 @@ class DispatcherRuntime:
       await self._apply_terminal_transition(
         aid=aid,
         task_id=task_id,
-        trial_id=tv.trial_id,
+        instance_id=tv.instance_id,
         from_state="unknown",
         to_state="ghosted",
         snapshot=None,
       )
       return "ghosted"
     if status == "running":
-      self._sched.transition_trial(
-        attempt_id=aid,
+      self._sched.transition_instance(
+        job_id=aid,
         task_id=task_id,
         from_state="unknown",
         to_state="running",
@@ -827,11 +829,11 @@ class DispatcherRuntime:
       # runs the normal completion path.
       if self._event_bus is not None:
         self._event_bus.publish(
-          "trial_reclassified",
+          "instance_reclassified",
           {
-            "attempt_id": aid,
+            "job_id": aid,
             "task_id": task_id,
-            "trial_id": tv.trial_id,
+            "instance_id": tv.instance_id,
             "from_state": "unknown",
             "to_state": "running",
           },
@@ -843,8 +845,8 @@ class DispatcherRuntime:
 
   # ── remote kill (cancel / reclaim) ─────────────────────────
 
-  def fire_kill_trials(self, running: dict[str, TrialView]) -> None:
-    """Fire-and-forget `docker rm -f` of each trial's container
+  def fire_kill_instances(self, running: dict[str, InstanceView]) -> None:
+    """Fire-and-forget `docker rm -f` of each instance's container
     set. A lingering container is a leak the GC sweeps up, not a
     correctness problem."""
     import shlex as _shlex
@@ -853,7 +855,7 @@ class DispatcherRuntime:
     for tv in running.values():
       inner = (
         "ids=$(docker ps -aq --filter "
-        + _shlex.quote(f"label={labels.SET}={tv.trial_id}")
+        + _shlex.quote(f"label={labels.SET}={tv.instance_id}")
         + '); [ -n "$ids" ] && docker rm -f $ids '
         "> /dev/null 2>&1; true"
       )

@@ -1,4 +1,4 @@
-"""Startup restore: rebuild every live attempt from its event
+"""Startup restore: rebuild every live job from its event
 log + on-disk outcomes."""
 
 from __future__ import annotations
@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from dispatcher.api.wire import full_attempt_view
+from dispatcher.api.wire import full_job_view
 from dispatcher.core.event_log import (
   ReplayError,
   append_event,
@@ -14,9 +14,9 @@ from dispatcher.core.event_log import (
   read_events,
   replay_events,
   scan_outcomes,
-  seq_in_trial_id,
+  seq_in_instance_id,
 )
-from dispatcher.core.models import TrialView
+from dispatcher.core.models import InstanceView
 from dispatcher.core.outcome import CompletionSnapshot
 from dispatcher.core.scheduler import (
   AliasCollisionError,
@@ -32,12 +32,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def restore_attempts_from_disk(
+def restore_jobs_from_disk(
   scheduler: Scheduler, metrics: MetricsCache, data_dir: Path
 ) -> int:
-  """Rebuild every live attempt from its event log + on-disk
-  outcomes. Malformed logs are skipped (one corrupt attempt must
-  not block startup). Returns the highest trial-id counter seen
+  """Rebuild every live job from its event log + on-disk
+  outcomes. Malformed logs are skipped (one corrupt job must
+  not block startup). Returns the highest instance-id counter seen
   so the namer never re-mints a used name."""
   max_seq = 0
   for log_path in find_event_logs(data_dir):
@@ -55,43 +55,43 @@ def restore_attempts_from_disk(
       continue
     if result is None:
       continue  # cancelled — log stays as audit trail
-    attempt, dispatch_log = result
-    completed = scan_outcomes(attempt.home_root)
-    done_ok: dict[str, TrialView] = {}
-    done_err: dict[str, TrialView] = {}
-    unknown: dict[str, TrialView] = {}
+    job, dispatch_log = result
+    completed = scan_outcomes(job.home_root)
+    done_ok: dict[str, InstanceView] = {}
+    done_err: dict[str, InstanceView] = {}
+    unknown: dict[str, InstanceView] = {}
     # A task can carry several dispatches (infra requeue appends
     # without erasing). Later dispatches supersede earlier ones —
     # counting both would put one task in two buckets at once.
-    latest_trial: dict[str, str] = {}
+    latest_instance: dict[str, str] = {}
     for entry in dispatch_log:
       # Counter first, before any continue: a name handed out is
       # a name taken.
-      max_seq = max(max_seq, seq_in_trial_id(entry.trial_id))
-      if entry.attempt_id != attempt.attempt_id:
+      max_seq = max(max_seq, seq_in_instance_id(entry.instance_id))
+      if entry.job_id != job.job_id:
         continue
       done_ok.pop(entry.task_id, None)
       done_err.pop(entry.task_id, None)
       unknown.pop(entry.task_id, None)
-      latest_trial[entry.task_id] = entry.trial_id
-      outcome = completed.get(entry.trial_id)
+      latest_instance[entry.task_id] = entry.instance_id
+      outcome = completed.get(entry.instance_id)
       if outcome is not None:
         error_present = (not outcome.ok) or outcome.error is not None
         if error_present and outcome.infra:
-          # The same requeue rule the live path applies — a trial
+          # The same requeue rule the live path applies — an instance
           # that completed during the shutdown window must not be
           # frozen as done_err while its in-flight cohort gets
           # requeued. Not bucketing routes it to pending.
           logger.warning(
-            "restore: requeueing infra failure attempt=%s task=%s",
-            attempt.attempt_id,
+            "restore: requeueing infra failure job=%s task=%s",
+            job.job_id,
             entry.task_id,
           )
           continue
-        tv = TrialView(
+        tv = InstanceView(
           task_id=entry.task_id,
           state="done_err" if error_present else "done_ok",
-          trial_id=entry.trial_id,
+          instance_id=entry.instance_id,
           host=entry.host,
           dispatched_at=entry.dispatched_at,
         )
@@ -100,17 +100,17 @@ def restore_attempts_from_disk(
         # Dispatched, no readable outcome — could be running,
         # crashed, or NFS-lagged. Park in unknown; the startup
         # resolver reclassifies on evidence.
-        unknown[entry.task_id] = TrialView(
+        unknown[entry.task_id] = InstanceView(
           task_id=entry.task_id,
           state="unknown",
-          trial_id=entry.trial_id,
+          instance_id=entry.instance_id,
           host=entry.host,
           dispatched_at=entry.dispatched_at,
         )
-    needs_alias_backfill = not attempt.alias
+    needs_alias_backfill = not job.alias
     try:
       scheduler.restore(
-        attempt,
+        job,
         running={},
         done_ok=done_ok,
         done_err=done_err,
@@ -118,8 +118,8 @@ def restore_attempts_from_disk(
       )
     except (ValueError, AliasCollisionError) as exc:
       logger.warning(
-        "restore: attempt %s not restored (%s)",
-        attempt.attempt_id,
+        "restore: job %s not restored (%s)",
+        job.job_id,
         exc,
       )
       continue
@@ -129,32 +129,34 @@ def restore_attempts_from_disk(
           log_path,
           {
             "type": "patch",
-            "attempt_id": attempt.attempt_id,
-            "at": attempt.submitted_at.isoformat(),
-            "alias": attempt.alias,
+            "job_id": job.job_id,
+            "at": job.submitted_at.isoformat(),
+            "alias": job.alias,
           },
         )
       except OSError as exc:
         logger.warning(
           "restore: alias backfill failed for %s: %s",
-          attempt.attempt_id,
+          job.job_id,
           exc,
         )
-    # Seed caches from the LATEST trial of each task only — a
-    # superseded (requeued) trial's outcome must not win, and
+    # Seed caches from the LATEST instance of each task only — a
+    # superseded (requeued) instance's outcome must not win, and
     # must not double-count in metrics.
-    trial_to_task = {trial: task for task, trial in latest_trial.items()}
-    for trial_id, outcome in completed.items():
-      task_id = trial_to_task.get(trial_id)
+    instance_to_task = {
+      instance: task for task, instance in latest_instance.items()
+    }
+    for instance_id, outcome in completed.items():
+      task_id = instance_to_task.get(instance_id)
       if task_id is None:
         continue
       # Skip outcomes routed back to pending by the infra rule.
       if task_id not in done_ok and task_id not in done_err:
         continue
-      scheduler.seed_outcome(attempt.attempt_id, task_id, outcome)
+      scheduler.seed_outcome(job.job_id, task_id, outcome)
       error_present = (not outcome.ok) or outcome.error is not None
       metrics.record_completion(
-        attempt.attempt_id,
+        job.job_id,
         CompletionSnapshot(
           outcome_exists=True,
           error_present=error_present,
@@ -169,24 +171,24 @@ def restore_attempts_from_disk(
     # Re-archive: replay left the marks set; buckets + caches are
     # rebuilt, so the bytes regenerate. A precondition failure
     # (something reclassified to unknown) leaves it live.
-    if attempt.archived_at is not None:
+    if job.archived_at is not None:
       try:
-        view = full_attempt_view(scheduler, attempt.attempt_id)
-        scheduler.archive_attempt(
-          attempt.attempt_id,
-          at=attempt.archived_at,
-          kind=attempt.archive_kind or "manual",
+        view = full_job_view(scheduler, job.job_id)
+        scheduler.archive_job(
+          job.job_id,
+          at=job.archived_at,
+          kind=job.archive_kind or "manual",
           payload_bytes=view.model_dump_json().encode("utf-8"),
         )
       except NotArchivableError as exc:
         logger.warning(
           "restore: cannot re-archive %s: %s (leaving live)",
-          attempt.attempt_id,
+          job.job_id,
           exc.reason,
         )
       except Exception:
         logger.exception(
           "restore: archive rehydrate failed for %s",
-          attempt.attempt_id,
+          job.job_id,
         )
   return max_seq

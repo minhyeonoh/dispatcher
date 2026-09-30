@@ -5,15 +5,15 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from dispatcher.core.outcome import read_completion, trial_home_for
+from dispatcher.core.outcome import instance_home_for, read_completion
 
 if TYPE_CHECKING:
   from pathlib import Path
 
 
-def write_outcome(trial_home: Path, payload: dict) -> None:
-  trial_home.mkdir(parents=True, exist_ok=True)
-  (trial_home / "outcome.json").write_text(json.dumps(payload))
+def write_outcome(instance_home: Path, payload: dict) -> None:
+  instance_home.mkdir(parents=True, exist_ok=True)
+  (instance_home / "outcome.json").write_text(json.dumps(payload))
 
 
 def test_no_outcome_returns_none(tmp_path: Path):
@@ -21,7 +21,7 @@ def test_no_outcome_returns_none(tmp_path: Path):
   assert read_completion(tmp_path / "t") is None
 
 
-def test_missing_trial_dir_returns_none(tmp_path: Path):
+def test_missing_instance_dir_returns_none(tmp_path: Path):
   assert read_completion(tmp_path / "nope") is None
 
 
@@ -123,7 +123,7 @@ def test_opaque_data_passthrough(tmp_path: Path):
   assert snap.outcome.data == {"anything": [1, 2, {"x": None}]}
 
 
-def test_trial_home_for_composition(tmp_path: Path):
+def test_instance_home_for_composition(tmp_path: Path):
   assert (
-    trial_home_for(tmp_path, "t1__0000001") == tmp_path / "t1__0000001"
+    instance_home_for(tmp_path, "t1__0000001") == tmp_path / "t1__0000001"
   )

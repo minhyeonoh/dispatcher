@@ -17,7 +17,7 @@ from dispatcher.core.containers import (
   container_labels,
   iter_lines,
   parse_created,
-  probe_trial,
+  probe_instance,
 )
 
 if TYPE_CHECKING:
@@ -31,14 +31,14 @@ def test_container_labels_is_a_real_dict():
   row = {
     "Config": {
       "Labels": {
-        "dispatcher.trial": "t1__0000001",
+        "dispatcher.instance": "t1__0000001",
         # A foreign label whose VALUE embeds our key=value shape
         # — poisonous to comma-string parsing, inert on a dict.
         "foreign": "x,dispatcher.set=evil",
       }
     }
   }
-  assert container_labels(row)["dispatcher.trial"] == "t1__0000001"
+  assert container_labels(row)["dispatcher.instance"] == "t1__0000001"
   assert "dispatcher.set" not in container_labels(row)
 
 
@@ -49,8 +49,12 @@ def test_container_labels_missing_or_null():
 
 
 def test_container_labels_preserves_case():
-  row = {"Config": {"Labels": {"dispatcher.set": "trial_T2019__0000001"}}}
-  assert container_labels(row)["dispatcher.set"] == "trial_T2019__0000001"
+  row = {
+    "Config": {"Labels": {"dispatcher.set": "instance_T2019__0000001"}}
+  }
+  assert (
+    container_labels(row)["dispatcher.set"] == "instance_T2019__0000001"
+  )
 
 
 def test_parse_created_nanoseconds_z():
@@ -187,7 +191,7 @@ def test_stream_dispatches_events_and_advances_ack(tmp_path: Path):
         {
           "Actor": {
             "Attributes": {
-              labels.TRIAL: "task1__0000001",
+              labels.INSTANCE: "task1__0000001",
               "exitCode": "0",
             }
           },
@@ -198,7 +202,7 @@ def test_stream_dispatches_events_and_advances_ack(tmp_path: Path):
         {
           "Actor": {
             "Attributes": {
-              labels.TRIAL: "task2__0000002",
+              labels.INSTANCE: "task2__0000002",
               "exitCode": "137",
             }
           },
@@ -286,7 +290,9 @@ def test_probe_gone_when_no_records(monkeypatch):
     return _R()
 
   monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
-  status = asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))
+  status = asyncio.run(
+    probe_instance("ml9", "t1__0000001", self_host="ml10")
+  )
   assert status == "gone"
 
 
@@ -300,7 +306,9 @@ def test_probe_running_wins_over_exited(monkeypatch):
     return _R()
 
   monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
-  status = asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))
+  status = asyncio.run(
+    probe_instance("ml9", "t1__0000001", self_host="ml10")
+  )
   assert status == "running"
 
 
@@ -318,17 +326,17 @@ def test_probe_queries_by_label_with_verbatim_case(monkeypatch):
 
   monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
   asyncio.run(
-    probe_trial(
+    probe_instance(
       "ml9",
-      "trial_T20190907_004351__0081119",
+      "instance_T20190907_004351__0081119",
       self_host="ml10",
     )
   )
-  # Labels pass the trial name through verbatim — no lowercasing,
+  # Labels pass the instance name through verbatim — no lowercasing,
   # no name conventions — and the state comes from inspect, not
   # from human-oriented ps output.
-  assert "trial_T20190907_004351__0081119" in seen[0]
-  assert labels.TRIAL in seen[0]
+  assert "instance_T20190907_004351__0081119" in seen[0]
+  assert labels.INSTANCE in seen[0]
   assert "docker inspect" in seen[0]
 
 
@@ -345,4 +353,4 @@ def test_probe_raises_on_docker_failure(monkeypatch):
 
   monkeypatch.setattr("dispatcher.core.containers.run_on", fake_run_on)
   with pytest.raises(RuntimeError, match="docker probe"):
-    asyncio.run(probe_trial("ml9", "t1__0000001", self_host="ml10"))
+    asyncio.run(probe_instance("ml9", "t1__0000001", self_host="ml10"))

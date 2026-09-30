@@ -44,13 +44,13 @@ def _request(
     raise ClientError(exc.code, body) from exc
 
 
-def submit_attempt(server: str, payload: dict[str, Any]) -> dict[str, Any]:
-  """POST /attempts. Required payload keys: label, task_ids,
-  home_root (absolute, unique per attempt), container ({image,
+def submit_job(server: str, payload: dict[str, Any]) -> dict[str, Any]:
+  """POST /jobs. Required payload keys: label, task_ids,
+  home_root (absolute, unique per job), container ({image,
   command, env, mounts, home_mount, extra_args}). Optional:
   payloads (per-task, keys ⊆ task_ids), env, pool, tags, scope,
   paused, weight, max_concurrent, pause_on_error, alias."""
-  return _request(server, "POST", "/attempts", payload)
+  return _request(server, "POST", "/jobs", payload)
 
 
 def get_state(server: str) -> dict[str, Any]:
@@ -61,7 +61,7 @@ def get_monitor(server: str) -> dict[str, Any]:
   return _request(server, "GET", "/monitor")
 
 
-def list_attempts(
+def list_jobs(
   server: str, *, full: bool = False, scope: str = ""
 ) -> list[dict[str, Any]]:
   qs = []
@@ -69,50 +69,50 @@ def list_attempts(
     qs.append("full=1")
   if scope:
     qs.append(f"scope={scope}")
-  path = "/attempts" + ("?" + "&".join(qs) if qs else "")
+  path = "/jobs" + ("?" + "&".join(qs) if qs else "")
   return _request(server, "GET", path)
 
 
-def get_attempt(server: str, attempt_id: str) -> dict[str, Any]:
-  return _request(server, "GET", f"/attempts/{attempt_id}")
+def get_job(server: str, job_id: str) -> dict[str, Any]:
+  return _request(server, "GET", f"/jobs/{job_id}")
 
 
-def patch_attempt(
-  server: str, attempt_id: str, knobs: dict[str, Any]
+def patch_job(
+  server: str, job_id: str, knobs: dict[str, Any]
 ) -> dict[str, Any]:
-  return _request(server, "PATCH", f"/attempts/{attempt_id}", knobs)
+  return _request(server, "PATCH", f"/jobs/{job_id}", knobs)
 
 
-def cancel_attempt(server: str, attempt_id: str) -> dict[str, Any]:
-  return _request(server, "DELETE", f"/attempts/{attempt_id}")
+def cancel_job(server: str, job_id: str) -> dict[str, Any]:
+  return _request(server, "DELETE", f"/jobs/{job_id}")
 
 
-def reclaim_attempt(server: str, attempt_id: str) -> dict[str, Any]:
-  return _request(server, "POST", f"/attempts/{attempt_id}/reclaim", {})
+def reclaim_job(server: str, job_id: str) -> dict[str, Any]:
+  return _request(server, "POST", f"/jobs/{job_id}/reclaim", {})
 
 
-def reclaim_trial(
-  server: str, attempt_id: str, trial_id: str
+def reclaim_instance(
+  server: str, job_id: str, instance_id: str
 ) -> dict[str, Any]:
-  """Kill one running trial; its task re-queues with a fresh
-  trial. No pause needed."""
+  """Kill one running instance; its task re-queues with a fresh
+  instance. No pause needed."""
   return _request(
     server,
     "POST",
-    f"/attempts/{attempt_id}/trials/{trial_id}/reclaim",
+    f"/jobs/{job_id}/instances/{instance_id}/reclaim",
     {},
   )
 
 
 def retry_done_err(
   server: str,
-  attempt_id: str,
+  job_id: str,
   body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   return _request(
     server,
     "POST",
-    f"/attempts/{attempt_id}/retry-done-err",
+    f"/jobs/{job_id}/retry-done-err",
     body or {},
   )
 

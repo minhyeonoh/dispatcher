@@ -1,6 +1,6 @@
-"""Periodic weight rebalancer: boost the top-N attempts by a
+"""Periodic weight rebalancer: boost the top-N jobs by a
 chosen outcome metric, reset everyone else to weight=1. Paused
-and drained attempts are excluded (nothing left to boost).
+and drained jobs are excluded (nothing left to boost).
 Weight only — never touches paused / caps.
 
 Run via `dispatcher weight-tuner --server … --metric reward`.
@@ -28,12 +28,12 @@ def plan_weights(
   boosted_weight: int,
   base_weight: int = 1,
 ) -> dict[str, int]:
-  """Target weights for every non-paused, non-drained attempt.
-  Rank by (metric mean desc, ok desc); attempts with no value for
+  """Target weights for every non-paused, non-drained job.
+  Rank by (metric mean desc, ok desc); jobs with no value for
   the metric can't be ranked and stay at base."""
   ranked: list[tuple[float, int, str]] = []
   unranked: list[str] = []
-  for a in monitor.get("attempts", []):
+  for a in monitor.get("jobs", []):
     if a.get("paused"):
       continue
     c = a.get("counts") or {}
@@ -42,9 +42,9 @@ def plan_weights(
     m = a.get("metrics") or {}
     mean = (m.get("means") or {}).get(metric)
     if mean is None:
-      unranked.append(a["attempt_id"])
+      unranked.append(a["job_id"])
       continue
-    ranked.append((float(mean), int(m.get("ok", 0)), a["attempt_id"]))
+    ranked.append((float(mean), int(m.get("ok", 0)), a["job_id"]))
   ranked.sort(key=lambda r: (-r[0], -r[1]))
   targets: dict[str, int] = {aid: base_weight for _, _, aid in ranked}
   for _, _, aid in ranked[:top_n]:
@@ -59,15 +59,15 @@ def apply_weights(
   targets: dict[str, int],
   current_weights: dict[str, int],
 ) -> list[tuple[str, int, int]]:
-  """PATCH only where the weight differs; per-attempt errors are
-  logged and skipped so one stale attempt doesn't stop the pass."""
+  """PATCH only where the weight differs; per-job errors are
+  logged and skipped so one stale job doesn't stop the pass."""
   applied: list[tuple[str, int, int]] = []
   for aid, target in targets.items():
     old = current_weights.get(aid)
     if old == target:
       continue
     try:
-      sdk_client.patch_attempt(server, aid, {"weight": target})
+      sdk_client.patch_job(server, aid, {"weight": target})
       applied.append((aid, old if old is not None else -1, target))
     except sdk_client.ClientError as exc:
       logger.warning("patch %s weight=%d failed: %s", aid, target, exc)
@@ -75,9 +75,7 @@ def apply_weights(
 
 
 def _current_weights(monitor: dict[str, Any]) -> dict[str, int]:
-  return {
-    a["attempt_id"]: int(a["weight"]) for a in monitor.get("attempts", [])
-  }
+  return {a["job_id"]: int(a["weight"]) for a in monitor.get("jobs", [])}
 
 
 def tick(
@@ -101,8 +99,7 @@ def tick(
 def main(argv: list[str] | None = None) -> int:
   ap = argparse.ArgumentParser(
     description=(
-      "boost the top-N attempts by an outcome metric; others "
-      "stay at weight=1"
+      "boost the top-N jobs by an outcome metric; others stay at weight=1"
     )
   )
   ap.add_argument("--server", default="http://127.0.0.1:7200")

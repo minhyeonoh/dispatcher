@@ -1,16 +1,16 @@
-"""Per-attempt event log: append-only jsonl, replayed at startup.
+"""Per-job event log: append-only jsonl, replayed at startup.
 
 Event types:
-- `submit`         — first event; AttemptState fields verbatim.
+- `submit`         — first event; JobState fields verbatim.
 - `patch`          — knob mutation, last-wins per field.
 - `dispatch`       — appends a DispatchEntry.
 - `pause_on_error` — automatic pause record; sets paused=True.
-- `unknown`        — audit breadcrumb (trial ended, no outcome);
+- `unknown`        — audit breadcrumb (instance ended, no outcome);
                      replay ignores it — restore re-derives the
                      bucket from disk.
 - `reclaim`/`retry`— operator retraction; erases the NAMED
                      dispatch from the log so restore sees the
-                     task as pending. Matching is by trial_id:
+                     task as pending. Matching is by instance_id:
                      an infra requeue leaves two dispatches for
                      one task, and erasing "the last one for the
                      task" once deleted a successful retry while
@@ -18,7 +18,7 @@ Event types:
 - `notify_fired`   — threshold bookkeeping.
 - `archive` / `unarchive` — archive marks.
 - `cancel`         — replay short-circuits to None; restore skips
-                     the attempt (log stays as audit trail).
+                     the job (log stays as audit trail).
 """
 
 from __future__ import annotations
@@ -31,18 +31,18 @@ from typing import Any
 
 from dispatcher.core.models import (
   OUTCOME_FILENAME,
-  AttemptState,
   DispatchEntry,
+  JobState,
   Outcome,
 )
 
 RUN_LOG_FILENAME = ".dispatcher-state.jsonl"
-INDEX_FILENAME = "attempts-index.jsonl"
+INDEX_FILENAME = "jobs-index.jsonl"
 
 
 class ReplayError(Exception):
   """Malformed event stream (empty, missing submit, unknown type,
-  attempt_id mismatch, bad record)."""
+  job_id mismatch, bad record)."""
 
 
 _KNOB_FIELDS = (
@@ -58,8 +58,8 @@ _KNOB_FIELDS = (
 
 def replay_events(
   events: list[dict[str, Any]],
-) -> tuple[AttemptState, list[DispatchEntry]] | None:
-  """Fold one attempt's event stream into (AttemptState,
+) -> tuple[JobState, list[DispatchEntry]] | None:
+  """Fold one job's event stream into (JobState,
   dispatch log). Returns None when the stream contains `cancel`."""
   if not events:
     raise ReplayError("empty event stream")
@@ -77,10 +77,10 @@ def replay_events(
     typ = ev.get("type")
     if typ is None:
       raise ReplayError(f"event {i}: missing 'type'")
-    if ev.get("attempt_id") != state.attempt_id:
+    if ev.get("job_id") != state.job_id:
       raise ReplayError(
-        f"event {i}: attempt_id mismatch "
-        f"({ev.get('attempt_id')!r} vs {state.attempt_id!r})"
+        f"event {i}: job_id mismatch "
+        f"({ev.get('job_id')!r} vs {state.job_id!r})"
       )
 
     if typ == "submit":
@@ -115,20 +115,20 @@ def replay_events(
   return state, log
 
 
-def _apply_submit(ev: dict[str, Any]) -> AttemptState:
+def _apply_submit(ev: dict[str, Any]) -> JobState:
   payload = {k: v for k, v in ev.items() if k not in ("type", "at")}
   try:
-    return AttemptState.model_validate(payload)
+    return JobState.model_validate(payload)
   except Exception as e:
     raise ReplayError(f"submit invalid: {e}") from e
 
 
 def _apply_patch(
-  state: AttemptState, ev: dict[str, Any], *, event_index: int
+  state: JobState, ev: dict[str, Any], *, event_index: int
 ) -> None:
   touched = 0
   for key, value in ev.items():
-    if key in ("type", "attempt_id", "at"):
+    if key in ("type", "job_id", "at"):
       continue
     if key not in _KNOB_FIELDS:
       raise ReplayError(
@@ -143,7 +143,7 @@ def _apply_patch(
 
 
 def _apply_archive(
-  state: AttemptState, ev: dict[str, Any], *, event_index: int
+  state: JobState, ev: dict[str, Any], *, event_index: int
 ) -> None:
   at = ev.get("at")
   kind = ev.get("kind", "manual")
@@ -179,15 +179,15 @@ def _erase_dispatch(
   task_id = ev.get("task_id")
   if task_id is None:
     raise ReplayError(f"event {event_index}: {kind} missing 'task_id'")
-  trial_id = ev.get("trial_id")
-  if trial_id is None:
-    raise ReplayError(f"event {event_index}: {kind} missing 'trial_id'")
-  # A trial_id matching nothing erases nothing: the dispatch it
+  instance_id = ev.get("instance_id")
+  if instance_id is None:
+    raise ReplayError(f"event {event_index}: {kind} missing 'instance_id'")
+  # An instance_id matching nothing erases nothing: the dispatch it
   # names is already gone from the log.
   for j in range(len(log) - 1, -1, -1):
     if log[j].task_id != task_id:
       continue
-    if log[j].trial_id != trial_id:
+    if log[j].instance_id != instance_id:
       continue
     del log[j]
     return
@@ -210,9 +210,9 @@ def _parse_dispatch(
 # ── persistence ──────────────────────────────────────────────────
 
 
-def event_log_path_for(state: AttemptState) -> Path:
-  """The attempt's on-disk log — inside its home_root so the log
-  rides with the attempt's artifacts."""
+def event_log_path_for(state: JobState) -> Path:
+  """The job's on-disk log — inside its home_root so the log
+  rides with the job's artifacts."""
   return state.home_root / RUN_LOG_FILENAME
 
 
@@ -272,7 +272,7 @@ def read_events(log_path: Path) -> list[dict[str, Any]]:
 
 
 def index_path(data_dir: Path) -> Path:
-  """Append-only index of submitted/cancelled attempts. Startup
+  """Append-only index of submitted/cancelled jobs. Startup
   reads this instead of walking the filesystem — home roots live
   on NFS where a tree walk over years of artifacts stalls for
   minutes."""
@@ -287,7 +287,7 @@ def append_index_entry(data_dir: Path, entry: dict[str, Any]) -> None:
 
 
 def find_event_logs(data_dir: Path) -> list[Path]:
-  """Log paths of every submitted-and-not-cancelled attempt, in
+  """Log paths of every submitted-and-not-cancelled job, in
   deterministic (sorted) order. Malformed index lines are
   skipped."""
   index = index_path(data_dir)
@@ -302,7 +302,7 @@ def find_event_logs(data_dir: Path) -> list[Path]:
       entry = json.loads(line)
     except json.JSONDecodeError:
       continue
-    aid = entry.get("attempt_id")
+    aid = entry.get("job_id")
     if not isinstance(aid, str):
       continue
     event = entry.get("event")
@@ -318,21 +318,21 @@ def find_event_logs(data_dir: Path) -> list[Path]:
 
 
 def scan_outcomes(home_root: Path) -> dict[str, Outcome]:
-  """`{trial_id: Outcome}` for every trial dir under an attempt
+  """`{instance_id: Outcome}` for every instance dir under a job
   with a parseable outcome.json. Missing / malformed files are
   omitted — same non-answer as the live poll, so restore and the
   resolver classify them identically (unknown)."""
   out: dict[str, Outcome] = {}
   if not home_root.is_dir():
     return out
-  for trial_dir in home_root.iterdir():
-    if not trial_dir.is_dir() or trial_dir.name.startswith("."):
+  for instance_dir in home_root.iterdir():
+    if not instance_dir.is_dir() or instance_dir.name.startswith("."):
       continue
-    path = trial_dir / OUTCOME_FILENAME
+    path = instance_dir / OUTCOME_FILENAME
     if not path.is_file():
       continue
     try:
-      out[trial_dir.name] = Outcome.model_validate_json(
+      out[instance_dir.name] = Outcome.model_validate_json(
         path.read_text(encoding="utf-8")
       )
     except Exception:
@@ -340,13 +340,13 @@ def scan_outcomes(home_root: Path) -> dict[str, Outcome]:
   return out
 
 
-def seq_in_trial_id(trial_id: str) -> int:
-  """The monotonic counter a dispatcher-minted trial name carries
+def seq_in_instance_id(instance_id: str) -> int:
+  """The monotonic counter a dispatcher-minted instance name carries
   (`<task>__<seq>`), or 0 for foreign names. Restore feeds the max
   into the namer so a restart never re-mints a name that already
-  owns a trial dir — the old dir's outcome would be read as the
-  new trial's before it ran."""
-  _, separator, suffix = trial_id.rpartition("__")
+  owns an instance dir — the old dir's outcome would be read as the
+  new instance's before it ran."""
+  _, separator, suffix = instance_id.rpartition("__")
   if not separator or not suffix.isdigit():
     return 0
   return int(suffix)

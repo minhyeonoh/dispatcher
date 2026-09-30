@@ -1,4 +1,4 @@
-"""Incremental per-attempt aggregates over outcome `values`.
+"""Incremental per-job aggregates over outcome `values`.
 
 Fed by the runtime on every terminal observation, so read paths
 (`GET /monitor`, notify, weight tuner) never touch the
@@ -6,7 +6,7 @@ filesystem. The dispatcher doesn't know what any value means —
 it accumulates per-key sums/counts and serves means.
 
 Counting rules mirror the scheduler's evidence standard:
-- no outcome file → no contribution (the trial is `unknown`; a
+- no outcome file → no contribution (the instance is `unknown`; a
   resolver adds the contribution when evidence arrives, so `err`
   never inflates on NFS lag).
 - outcome with error → err++ only.
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
   from dispatcher.core.outcome import CompletionSnapshot
 
 
-class AttemptMetrics(BaseModel):
+class JobMetrics(BaseModel):
   ok: int = 0
   err: int = 0
   value_sums: dict[str, float] = Field(default_factory=dict)
@@ -33,7 +33,7 @@ class AttemptMetrics(BaseModel):
   @computed_field
   @property
   def means(self) -> dict[str, float]:
-    """Per-key mean over the ok trials that reported the key."""
+    """Per-key mean over the ok instances that reported the key."""
     return {
       k: self.value_sums[k] / n
       for k, n in self.value_counts.items()
@@ -54,14 +54,14 @@ class AttemptMetrics(BaseModel):
 
 @dataclass
 class MetricsCache:
-  _by_attempt: dict[str, AttemptMetrics] = field(default_factory=dict)
+  _by_job: dict[str, JobMetrics] = field(default_factory=dict)
 
   def record_completion(
-    self, attempt_id: str, snapshot: CompletionSnapshot
+    self, job_id: str, snapshot: CompletionSnapshot
   ) -> None:
     if not snapshot.outcome_exists:
       return
-    m = self._by_attempt.setdefault(attempt_id, AttemptMetrics())
+    m = self._by_job.setdefault(job_id, JobMetrics())
     if snapshot.error_present:
       m.err += 1
     else:
@@ -70,17 +70,17 @@ class MetricsCache:
 
   def reclassify_from_unknown(
     self,
-    attempt_id: str,
+    job_id: str,
     *,
     to_state: str,
     values: dict[str, float] | None,
   ) -> None:
     """Pure add — unknown never contributed."""
-    self._add_terminal(attempt_id, to_state, values)
+    self._add_terminal(job_id, to_state, values)
 
   def reclassify_from_ghosted(
     self,
-    attempt_id: str,
+    job_id: str,
     *,
     to_state: str,
     values: dict[str, float] | None,
@@ -90,25 +90,25 @@ class MetricsCache:
         f"reclassify_from_ghosted: to_state must be "
         f"done_ok/done_err, got {to_state!r}"
       )
-    self._add_terminal(attempt_id, to_state, values)
+    self._add_terminal(job_id, to_state, values)
 
-  def undo_done_err(self, attempt_id: str) -> None:
+  def undo_done_err(self, job_id: str) -> None:
     """Roll back one err++ for an operator retry. Floored at
     zero."""
-    m = self._by_attempt.get(attempt_id)
+    m = self._by_job.get(job_id)
     if m is None:
       return
     m.err = max(0, m.err - 1)
 
   def _add_terminal(
     self,
-    attempt_id: str,
+    job_id: str,
     to_state: str,
     values: dict[str, float] | None,
   ) -> None:
     if to_state not in ("done_ok", "done_err"):
       return
-    m = self._by_attempt.setdefault(attempt_id, AttemptMetrics())
+    m = self._by_job.setdefault(job_id, JobMetrics())
     if to_state == "done_err":
       m.err += 1
       return
@@ -116,17 +116,15 @@ class MetricsCache:
     self._fold_values(m, values)
 
   @staticmethod
-  def _fold_values(
-    m: AttemptMetrics, values: dict[str, float] | None
-  ) -> None:
+  def _fold_values(m: JobMetrics, values: dict[str, float] | None) -> None:
     for k, v in (values or {}).items():
       if isinstance(v, bool) or not isinstance(v, (int, float)):
         continue
       m.value_sums[k] = m.value_sums.get(k, 0.0) + float(v)
       m.value_counts[k] = m.value_counts.get(k, 0) + 1
 
-  def get(self, attempt_id: str) -> AttemptMetrics:
-    return self._by_attempt.get(attempt_id, AttemptMetrics())
+  def get(self, job_id: str) -> JobMetrics:
+    return self._by_job.get(job_id, JobMetrics())
 
-  def remove(self, attempt_id: str) -> None:
-    self._by_attempt.pop(attempt_id, None)
+  def remove(self, job_id: str) -> None:
+    self._by_job.pop(job_id, None)

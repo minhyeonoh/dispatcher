@@ -1,5 +1,5 @@
 """Event-log replay: fold submit/patch/dispatch/… into
-(AttemptState, dispatch log)."""
+(JobState, dispatch log)."""
 
 from __future__ import annotations
 
@@ -10,26 +10,26 @@ import pytest
 from dispatcher.core.event_log import ReplayError, replay_events
 
 
-def submit_event(attempt_id: str = "A", **extra: Any) -> dict:
+def submit_event(job_id: str = "A", **extra: Any) -> dict:
   return {
     "type": "submit",
-    "attempt_id": attempt_id,
-    "label": attempt_id,
+    "job_id": job_id,
+    "label": job_id,
     "task_ids": ["t1", "t2"],
-    "home_root": f"/data/{attempt_id}",
+    "home_root": f"/data/{job_id}",
     "container": {"image": "img"},
     "submitted_at": "2026-09-28T10:00:00+00:00",
-    "alias": f"alias-{attempt_id}",
+    "alias": f"alias-{job_id}",
     **extra,
   }
 
 
-def dispatch_event(task: str, trial: str, attempt_id: str = "A") -> dict:
+def dispatch_event(task: str, instance: str, job_id: str = "A") -> dict:
   return {
     "type": "dispatch",
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "task_id": task,
-    "trial_id": trial,
+    "instance_id": instance,
     "host": "ml10",
     "at": "2026-09-28T10:00:01+00:00",
   }
@@ -42,7 +42,7 @@ def test_submit_populates_immutable_fields():
   out = replay_events([submit_event()])
   assert out is not None
   state, log = out
-  assert state.attempt_id == "A"
+  assert state.job_id == "A"
   assert state.task_ids == ["t1", "t2"]
   assert str(state.home_root) == "/data/A"
   assert state.container.image == "img"
@@ -67,10 +67,10 @@ def test_submit_defaults_scheduler_knobs():
 # ── patch ────────────────────────────────────────────────────────
 
 
-def _patch(attempt_id: str = "A", **fields: Any) -> dict:
+def _patch(job_id: str = "A", **fields: Any) -> dict:
   return {
     "type": "patch",
-    "attempt_id": attempt_id,
+    "job_id": job_id,
     "at": "…",
     **fields,
   }
@@ -151,7 +151,7 @@ def test_patch_unknown_field_raises():
 
 def test_patch_without_mutations_raises():
   with pytest.raises(ReplayError, match="no field mutations"):
-    replay_events([submit_event(), {"type": "patch", "attempt_id": "A"}])
+    replay_events([submit_event(), {"type": "patch", "job_id": "A"}])
 
 
 # ── dispatch ─────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ def test_dispatch_events_appended_to_log():
   )
   assert out is not None
   _, log = out
-  assert [(e.task_id, e.trial_id) for e in log] == [
+  assert [(e.task_id, e.instance_id) for e in log] == [
     ("t1", "t1__0000001"),
     ("t2", "t2__0000002"),
   ]
@@ -185,7 +185,7 @@ def test_dispatch_preserves_order_across_patches():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_id for e in log] == ["n1", "n2"]
+  assert [e.instance_id for e in log] == ["n1", "n2"]
 
 
 def test_dispatch_missing_required_field_raises():
@@ -202,7 +202,7 @@ def test_pause_on_error_event_sets_paused_true():
   out = replay_events(
     [
       submit_event(),
-      {"type": "pause_on_error", "attempt_id": "A", "task_id": "t1"},
+      {"type": "pause_on_error", "job_id": "A", "task_id": "t1"},
     ]
   )
   assert out is not None
@@ -213,9 +213,9 @@ def test_pause_on_error_after_unpause_still_pauses():
   out = replay_events(
     [
       submit_event(),
-      {"type": "pause_on_error", "attempt_id": "A"},
+      {"type": "pause_on_error", "job_id": "A"},
       _patch(paused=False),
-      {"type": "pause_on_error", "attempt_id": "A"},
+      {"type": "pause_on_error", "job_id": "A"},
     ]
   )
   assert out is not None
@@ -237,17 +237,17 @@ def test_missing_submit_first_raises():
 
 def test_unknown_type_raises():
   with pytest.raises(ReplayError, match="unknown type"):
-    replay_events([submit_event(), {"type": "wat", "attempt_id": "A"}])
+    replay_events([submit_event(), {"type": "wat", "job_id": "A"}])
 
 
 def test_missing_type_raises():
   with pytest.raises(ReplayError, match="missing 'type'"):
-    replay_events([submit_event(), {"attempt_id": "A"}])
+    replay_events([submit_event(), {"job_id": "A"}])
 
 
-def test_attempt_id_mismatch_raises():
+def test_job_id_mismatch_raises():
   with pytest.raises(ReplayError, match="mismatch"):
-    replay_events([submit_event(), _patch(attempt_id="B", paused=True)])
+    replay_events([submit_event(), _patch(job_id="B", paused=True)])
 
 
 def test_second_submit_raises():
@@ -260,7 +260,7 @@ def test_second_submit_raises():
 
 def test_cancel_short_circuits_to_none():
   assert (
-    replay_events([submit_event(), {"type": "cancel", "attempt_id": "A"}])
+    replay_events([submit_event(), {"type": "cancel", "job_id": "A"}])
     is None
   )
 
@@ -268,14 +268,14 @@ def test_cancel_short_circuits_to_none():
 # ── reclaim / retry retraction ───────────────────────────────────
 
 
-def _retract(kind: str, task: str, trial: str | None) -> dict:
+def _retract(kind: str, task: str, instance: str | None) -> dict:
   ev: dict[str, Any] = {
     "type": kind,
-    "attempt_id": "A",
+    "job_id": "A",
     "task_id": task,
   }
-  if trial is not None:
-    ev["trial_id"] = trial
+  if instance is not None:
+    ev["instance_id"] = instance
   return ev
 
 
@@ -290,7 +290,7 @@ def test_reclaim_erases_matching_dispatch_entry():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_id for e in log] == ["n2"]
+  assert [e.instance_id for e in log] == ["n2"]
 
 
 def test_reclaim_then_redispatch_preserves_new_entry():
@@ -304,12 +304,12 @@ def test_reclaim_then_redispatch_preserves_new_entry():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_id for e in log] == ["n3"]
+  assert [e.instance_id for e in log] == ["n3"]
 
 
-def test_retry_erases_the_named_trial_not_the_last_one():
+def test_retry_erases_the_named_instance_not_the_last_one():
   # An infra requeue leaves TWO dispatches for one task. A retry
-  # aimed at the failed FIRST trial must erase that one, not the
+  # aimed at the failed FIRST instance must erase that one, not the
   # later (successful) dispatch.
   out = replay_events(
     [
@@ -321,10 +321,10 @@ def test_retry_erases_the_named_trial_not_the_last_one():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_id for e in log] == ["n2"]
+  assert [e.instance_id for e in log] == ["n2"]
 
 
-def test_retract_of_an_already_erased_trial_is_noop():
+def test_retract_of_an_already_erased_instance_is_noop():
   out = replay_events(
     [
       submit_event(),
@@ -348,7 +348,7 @@ def test_reclaim_of_never_dispatched_task_is_noop():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_id for e in log] == ["n1"]
+  assert [e.instance_id for e in log] == ["n1"]
 
 
 @pytest.mark.parametrize("kind", ["reclaim", "retry"])
@@ -358,22 +358,22 @@ def test_retract_missing_task_id_raises(kind: str):
       [
         submit_event(),
         dispatch_event("t1", "n1"),
-        {"type": kind, "attempt_id": "A", "trial_id": "n1"},
+        {"type": kind, "job_id": "A", "instance_id": "n1"},
       ]
     )
 
 
 @pytest.mark.parametrize("kind", ["reclaim", "retry"])
-def test_retract_missing_trial_id_raises(kind: str):
+def test_retract_missing_instance_id_raises(kind: str):
   # No legacy last-by-task fallback in this repo: erasing "the
-  # last dispatch for the task" deletes the wrong trial once a
+  # last dispatch for the task" deletes the wrong instance once a
   # requeue has appended a second dispatch.
-  with pytest.raises(ReplayError, match="missing 'trial_id'"):
+  with pytest.raises(ReplayError, match="missing 'instance_id'"):
     replay_events(
       [
         submit_event(),
         dispatch_event("t1", "n1"),
-        {"type": kind, "attempt_id": "A", "task_id": "t1"},
+        {"type": kind, "job_id": "A", "task_id": "t1"},
       ]
     )
 
@@ -384,7 +384,7 @@ def test_retract_missing_trial_id_raises(kind: str):
 def _fired(threshold: object) -> dict:
   return {
     "type": "notify_fired",
-    "attempt_id": "A",
+    "job_id": "A",
     "threshold": threshold,
   }
 
@@ -416,7 +416,7 @@ def test_archive_stamps_marks():
       submit_event(),
       {
         "type": "archive",
-        "attempt_id": "A",
+        "job_id": "A",
         "kind": "auto",
         "at": "2026-09-28T12:00:00+00:00",
       },
@@ -434,11 +434,11 @@ def test_unarchive_clears_marks():
       submit_event(),
       {
         "type": "archive",
-        "attempt_id": "A",
+        "job_id": "A",
         "kind": "manual",
         "at": "2026-09-28T12:00:00+00:00",
       },
-      {"type": "unarchive", "attempt_id": "A"},
+      {"type": "unarchive", "job_id": "A"},
     ]
   )
   assert out is not None
@@ -454,7 +454,7 @@ def test_archive_bad_kind_raises():
         submit_event(),
         {
           "type": "archive",
-          "attempt_id": "A",
+          "job_id": "A",
           "kind": "weird",
           "at": "2026-09-28T12:00:00+00:00",
         },
@@ -469,7 +469,7 @@ def test_archive_bad_timestamp_raises():
         submit_event(),
         {
           "type": "archive",
-          "attempt_id": "A",
+          "job_id": "A",
           "kind": "manual",
           "at": "yesterday",
         },

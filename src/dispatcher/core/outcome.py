@@ -1,4 +1,4 @@
-"""Terminal-signal reading: `<trial_home>/outcome.json`.
+"""Terminal-signal reading: `<instance_home>/outcome.json`.
 
 Missing file and malformed JSON both return None — "no scoreable
 signal" — so every caller routes them to `unknown` uniformly and
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class CompletionSnapshot:
-  """What one look at a trial's terminal state produced.
+  """What one look at an instance's terminal state produced.
 
   `exit_code` is the main container's exit status when the caller
   learned it from docker (die event / census); None when the only
@@ -32,8 +32,8 @@ class CompletionSnapshot:
   exit_code: int | None = None
 
 
-def read_completion(trial_home: Path) -> CompletionSnapshot | None:
-  path = trial_home / OUTCOME_FILENAME
+def read_completion(instance_home: Path) -> CompletionSnapshot | None:
+  path = instance_home / OUTCOME_FILENAME
   try:
     raw = path.read_text(encoding="utf-8")
   except OSError:
@@ -62,19 +62,19 @@ def read_completion(trial_home: Path) -> CompletionSnapshot | None:
   )
 
 
-def bust_dir_cache(trial_home: Path) -> None:
-  """Invalidate THIS client's NFS cache for a trial home we own.
+def bust_dir_cache(instance_home: Path) -> None:
+  """Invalidate THIS client's NFS cache for an instance home we own.
 
   The outcome is written by a container on another host; this
   client's negative-dentry / directory-attribute cache keeps
   answering "no such file" for up to acdirmax (default 60s) —
-  measured on the old router as 43% of all trials parking in
+  measured on the old router as 43% of all instances parking in
   unknown while the file already existed. Writing into the
   directory ourselves bumps its mtime locally, so the kernel
   discards its own cache and the next lookup goes to the server.
   Best-effort: any failure just leaves today's behaviour (miss →
   resolver later)."""
-  probe = trial_home / ".nfs-probe"
+  probe = instance_home / ".nfs-probe"
   try:
     probe.touch()
     probe.unlink(missing_ok=True)
@@ -82,5 +82,5 @@ def bust_dir_cache(trial_home: Path) -> None:
     pass
 
 
-def trial_home_for(home_root: Path, trial_id: str) -> Path:
-  return home_root / trial_id
+def instance_home_for(home_root: Path, instance_id: str) -> Path:
+  return home_root / instance_id

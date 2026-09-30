@@ -1,4 +1,4 @@
-"""Trial lifecycle inside the main container."""
+"""Instance lifecycle inside the main container."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ EX_OK = 0
 EX_ERROR = 1
 EX_INFRA = 75  # EX_TEMPFAIL — the dispatcher requeues this
 
-TRIAL_SPEC_FILENAME = "trial.json"
+INSTANCE_SPEC_FILENAME = "instance.json"
 OUTCOME_FILENAME = "outcome.json"
 
 
 class InfraFailure(Exception):
-  """The machine under the trial failed, not the work. The
+  """The machine under the instance failed, not the work. The
   outcome is written with infra=true and the process exits 75;
   the dispatcher reruns the task instead of scoring it."""
 
@@ -31,7 +31,7 @@ class InfraFailure(Exception):
 @dataclass
 class Result:
   """What `work` returns. `values` are numeric results surfaced
-  in the dispatcher's monitor (per-attempt means); `data` is
+  in the dispatcher's monitor (per-job means); `data` is
   opaque and passed through to the envelope untouched."""
 
   values: dict[str, float] = field(default_factory=dict)
@@ -39,30 +39,30 @@ class Result:
 
 
 @dataclass
-class TrialContext:
-  attempt: str
+class InstanceContext:
+  job: str
   task: str
-  trial: str
+  instance: str
   home: Path
   payload: Any
   set_label: str
   """`k=v` string for `docker run --label` on every sibling
-  container this trial starts. Unlabelled siblings leak."""
+  container this instance starts. Unlabelled siblings leak."""
 
 
-def load_trial(
+def load_instance(
   *,
   timeout_s: float = 15.0,
   env: dict[str, str] | None = None,
-) -> TrialContext:
-  """Read the spec the dispatcher wrote into the trial home.
+) -> InstanceContext:
+  """Read the spec the dispatcher wrote into the instance home.
 
   Retries briefly: the file was written launcher-side over a
   shared filesystem, and this container may open it before the
   local client cache has caught up."""
   e = env if env is not None else dict(os.environ)
   home = Path(e.get("DISPATCHER_HOME", "/dispatcher/home"))
-  spec_path = home / TRIAL_SPEC_FILENAME
+  spec_path = home / INSTANCE_SPEC_FILENAME
   deadline = time.monotonic() + timeout_s
   last_exc: Exception | None = None
   while True:
@@ -73,14 +73,14 @@ def load_trial(
       last_exc = exc
       if time.monotonic() >= deadline:
         raise InfraFailure(
-          f"trial spec unreadable after {timeout_s}s: "
+          f"instance spec unreadable after {timeout_s}s: "
           f"{spec_path}: {last_exc}"
         ) from last_exc
       time.sleep(0.5)
-  return TrialContext(
-    attempt=spec.get("attempt_id") or e.get("DISPATCHER_ATTEMPT", ""),
+  return InstanceContext(
+    job=spec.get("job_id") or e.get("DISPATCHER_JOB", ""),
     task=spec.get("task_id") or e.get("DISPATCHER_TASK", ""),
-    trial=spec.get("trial_id") or e.get("DISPATCHER_TRIAL", ""),
+    instance=spec.get("instance_id") or e.get("DISPATCHER_INSTANCE", ""),
     home=home,
     payload=spec.get("payload"),
     set_label=e.get("DISPATCHER_SET_LABEL", ""),
@@ -89,7 +89,7 @@ def load_trial(
 
 def write_outcome(home: Path, envelope: dict[str, Any]) -> None:
   """Atomic (tmp + rename): the dispatcher may read the file the
-  instant it appears, and a torn write would park the trial in
+  instant it appears, and a torn write would park the instance in
   `unknown` until a resolver pass."""
   path = home / OUTCOME_FILENAME
   tmp = path.with_suffix(".json.tmp")
@@ -98,7 +98,7 @@ def write_outcome(home: Path, envelope: dict[str, Any]) -> None:
 
 
 def run(
-  work: Callable[[TrialContext], Any],
+  work: Callable[[InstanceContext], Any],
   *,
   env: dict[str, str] | None = None,
   spec_timeout_s: float = 15.0,
@@ -111,7 +111,7 @@ def run(
   comes after the envelope hit the filesystem — the reader only
   has to wait out cache lag, never the write itself."""
   try:
-    trial = load_trial(env=env, timeout_s=spec_timeout_s)
+    instance = load_instance(env=env, timeout_s=spec_timeout_s)
   except InfraFailure as exc:
     # No spec, no home to write into that we trust — exit 75 and
     # let the exit code carry the classification.
@@ -119,10 +119,10 @@ def run(
     _exit(EX_INFRA)
     return
   try:
-    out = work(trial)
+    out = work(instance)
   except InfraFailure as exc:
     write_outcome(
-      trial.home,
+      instance.home,
       {
         "ok": False,
         "error": {
@@ -137,7 +137,7 @@ def run(
     return
   except BaseException as exc:
     write_outcome(
-      trial.home,
+      instance.home,
       {
         "ok": False,
         "error": {
@@ -166,5 +166,5 @@ def run(
       "values": {},
       "data": out,
     }
-  write_outcome(trial.home, envelope)
+  write_outcome(instance.home, envelope)
   _exit(EX_OK)

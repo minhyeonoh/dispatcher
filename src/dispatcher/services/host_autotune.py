@@ -1,5 +1,5 @@
-"""Per-host cap autotune: track each trial container's peak RSS,
-estimate per-trial cost (P75 over a ring of completed peaks),
+"""Per-host cap autotune: track each instance container's peak RSS,
+estimate per-instance cost (P75 over a ring of completed peaks),
 and lower `max_concurrent` so estimated cost × cap fits in
 available memory minus a reserve.
 
@@ -52,7 +52,7 @@ class HostAutotuneSettings(BaseModel):
 
   peak_floor_bytes: PositiveInt = 1024 * 1024 * 1024
   """Lower bound on the estimate — a P75 dragged down by
-  short-lived trials would over-cap into OOM."""
+  short-lived instances would over-cap into OOM."""
 
   reserve_fraction: float = Field(default=0.15, gt=0.0, lt=1.0)
 
@@ -86,8 +86,8 @@ def apply_patch(
 
 
 @dataclass
-class _TrackedTrial:
-  trial_id: str
+class _TrackedInstance:
+  instance_id: str
   max_rss: int
   first_seen: datetime
   last_seen: datetime
@@ -95,9 +95,9 @@ class _TrackedTrial:
 
 
 @dataclass
-class TrialPeak:
+class InstancePeak:
   host: str
-  trial_id: str
+  instance_id: str
   peak_rss: int
   sample_count: int
   first_seen: datetime
@@ -106,7 +106,7 @@ class TrialPeak:
   def to_json(self) -> dict[str, object]:
     return {
       "host": self.host,
-      "trial_id": self.trial_id,
+      "instance_id": self.instance_id,
       "peak_rss": self.peak_rss,
       "sample_count": self.sample_count,
       "first_seen": self.first_seen.isoformat(),
@@ -114,10 +114,10 @@ class TrialPeak:
     }
 
   @classmethod
-  def from_json(cls, obj: dict[str, object]) -> TrialPeak:
+  def from_json(cls, obj: dict[str, object]) -> InstancePeak:
     return cls(
       host=str(obj["host"]),
-      trial_id=str(obj["trial_id"]),
+      instance_id=str(obj["instance_id"]),
       peak_rss=int(obj["peak_rss"]),  # type: ignore[arg-type]
       sample_count=int(obj["sample_count"]),  # type: ignore[arg-type]
       first_seen=datetime.fromisoformat(str(obj["first_seen"])),
@@ -128,10 +128,10 @@ class TrialPeak:
 @dataclass
 class HostAutotuneState:
   metrics_file: Path
-  tracked: dict[str, dict[str, _TrackedTrial]] = field(
+  tracked: dict[str, dict[str, _TrackedInstance]] = field(
     default_factory=dict
   )
-  ring: dict[str, list[TrialPeak]] = field(default_factory=dict)
+  ring: dict[str, list[InstancePeak]] = field(default_factory=dict)
   operator_ceiling: dict[str, int] = field(default_factory=dict)
   last_advised: dict[str, int] = field(default_factory=dict)
 
@@ -141,11 +141,11 @@ class HostAutotuneState:
 
 def load_ring(
   metrics_file: Path, ring_size: int
-) -> dict[str, list[TrialPeak]]:
+) -> dict[str, list[InstancePeak]]:
   """Last `ring_size` peaks per host; malformed lines are just
   one less sample (unlike the event log, nothing depends on a
   complete record here)."""
-  ring: dict[str, list[TrialPeak]] = {}
+  ring: dict[str, list[InstancePeak]] = {}
   if not metrics_file.exists():
     return ring
   with metrics_file.open("r", encoding="utf-8") as f:
@@ -154,7 +154,7 @@ def load_ring(
       if not line:
         continue
       try:
-        peak = TrialPeak.from_json(json.loads(line))
+        peak = InstancePeak.from_json(json.loads(line))
       except (
         json.JSONDecodeError,
         KeyError,
@@ -171,7 +171,7 @@ def load_ring(
 
 
 def truncate_ring_file(
-  metrics_file: Path, ring: dict[str, list[TrialPeak]]
+  metrics_file: Path, ring: dict[str, list[InstancePeak]]
 ) -> None:
   """Rewrite with just the in-memory ring (bounded growth).
   Atomic; failure leaves the previous file, which re-trims on
@@ -185,7 +185,7 @@ def truncate_ring_file(
   tmp.replace(metrics_file)
 
 
-def append_peak(metrics_file: Path, peak: TrialPeak) -> None:
+def append_peak(metrics_file: Path, peak: InstancePeak) -> None:
   metrics_file.parent.mkdir(parents=True, exist_ok=True)
   with metrics_file.open("a", encoding="utf-8") as f:
     f.write(json.dumps(peak.to_json()) + "\n")
@@ -208,8 +208,8 @@ def p75(values: list[int]) -> int:
 
 
 def peak_estimate(
-  host_ring: list[TrialPeak],
-  global_ring: list[TrialPeak],
+  host_ring: list[InstancePeak],
+  global_ring: list[InstancePeak],
   bootstrap_min_samples: int,
   peak_floor_bytes: int,
 ) -> int | None:
@@ -247,19 +247,19 @@ def update_tracker(
   sample: HostSample,
   now: datetime,
   ring_size: int,
-) -> list[TrialPeak]:
+) -> list[InstancePeak]:
   """Fold one sample; returns freshly-completed peaks for the
   caller to persist."""
   tracked_here = state.tracked.setdefault(host, {})
-  current_names = {t.name for t in sample.trials}
-  freshly_completed: list[TrialPeak] = []
+  current_names = {t.name for t in sample.instances}
+  freshly_completed: list[InstancePeak] = []
 
   vanished = set(tracked_here) - current_names
   for name in vanished:
     tt = tracked_here.pop(name)
-    peak = TrialPeak(
+    peak = InstancePeak(
       host=host,
-      trial_id=tt.trial_id,
+      instance_id=tt.instance_id,
       peak_rss=tt.max_rss,
       sample_count=tt.sample_count,
       first_seen=tt.first_seen,
@@ -271,11 +271,11 @@ def update_tracker(
     if len(ring) > ring_size:
       state.ring[host] = ring[-ring_size:]
 
-  for tstat in sample.trials:
+  for tstat in sample.instances:
     prev = tracked_here.get(tstat.name)
     if prev is None:
-      tracked_here[tstat.name] = _TrackedTrial(
-        trial_id=tstat.name,
+      tracked_here[tstat.name] = _TrackedInstance(
+        instance_id=tstat.name,
         max_rss=tstat.rss_bytes,
         first_seen=now,
         last_seen=now,
@@ -331,12 +331,12 @@ async def autotune_tick(
         logger.warning(
           "host_autotune: append peak (%s/%s) failed: %s",
           host,
-          peak.trial_id,
+          peak.instance_id,
           exc,
         )
 
   running_per_host = scheduler.running_per_host()
-  global_ring: list[TrialPeak] = [
+  global_ring: list[InstancePeak] = [
     peak for host_peaks in state.ring.values() for peak in host_peaks
   ]
 

@@ -1,7 +1,7 @@
-"""Orphan-container GC: remove container sets whose trial the
+"""Orphan-container GC: remove container sets whose instance the
 scheduler no longer owns.
 
-Four layers between a live trial and a wrong `rm -f`: the
+Four layers between a live instance and a wrong `rm -f`: the
 SET-label filter, the running+unknown preserve set, the age floor
 (dispatch race window), and two-tick confirmation. A failed
 census advances nothing — a network blip must not count as an
@@ -19,7 +19,7 @@ from dispatcher.core.containers import (
   census_host,
   container_labels,
   parse_created,
-  remove_trial_sets,
+  remove_instance_sets,
 )
 
 if TYPE_CHECKING:
@@ -71,12 +71,12 @@ class OrphanGC:
     now = clock.now()
     preserved: set[str] = set()
     for _aid, tv in self._sched.iter_running():
-      preserved.add(tv.trial_id)
-    # Right after a restart every previously-running trial sits
+      preserved.add(tv.instance_id)
+    # Right after a restart every previously-running instance sits
     # in unknown until the resolver speaks; GC must not beat it
     # to a live container.
     for _aid, _task, tv in self._sched.iter_unknown():
-      preserved.add(tv.trial_id)
+      preserved.add(tv.instance_id)
 
     per_host_removed: dict[str, int] = {}
     for host in list(self._sched.all_host_settings()):
@@ -122,7 +122,7 @@ class OrphanGC:
       self._suspects[host] = suspects_next
 
       if to_delete:
-        removed = await remove_trial_sets(
+        removed = await remove_instance_sets(
           host, to_delete, self_host=self._self_host
         )
         if removed > 0:

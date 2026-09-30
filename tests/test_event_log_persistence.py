@@ -1,5 +1,5 @@
 """On-disk log/index behaviour: truncated tails, index-driven
-discovery, outcome scanning, trial-id counter parsing."""
+discovery, outcome scanning, instance-id counter parsing."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dispatcher.core.event_log import (
   find_event_logs,
   read_events,
   scan_outcomes,
-  seq_in_trial_id,
+  seq_in_instance_id,
 )
 
 if TYPE_CHECKING:
@@ -23,11 +23,11 @@ if TYPE_CHECKING:
 
 def test_append_then_read_round_trips(tmp_path: Path):
   log = tmp_path / "state.jsonl"
-  append_event(log, {"type": "submit", "attempt_id": "A"})
-  append_event(log, {"type": "patch", "attempt_id": "A", "w": 2})
+  append_event(log, {"type": "submit", "job_id": "A"})
+  append_event(log, {"type": "patch", "job_id": "A", "w": 2})
   assert read_events(log) == [
-    {"type": "submit", "attempt_id": "A"},
-    {"type": "patch", "attempt_id": "A", "w": 2},
+    {"type": "submit", "job_id": "A"},
+    {"type": "patch", "job_id": "A", "w": 2},
   ]
 
 
@@ -39,11 +39,11 @@ def test_append_creates_parent_dirs(tmp_path: Path):
 
 def test_truncated_last_line_dropped_silently(tmp_path: Path):
   log = tmp_path / "state.jsonl"
-  append_event(log, {"type": "submit", "attempt_id": "A"})
+  append_event(log, {"type": "submit", "job_id": "A"})
   with log.open("a") as f:
     f.write('{"type": "dis')  # crash mid-append
   events = read_events(log)
-  assert events == [{"type": "submit", "attempt_id": "A"}]
+  assert events == [{"type": "submit", "job_id": "A"}]
 
 
 def test_malformed_middle_line_raises(tmp_path: Path):
@@ -69,11 +69,11 @@ def test_find_event_logs_empty_when_no_index(tmp_path: Path):
 def test_find_event_logs_lists_submitted(tmp_path: Path):
   append_index_entry(
     tmp_path,
-    {"event": "submit", "attempt_id": "A", "log_path": "/x/a.jsonl"},
+    {"event": "submit", "job_id": "A", "log_path": "/x/a.jsonl"},
   )
   append_index_entry(
     tmp_path,
-    {"event": "submit", "attempt_id": "B", "log_path": "/x/b.jsonl"},
+    {"event": "submit", "job_id": "B", "log_path": "/x/b.jsonl"},
   )
   assert [str(p) for p in find_event_logs(tmp_path)] == [
     "/x/a.jsonl",
@@ -84,16 +84,16 @@ def test_find_event_logs_lists_submitted(tmp_path: Path):
 def test_find_event_logs_skips_cancelled(tmp_path: Path):
   append_index_entry(
     tmp_path,
-    {"event": "submit", "attempt_id": "A", "log_path": "/x/a.jsonl"},
+    {"event": "submit", "job_id": "A", "log_path": "/x/a.jsonl"},
   )
-  append_index_entry(tmp_path, {"event": "cancel", "attempt_id": "A"})
+  append_index_entry(tmp_path, {"event": "cancel", "job_id": "A"})
   assert find_event_logs(tmp_path) == []
 
 
 def test_find_event_logs_skips_malformed_lines(tmp_path: Path):
   append_index_entry(
     tmp_path,
-    {"event": "submit", "attempt_id": "A", "log_path": "/x/a.jsonl"},
+    {"event": "submit", "job_id": "A", "log_path": "/x/a.jsonl"},
   )
   from dispatcher.core.event_log import index_path
 
@@ -105,7 +105,7 @@ def test_find_event_logs_skips_malformed_lines(tmp_path: Path):
 # ── outcome scan ─────────────────────────────────────────────────
 
 
-def test_scan_outcomes_maps_trial_to_envelope(tmp_path: Path):
+def test_scan_outcomes_maps_instance_to_envelope(tmp_path: Path):
   t1 = tmp_path / "t1__0000001"
   t1.mkdir()
   (t1 / "outcome.json").write_text(
@@ -132,16 +132,16 @@ def test_scan_outcomes_missing_root_is_empty(tmp_path: Path):
   assert scan_outcomes(tmp_path / "nope") == {}
 
 
-# ── trial-id counter ───────────────────────────────────────────
+# ── instance-id counter ───────────────────────────────────────────
 
 
 def test_seq_parsed_from_a_minted_name():
-  assert seq_in_trial_id("task_a__0000042") == 42
+  assert seq_in_instance_id("task_a__0000042") == 42
 
 
 def test_seq_of_foreign_name_is_zero():
-  assert seq_in_trial_id("task_a__abc1234") == 0
+  assert seq_in_instance_id("task_a__abc1234") == 0
 
 
 def test_seq_without_separator_is_zero():
-  assert seq_in_trial_id("task_a-0000042") == 0
+  assert seq_in_instance_id("task_a-0000042") == 0
