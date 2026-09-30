@@ -32,7 +32,7 @@ export function ArenaPage() {
       <p className="text-xs text-fg-faint">
         includes every job in this subtree
       </p>
-      <JobsTable jobs={rows} />
+      <JobsTable jobs={rows} tableId="arena-jobs" />
     </div>
   );
 }

@@ -1,109 +1,146 @@
+import { cn, Table, TD, TH, THead, TR } from "@lab/kit";
 import {
-  Badge,
-  SegmentBar,
-  Table,
-  TD,
-  TH,
-  THead,
-  TR,
-} from "@lab/kit";
-import { Link } from "@tanstack/react-router";
+  flexRender,
+  getCoreRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type SortingState,
+  type VisibilityState,
+} from "@tanstack/react-table";
+import { useEffect, useMemo, useState } from "react";
 import type { JobRow } from "../../live/fold";
 import { useLive } from "../../live/store";
-import { describeBlocked } from "./blocked";
-import { jobSubtitle, jobTitle } from "./naming";
+import { ColumnPicker } from "./ColumnPicker";
+import {
+  columnTitle,
+  defaultVisibility,
+  jobColumns,
+  type ColumnMeta,
+} from "./columns";
+import { loadPrefs, savePrefs } from "./tablePrefs";
 
-function StateBadge({ job }: { job: JobRow }) {
-  if (job.cancelled) return <Badge tone="danger">cancelled</Badge>;
-  if (job.archived_at) return <Badge tone="neutral">archived</Badge>;
-  if (job.paused) return <Badge tone="warn">paused</Badge>;
-  return <Badge tone="ok">active</Badge>;
-}
-
-function Blocked({ job }: { job: JobRow }) {
+export function JobsTable({
+  jobs,
+  tableId = "jobs",
+}: {
+  jobs: JobRow[];
+  /** Prefs are stored per table id, so the arena view and the
+   * all-jobs view can carry different column sets. */
+  tableId?: string;
+}) {
   const cluster = useLive((s) => s.cluster);
-  if (!job.blocked) return <span className="text-fg-faint">–</span>;
-  const { label, detail, tone } = describeBlocked(
-    job.blocked,
-    job,
-    cluster,
-  );
-  return (
-    <Badge tone={tone} title={detail}>
-      {label}
-    </Badge>
-  );
-}
+  const columns = useMemo(() => jobColumns(cluster), [cluster]);
+  const defaults = useMemo(() => defaultVisibility(columns), [columns]);
 
-export function JobsTable({ jobs }: { jobs: JobRow[] }) {
-  if (jobs.length === 0)
-    return <div className="p-4 text-sm text-fg-faint">no jobs</div>;
+  // Read once — later renders must not clobber the operator's edits.
+  const [initial] = useState(() => loadPrefs(tableId, defaults));
+  const [visibility, setVisibility] = useState<VisibilityState>(
+    initial.visibility,
+  );
+  const [sorting, setSorting] = useState<SortingState>(initial.sorting);
+
+  useEffect(() => {
+    savePrefs(tableId, { visibility, sorting });
+  }, [tableId, visibility, sorting]);
+
+  const table = useReactTable({
+    data: jobs,
+    columns,
+    state: { columnVisibility: visibility, sorting },
+    onColumnVisibilityChange: setVisibility,
+    onSortingChange: setSorting,
+    getRowId: (job) => job.job_id,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
+
   return (
-    <Table>
-      <THead>
-        <TR>
-          <TH>job</TH>
-          <TH>state</TH>
-          <TH className="text-right">ok</TH>
-          <TH className="text-right">err</TH>
-          <TH className="text-right">run</TH>
-          <TH className="text-right">pnd</TH>
-          <TH className="text-right">tot</TH>
-          <TH className="w-40">progress</TH>
-          <TH>blocked</TH>
-        </TR>
-      </THead>
-      <tbody>
-        {jobs.map((job) => {
-          const c = job.counts;
-          return (
-            <TR key={job.job_id} className="hover:bg-sunken/50">
-              <TD>
-                <Link
-                  to="/jobs/$jobKey"
-                  params={{ jobKey: job.job_id }}
-                  className="font-medium text-accent hover:underline"
-                >
-                  {jobTitle(job)}
-                </Link>
-                {jobSubtitle(job) && (
-                  <span className="ml-2 font-mono text-xs text-fg-faint">
-                    {jobSubtitle(job)}
-                  </span>
-                )}
-              </TD>
-              <TD>
-                <StateBadge job={job} />
-              </TD>
-              <TD className="text-right tabular-nums">{c.done_ok}</TD>
-              <TD
-                className={`text-right tabular-nums ${
-                  c.done_err > 0 ? "font-medium text-danger" : ""
-                }`}
-              >
-                {c.done_err}
-              </TD>
-              <TD className="text-right tabular-nums">{c.running}</TD>
-              <TD className="text-right tabular-nums">{c.pending}</TD>
-              <TD className="text-right tabular-nums">{c.total}</TD>
-              <TD>
-                <SegmentBar
-                  segments={[
-                    { value: c.done_ok, tone: "ok" },
-                    { value: c.done_err, tone: "danger" },
-                    { value: c.unknown + c.ghosted, tone: "warn" },
-                    { value: c.running, tone: "accent" },
-                    { value: c.pending, tone: "muted" },
-                  ]}
-                />
-              </TD>
-              <TD className="text-xs">
-                <Blocked job={job} />
-              </TD>
-            </TR>
-          );
-        })}
-      </tbody>
-    </Table>
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-fg-faint">
+          {jobs.length} job{jobs.length === 1 ? "" : "s"}
+        </span>
+        <ColumnPicker table={table} columns={columns} />
+      </div>
+      {jobs.length === 0 ? (
+        <div className="rounded-panel border border-line p-4 text-sm text-fg-faint">
+          no jobs
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-panel border border-line">
+          <Table>
+            <THead>
+              {table.getHeaderGroups().map((group) => (
+                <TR key={group.id}>
+                  {group.headers.map((header) => {
+                    const meta = header.column.columnDef.meta as
+                      | ColumnMeta
+                      | undefined;
+                    const sortable = header.column.getCanSort();
+                    const dir = header.column.getIsSorted();
+                    return (
+                      <TH
+                        key={header.id}
+                        className={cn(
+                          meta?.align === "right" && "text-right",
+                          sortable && "cursor-pointer select-none",
+                        )}
+                        onClick={
+                          sortable
+                            ? header.column.getToggleSortingHandler()
+                            : undefined
+                        }
+                        title={
+                          sortable
+                            ? `sort by ${columnTitle(
+                                header.column.columnDef,
+                              )}`
+                            : undefined
+                        }
+                      >
+                        {flexRender(
+                          header.column.columnDef.header,
+                          header.getContext(),
+                        )}
+                        {dir && (
+                          <span className="ml-1 text-accent">
+                            {dir === "desc" ? "▾" : "▴"}
+                          </span>
+                        )}
+                      </TH>
+                    );
+                  })}
+                </TR>
+              ))}
+            </THead>
+            <tbody>
+              {table.getRowModel().rows.map((row) => (
+                <TR key={row.id} className="hover:bg-sunken/50">
+                  {row.getVisibleCells().map((cell) => {
+                    const meta = cell.column.columnDef.meta as
+                      | ColumnMeta
+                      | undefined;
+                    return (
+                      <TD
+                        key={cell.id}
+                        className={cn(
+                          meta?.align === "right" && "text-right",
+                          meta?.numeric && "tabular-nums",
+                        )}
+                      >
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
+                        )}
+                      </TD>
+                    );
+                  })}
+                </TR>
+              ))}
+            </tbody>
+          </Table>
+        </div>
+      )}
+    </div>
   );
 }
