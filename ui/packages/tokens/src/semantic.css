@@ -5,7 +5,14 @@
  * Colors are defined once with light-dark(); the active side is
  * chosen by `color-scheme`, driven by data-theme on <html>:
  * absent = follow the OS, "light"/"dark" = forced. Retheming a
- * site = one CSS file overriding these tokens. */
+ * site = one CSS file overriding these tokens.
+ *
+ * The shape of this theme: white page in light, near-black in dark,
+ * and SURFACES SEPARATED BY LINES rather than by fill. Light keeps
+ * page and card both white, so a card is its border; dark lifts the
+ * card one step off the page. That is why `--border` matters more
+ * here than `--shadow-*`, and why the accent is the only real
+ * colour on screen. */
 
 :root {
   color-scheme: light dark;
@@ -19,39 +26,43 @@
 
 :root {
   /* ground */
-  --surface: light-dark(var(--gray-1), var(--gray-10));
-  --raised: light-dark(var(--gray-0), var(--gray-9));
-  --sunken: light-dark(var(--gray-2), oklch(12% 0.012 260));
+  --surface: light-dark(var(--gray-0), var(--gray-11));
+  --raised: light-dark(var(--gray-0), var(--gray-10));
+  --sunken: light-dark(var(--gray-2), var(--gray-9));
+  /* app chrome (header, sidebar) — a step AWAY from the content
+   * plane so the shell recedes. In light that is the only thing
+   * distinguishing chrome from a white page. */
+  --chrome: light-dark(var(--gray-1), var(--gray-10));
   --overlay: light-dark(
-    oklch(20% 0.01 260 / 0.45),
-    oklch(5% 0.01 260 / 0.6)
+    oklch(21% 0.006 285.885 / 0.4),
+    oklch(0% 0 0 / 0.7)
   );
 
-  /* lines */
-  --border: light-dark(var(--gray-3), var(--gray-8));
-  --border-strong: light-dark(var(--gray-4), var(--gray-7));
+  /* lines — the primary means of separation in this theme */
+  --border: light-dark(var(--gray-3), var(--gray-9));
+  --border-strong: light-dark(var(--gray-4), var(--gray-8));
 
   /* ink */
-  --fg: light-dark(var(--gray-10), var(--gray-1));
-  --fg-muted: light-dark(var(--gray-6), var(--gray-4));
+  --fg: light-dark(var(--gray-11), var(--gray-1));
+  --fg-muted: light-dark(var(--gray-6), var(--gray-5));
   --fg-faint: light-dark(var(--gray-5), var(--gray-6));
 
-  /* accent */
-  --accent: light-dark(var(--accent-6), var(--accent-4));
-  --accent-hover: light-dark(var(--accent-7), var(--accent-3));
-  --accent-fg: light-dark(var(--gray-0), var(--gray-10));
-  --accent-surface: light-dark(var(--accent-1), oklch(28% 0.07 265));
+  /* accent — the one colour that carries meaning by itself */
+  --accent: light-dark(var(--accent-6), var(--accent-5));
+  --accent-hover: light-dark(var(--accent-7), var(--accent-4));
+  --accent-fg: light-dark(var(--gray-0), var(--gray-0));
+  --accent-surface: light-dark(var(--accent-1), var(--accent-8));
 
   /* status */
   --ok: light-dark(var(--green-6), var(--green-4));
-  --ok-surface: light-dark(var(--green-1), oklch(26% 0.05 152));
+  --ok-surface: light-dark(var(--green-1), var(--green-9));
   --danger: light-dark(var(--red-6), var(--red-4));
-  --danger-surface: light-dark(var(--red-1), oklch(26% 0.06 25));
+  --danger-surface: light-dark(var(--red-1), var(--red-9));
   --warn: light-dark(var(--amber-6), var(--amber-4));
-  --warn-surface: light-dark(var(--amber-1), oklch(27% 0.05 85));
+  --warn-surface: light-dark(var(--amber-1), var(--amber-9));
 
   /* interaction */
-  --focus: var(--accent-5);
+  --focus: light-dark(var(--accent-6), var(--accent-4));
 
   /* shape & type (not themed by light/dark, still semantic —
    * a theme may override the feel, not just the colors) */

@@ -76,7 +76,7 @@ function Nav() {
 export function AppShell() {
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between gap-4 border-b border-line bg-raised px-4 py-2">
+      <header className="flex items-center justify-between gap-4 border-b border-line bg-chrome px-4 py-2">
         <ClusterBar />
         <div className="flex items-center gap-2">
           <Nav />
@@ -84,7 +84,7 @@ export function AppShell() {
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
-        <aside className="w-56 shrink-0 overflow-y-auto border-r border-line p-2">
+        <aside className="w-56 shrink-0 overflow-y-auto border-r border-line bg-chrome p-2">
           <ArenaTree />
         </aside>
         <main className="min-w-0 flex-1 overflow-y-auto p-4">

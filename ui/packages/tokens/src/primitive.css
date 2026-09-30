@@ -1,40 +1,53 @@
 /* @lab/tokens — primitive layer: raw material only.
  * Components and utilities must never reference these directly;
- * they exist to be assigned into semantic tokens. */
+ * they exist to be assigned into semantic tokens.
+ *
+ * The ramps are Tailwind's (zinc for neutrals, blue for accent,
+ * emerald/red/amber for status), kept at their published oklch
+ * values rather than re-derived — a ramp that has been looked at by
+ * that many eyes is better tuned than one we would invent, and
+ * matching it exactly means a shadcn component dropped in unstyled
+ * still looks like it belongs. */
 
 :root {
-  /* neutral ramp (slightly cool) */
-  --gray-0: oklch(99% 0.002 260);
-  --gray-1: oklch(97.5% 0.003 260);
-  --gray-2: oklch(94% 0.004 260);
-  --gray-3: oklch(89% 0.005 260);
-  --gray-4: oklch(80% 0.006 260);
-  --gray-5: oklch(68% 0.008 260);
-  --gray-6: oklch(55% 0.01 260);
-  --gray-7: oklch(42% 0.012 260);
-  --gray-8: oklch(30% 0.012 260);
-  --gray-9: oklch(21% 0.012 260);
-  --gray-10: oklch(15% 0.012 260);
+  /* neutral ramp — zinc: barely cool, so accent colour reads as
+   * the only colour on the page */
+  --gray-0: #fff;
+  --gray-1: oklch(98.5% 0 0);
+  --gray-2: oklch(96.7% 0.001 286.375);
+  --gray-3: oklch(92% 0.004 286.32);
+  --gray-4: oklch(87.1% 0.006 286.286);
+  --gray-5: oklch(70.5% 0.015 286.067);
+  --gray-6: oklch(55.2% 0.016 285.938);
+  --gray-7: oklch(44.2% 0.017 285.786);
+  --gray-8: oklch(37% 0.013 285.805);
+  --gray-9: oklch(27.4% 0.006 286.033);
+  --gray-10: oklch(21% 0.006 285.885);
+  --gray-11: oklch(14.1% 0.005 285.823);
 
-  /* accent — indigo */
-  --accent-1: oklch(95% 0.03 265);
-  --accent-2: oklch(89% 0.055 265);
-  --accent-3: oklch(80% 0.1 265);
-  --accent-4: oklch(71% 0.14 265);
-  --accent-5: oklch(62% 0.17 265);
-  --accent-6: oklch(53% 0.19 265);
-  --accent-7: oklch(45% 0.18 265);
+  /* accent ramp — blue */
+  --accent-1: oklch(97% 0.014 254.604);
+  --accent-2: oklch(93.2% 0.032 255.585);
+  --accent-3: oklch(88.2% 0.059 254.128);
+  --accent-4: oklch(70.7% 0.165 254.624);
+  --accent-5: oklch(62.3% 0.214 259.815);
+  --accent-6: oklch(54.6% 0.245 262.881);
+  --accent-7: oklch(48.8% 0.243 264.376);
+  --accent-8: oklch(28.2% 0.091 267.935);
 
   /* status hues */
-  --green-1: oklch(95% 0.045 152);
-  --green-4: oklch(72% 0.13 152);
-  --green-6: oklch(52% 0.13 152);
-  --red-1: oklch(95.5% 0.025 25);
-  --red-4: oklch(70% 0.15 25);
-  --red-6: oklch(53% 0.19 25);
-  --amber-1: oklch(96% 0.05 90);
-  --amber-4: oklch(80% 0.13 85);
-  --amber-6: oklch(66% 0.13 70);
+  --green-1: oklch(95% 0.052 163.051);
+  --green-4: oklch(76.5% 0.177 163.223);
+  --green-6: oklch(59.6% 0.145 163.225);
+  --green-9: oklch(26.2% 0.051 172.552);
+  --red-1: oklch(93.6% 0.032 17.717);
+  --red-4: oklch(70.4% 0.191 22.216);
+  --red-6: oklch(57.7% 0.245 27.325);
+  --red-9: oklch(25.8% 0.092 26.042);
+  --amber-1: oklch(96.2% 0.059 95.617);
+  --amber-4: oklch(82.8% 0.189 84.429);
+  --amber-6: oklch(66.6% 0.179 58.318);
+  --amber-9: oklch(27.9% 0.077 45.635);
 
   /* shape */
   --radius-0: 2px;
@@ -53,7 +66,7 @@
     monospace;
 
   /* elevation */
-  --shadow-1: 0 1px 2px oklch(0% 0 0 / 0.06);
+  --shadow-1: 0 1px 2px oklch(0% 0 0 / 0.05);
   --shadow-2:
-    0 1px 2px oklch(0% 0 0 / 0.06), 0 4px 12px oklch(0% 0 0 / 0.08);
+    0 1px 2px oklch(0% 0 0 / 0.06), 0 8px 24px oklch(0% 0 0 / 0.1);
 }
