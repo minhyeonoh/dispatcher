@@ -129,10 +129,8 @@ def test_require_source_rejects_bare_submit(tmp_path: Path):
 
 
 def test_submit_pins_image_id_via_resolver(tmp_path: Path):
-  from fastapi.testclient import TestClient
-
   from dispatcher.api.app import create_app
-  from tests.test_server import mk_config, mk_settings
+  from tests.test_server import api_client, mk_config, mk_settings
 
   async def fake_dispatch(action, state) -> None:
     return None
@@ -144,7 +142,7 @@ def test_submit_pins_image_id_via_resolver(tmp_path: Path):
     poll=lambda _p: None,
     resolve_image=lambda ref: f"sha256:pinned-{ref}",
   )
-  with TestClient(app) as client:
+  with api_client(app) as client:
     aid = client.post(
       "/jobs",
       json=payload(
@@ -158,10 +156,8 @@ def test_submit_pins_image_id_via_resolver(tmp_path: Path):
 
 
 def test_submit_unresolvable_image_is_400(tmp_path: Path):
-  from fastapi.testclient import TestClient
-
   from dispatcher.api.app import create_app
-  from tests.test_server import mk_config, mk_settings
+  from tests.test_server import api_client, mk_config, mk_settings
 
   def resolver(ref: str) -> str:
     raise RuntimeError(f"image {ref!r} not found on ml10")
@@ -176,7 +172,7 @@ def test_submit_unresolvable_image_is_400(tmp_path: Path):
     poll=lambda _p: None,
     resolve_image=resolver,
   )
-  with TestClient(app) as client:
+  with api_client(app) as client:
     resp = client.post(
       "/jobs",
       json=payload(task_ids=["t1"], home_root=tmp_path / "a"),

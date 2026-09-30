@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { API } from "../api/client";
 import { fold, initialLiveState, type LiveState } from "./fold";
 
 interface LiveStore extends LiveState {
@@ -25,7 +26,7 @@ const FOLDED_EVENTS = [
  * its own; each reconnect replays snapshot + full job list, so
  * the fold self-heals after a gap. */
 export function startLiveStream(): () => void {
-  const source = new EventSource("/monitor/stream");
+  const source = new EventSource(`${API}/monitor/stream`);
   source.onopen = () => useLive.getState().setConnected(true);
   source.onerror = () => useLive.getState().setConnected(false);
   for (const name of FOLDED_EVENTS) {

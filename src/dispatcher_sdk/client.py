@@ -18,6 +18,11 @@ class ClientError(RuntimeError):
     self.body = body
 
 
+# Every JSON route is served under this prefix; the root url space
+# belongs to the web UI. Call sites name the bare resource path.
+API_PREFIX = "/api"
+
+
 def _request(
   server: str,
   method: str,
@@ -26,7 +31,7 @@ def _request(
   *,
   timeout: float = 30.0,
 ) -> Any:
-  url = server.rstrip("/") + path
+  url = server.rstrip("/") + API_PREFIX + path
   data = (
     json.dumps(payload).encode("utf-8") if payload is not None else None
   )

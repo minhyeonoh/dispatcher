@@ -41,8 +41,8 @@ export function JobsTable({ jobs }: { jobs: JobRow[] }) {
             <TR key={job.job_id} className="hover:bg-sunken/50">
               <TD>
                 <Link
-                  to="/jobs/$jobId"
-                  params={{ jobId: job.job_id }}
+                  to="/jobs/$jobKey"
+                  params={{ jobKey: job.job_id }}
                   className="font-medium text-accent hover:underline"
                 >
                   {job.alias || job.label}

@@ -18,11 +18,10 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import (
   JSONResponse,
-  RedirectResponse,
   Response,
   StreamingResponse,
 )
@@ -282,8 +281,18 @@ def create_app(
       if docker_events is not None:
         await docker_events.stop()
 
-  app = FastAPI(title="dispatcher", version="0.1.0", lifespan=lifespan)
+  app = FastAPI(
+    title="dispatcher",
+    version="0.1.0",
+    lifespan=lifespan,
+    # The UI owns the root URL space (/jobs/… is a page); the
+    # whole JSON surface, docs included, lives under /api.
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
+    redoc_url=None,
+  )
   app.add_middleware(GZipMiddleware, minimum_size=1024)
+  api = APIRouter(prefix="/api")
 
   @app.exception_handler(ops.OpError)
   async def _op_error(request: Request, exc: ops.OpError):
@@ -293,11 +302,11 @@ def create_app(
   # event-loop thread that owns the runtime tick — no scheduler
   # access can interleave mid-handler.
 
-  @app.get("/health")
+  @api.get("/health")
   async def health() -> HealthOut:
     return HealthOut(status="ok")
 
-  @app.get("/state")
+  @api.get("/state")
   async def get_state() -> StateOut:
     st = _get_state(app)
     cluster = cluster_snapshot(
@@ -311,7 +320,7 @@ def create_app(
       ],
     )
 
-  @app.get("/monitor/stream")
+  @api.get("/monitor/stream")
   async def monitor_stream():
     st = _get_state(app)
     sub = st.event_bus.subscribe(maxsize=256)
@@ -372,7 +381,7 @@ def create_app(
       },
     )
 
-  @app.get("/jobs", response_model=None)
+  @api.get("/jobs", response_model=None)
   async def list_jobs(
     full: bool = False, arena: str = ""
   ) -> list[JobSummaryOut] | Response:
@@ -391,7 +400,7 @@ def create_app(
       lambda: [snapshot_job(st.scheduler, aid) for aid in aids]
     )
 
-  @app.get("/jobs/{job_id}", response_model=None)
+  @api.get("/jobs/{job_id}", response_model=None)
   async def get_job(
     job_id: str,
   ) -> FullJobOut | Response:
@@ -407,13 +416,13 @@ def create_app(
       )
     return full_job_view(st.scheduler, job_id)
 
-  @app.post("/jobs")
+  @api.post("/jobs")
   async def submit_job(
     payload: dict[str, Any],
   ) -> dict[str, Any]:
     return await ops.submit_job(_get_state(app), payload, clock_fn)
 
-  @app.get("/arenas")
+  @api.get("/arenas")
   async def list_arenas() -> list[ArenaSummaryOut]:
     st = _get_state(app)
     return await asyncio.to_thread(snapshot_arenas, st.scheduler)
@@ -422,7 +431,7 @@ def create_app(
   # addresses its subtree. The action-suffix routes still match:
   # the greedy path segment backtracks over the trailing verb.
 
-  @app.get("/arenas/{arena:path}")
+  @api.get("/arenas/{arena:path}")
   async def get_arena(arena: str) -> ArenaDetailOut:
     st = _get_state(app)
     name = ops.normalize_arena(arena)
@@ -437,23 +446,23 @@ def create_app(
       snapshot_arena, st.scheduler, name, members
     )
 
-  @app.post("/arenas/{arena:path}/pause")
+  @api.post("/arenas/{arena:path}/pause")
   async def arena_pause(arena: str) -> dict[str, Any]:
     return await ops.arena_set_paused(
       _get_state(app), arena, True, clock_fn
     )
 
-  @app.post("/arenas/{arena:path}/resume")
+  @api.post("/arenas/{arena:path}/resume")
   async def arena_resume(arena: str) -> dict[str, Any]:
     return await ops.arena_set_paused(
       _get_state(app), arena, False, clock_fn
     )
 
-  @app.post("/arenas/{arena:path}/reclaim")
+  @api.post("/arenas/{arena:path}/reclaim")
   async def arena_reclaim(arena: str) -> dict[str, Any]:
     return await ops.arena_reclaim(_get_state(app), arena, clock_fn)
 
-  @app.post("/arenas/{arena:path}/cancel")
+  @api.post("/arenas/{arena:path}/cancel")
   async def arena_cancel(
     arena: str, payload: dict[str, Any] | None = None
   ) -> dict[str, Any]:
@@ -462,21 +471,21 @@ def create_app(
       _get_state(app), arena, confirm, clock_fn
     )
 
-  @app.patch("/jobs/{job_id}")
+  @api.patch("/jobs/{job_id}")
   async def patch_job(
     job_id: str, payload: dict[str, Any]
   ) -> JobSummaryOut:
     return await ops.patch_job(_get_state(app), job_id, payload, clock_fn)
 
-  @app.delete("/jobs/{job_id}")
+  @api.delete("/jobs/{job_id}")
   async def cancel_job(job_id: str) -> dict[str, Any]:
     return await ops.cancel_job(_get_state(app), job_id, clock_fn)
 
-  @app.post("/jobs/{job_id}/reclaim")
+  @api.post("/jobs/{job_id}/reclaim")
   async def reclaim_job(job_id: str) -> dict[str, Any]:
     return await ops.reclaim_job(_get_state(app), job_id, clock_fn)
 
-  @app.post("/jobs/{job_id}/instances/{instance_id}/reclaim")
+  @api.post("/jobs/{job_id}/instances/{instance_id}/reclaim")
   async def reclaim_instance(
     job_id: str, instance_id: str
   ) -> dict[str, Any]:
@@ -484,7 +493,7 @@ def create_app(
       _get_state(app), job_id, instance_id, clock_fn
     )
 
-  @app.post("/jobs/{job_id}/retry-done-err")
+  @api.post("/jobs/{job_id}/retry-done-err")
   async def retry_done_err(
     job_id: str, payload: RetryDoneErrRequest | None = None
   ) -> dict[str, Any]:
@@ -492,25 +501,25 @@ def create_app(
       _get_state(app), job_id, payload, clock_fn
     )
 
-  @app.post("/jobs/{job_id}/archive")
+  @api.post("/jobs/{job_id}/archive")
   async def archive_job_ep(job_id: str) -> dict[str, Any]:
     return await ops.archive_job(
       _get_state(app), job_id, clock_fn, kind="manual"
     )
 
-  @app.post("/jobs/{job_id}/unarchive")
+  @api.post("/jobs/{job_id}/unarchive")
   async def unarchive_job_ep(
     job_id: str,
   ) -> dict[str, Any]:
     return await ops.unarchive_job(_get_state(app), job_id, clock_fn)
 
-  @app.patch("/settings")
+  @api.patch("/settings")
   async def patch_settings(payload: SettingsPatch) -> Settings:
     st = _get_state(app)
     ops.apply_settings(st, payload)
     return st.settings
 
-  @app.get("/filter-presets")
+  @api.get("/filter-presets")
   async def get_filter_presets() -> dict[str, Any]:
     path = ops.filter_presets_path(config)
     if not path.is_file():
@@ -522,7 +531,7 @@ def create_app(
         status_code=500, detail=f"failed reading {path}: {exc}"
       ) from exc
 
-  @app.put("/filter-presets")
+  @api.put("/filter-presets")
   async def put_filter_presets(
     payload: dict[str, Any],
   ) -> dict[str, Any]:
@@ -535,6 +544,8 @@ def create_app(
     tmp.replace(path)
     return payload
 
+  # Order matters: /api routes first, SPA catch-all last.
+  app.include_router(api)
   _mount_ui(app, config.ui_dist)
 
   return app
@@ -592,6 +603,12 @@ async def _run_startup_census(
 
 
 def _mount_ui(app: FastAPI, ui_dist: Path | None) -> None:
+  """Mount the SPA at the ROOT url space, last.
+
+  The UI owns the human-facing paths (`/jobs/abc` is a page) and
+  every JSON route lives under `/api` — registered before this
+  mount, so they win the match. Whatever is left over reaches the
+  SPA."""
   if ui_dist is None or not ui_dist.is_dir():
     return
   from fastapi.staticfiles import StaticFiles
@@ -600,29 +617,32 @@ def _mount_ui(app: FastAPI, ui_dist: Path | None) -> None:
   )
 
   class _SpaStaticFiles(StaticFiles):
-    """Missing path → index.html: the SPA owns routing under
-    /ui, so a deep link (/ui/jobs/x) must load the app, not
-    404. Starlette signals the miss either way depending on
-    version — as a 404 response or a (starlette-level, NOT the
-    fastapi subclass) HTTPException."""
+    """Missing file → index.html, so a deep link (`/jobs/x`)
+    loads the app instead of 404ing. Starlette signals the miss
+    either way depending on version — as a 404 response or a
+    (starlette-level, NOT the fastapi subclass) HTTPException.
+
+    `/api/*` is exempt: an unmatched API path must stay a 404,
+    never become a 200 page — a client eating HTML while
+    believing it got JSON is the worse failure."""
 
     async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
       try:
         response = await super().get_response(path, scope)
       except StarletteHTTPException as exc:
-        if exc.status_code != 404:
+        if exc.status_code != 404 or _is_api_path(path):
           raise
         return await super().get_response("index.html", scope)
-      if response.status_code == 404:
+      if response.status_code == 404 and not _is_api_path(path):
         return await super().get_response("index.html", scope)
       return response
 
   app.mount(
-    "/ui",
+    "/",
     _SpaStaticFiles(directory=str(ui_dist), html=True),
     name="ui",
   )
 
-  @app.get("/", include_in_schema=False)
-  def _index_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/ui/")
+
+def _is_api_path(path: str) -> bool:
+  return path == "api" or path.startswith("api/")

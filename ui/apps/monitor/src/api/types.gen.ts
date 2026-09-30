@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/health": {
+    "/api/health": {
         parameters: {
             query?: never;
             header?: never;
@@ -12,7 +12,7 @@ export interface paths {
             cookie?: never;
         };
         /** Health */
-        get: operations["health_health_get"];
+        get: operations["health_api_health_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -21,7 +21,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/state": {
+    "/api/state": {
         parameters: {
             query?: never;
             header?: never;
@@ -29,7 +29,7 @@ export interface paths {
             cookie?: never;
         };
         /** Get State */
-        get: operations["get_state_state_get"];
+        get: operations["get_state_api_state_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -38,7 +38,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/monitor/stream": {
+    "/api/monitor/stream": {
         parameters: {
             query?: never;
             header?: never;
@@ -46,7 +46,7 @@ export interface paths {
             cookie?: never;
         };
         /** Monitor Stream */
-        get: operations["monitor_stream_monitor_stream_get"];
+        get: operations["monitor_stream_api_monitor_stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -55,7 +55,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/jobs": {
+    "/api/jobs": {
         parameters: {
             query?: never;
             header?: never;
@@ -63,17 +63,17 @@ export interface paths {
             cookie?: never;
         };
         /** List Jobs */
-        get: operations["list_jobs_jobs_get"];
+        get: operations["list_jobs_api_jobs_get"];
         put?: never;
         /** Submit Job */
-        post: operations["submit_job_jobs_post"];
+        post: operations["submit_job_api_jobs_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/jobs/{job_id}": {
+    "/api/jobs/{job_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -81,18 +81,18 @@ export interface paths {
             cookie?: never;
         };
         /** Get Job */
-        get: operations["get_job_jobs__job_id__get"];
+        get: operations["get_job_api_jobs__job_id__get"];
         put?: never;
         post?: never;
         /** Cancel Job */
-        delete: operations["cancel_job_jobs__job_id__delete"];
+        delete: operations["cancel_job_api_jobs__job_id__delete"];
         options?: never;
         head?: never;
         /** Patch Job */
-        patch: operations["patch_job_jobs__job_id__patch"];
+        patch: operations["patch_job_api_jobs__job_id__patch"];
         trace?: never;
     };
-    "/arenas": {
+    "/api/arenas": {
         parameters: {
             query?: never;
             header?: never;
@@ -100,7 +100,7 @@ export interface paths {
             cookie?: never;
         };
         /** List Arenas */
-        get: operations["list_arenas_arenas_get"];
+        get: operations["list_arenas_api_arenas_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -109,7 +109,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/arenas/{arena}": {
+    "/api/arenas/{arena}": {
         parameters: {
             query?: never;
             header?: never;
@@ -117,7 +117,7 @@ export interface paths {
             cookie?: never;
         };
         /** Get Arena */
-        get: operations["get_arena_arenas__arena__get"];
+        get: operations["get_arena_api_arenas__arena__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -126,7 +126,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/arenas/{arena}/pause": {
+    "/api/arenas/{arena}/pause": {
         parameters: {
             query?: never;
             header?: never;
@@ -136,14 +136,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Arena Pause */
-        post: operations["arena_pause_arenas__arena__pause_post"];
+        post: operations["arena_pause_api_arenas__arena__pause_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/arenas/{arena}/resume": {
+    "/api/arenas/{arena}/resume": {
         parameters: {
             query?: never;
             header?: never;
@@ -153,14 +153,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Arena Resume */
-        post: operations["arena_resume_arenas__arena__resume_post"];
+        post: operations["arena_resume_api_arenas__arena__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/arenas/{arena}/reclaim": {
+    "/api/arenas/{arena}/reclaim": {
         parameters: {
             query?: never;
             header?: never;
@@ -170,14 +170,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Arena Reclaim */
-        post: operations["arena_reclaim_arenas__arena__reclaim_post"];
+        post: operations["arena_reclaim_api_arenas__arena__reclaim_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/arenas/{arena}/cancel": {
+    "/api/arenas/{arena}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -187,14 +187,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Arena Cancel */
-        post: operations["arena_cancel_arenas__arena__cancel_post"];
+        post: operations["arena_cancel_api_arenas__arena__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/jobs/{job_id}/reclaim": {
+    "/api/jobs/{job_id}/reclaim": {
         parameters: {
             query?: never;
             header?: never;
@@ -204,14 +204,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Reclaim Job */
-        post: operations["reclaim_job_jobs__job_id__reclaim_post"];
+        post: operations["reclaim_job_api_jobs__job_id__reclaim_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/jobs/{job_id}/instances/{instance_id}/reclaim": {
+    "/api/jobs/{job_id}/instances/{instance_id}/reclaim": {
         parameters: {
             query?: never;
             header?: never;
@@ -221,14 +221,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Reclaim Instance */
-        post: operations["reclaim_instance_jobs__job_id__instances__instance_id__reclaim_post"];
+        post: operations["reclaim_instance_api_jobs__job_id__instances__instance_id__reclaim_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/jobs/{job_id}/retry-done-err": {
+    "/api/jobs/{job_id}/retry-done-err": {
         parameters: {
             query?: never;
             header?: never;
@@ -238,14 +238,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Retry Done Err */
-        post: operations["retry_done_err_jobs__job_id__retry_done_err_post"];
+        post: operations["retry_done_err_api_jobs__job_id__retry_done_err_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/jobs/{job_id}/archive": {
+    "/api/jobs/{job_id}/archive": {
         parameters: {
             query?: never;
             header?: never;
@@ -255,14 +255,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Archive Job Ep */
-        post: operations["archive_job_ep_jobs__job_id__archive_post"];
+        post: operations["archive_job_ep_api_jobs__job_id__archive_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/jobs/{job_id}/unarchive": {
+    "/api/jobs/{job_id}/unarchive": {
         parameters: {
             query?: never;
             header?: never;
@@ -272,14 +272,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Unarchive Job Ep */
-        post: operations["unarchive_job_ep_jobs__job_id__unarchive_post"];
+        post: operations["unarchive_job_ep_api_jobs__job_id__unarchive_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/settings": {
+    "/api/settings": {
         parameters: {
             query?: never;
             header?: never;
@@ -293,10 +293,10 @@ export interface paths {
         options?: never;
         head?: never;
         /** Patch Settings */
-        patch: operations["patch_settings_settings_patch"];
+        patch: operations["patch_settings_api_settings_patch"];
         trace?: never;
     };
-    "/filter-presets": {
+    "/api/filter-presets": {
         parameters: {
             query?: never;
             header?: never;
@@ -304,13 +304,13 @@ export interface paths {
             cookie?: never;
         };
         /** Get Filter Presets */
-        get: operations["get_filter_presets_filter_presets_get"];
+        get: operations["get_filter_presets_api_filter_presets_get"];
         /**
          * Put Filter Presets
          * @description Opaque UI blob; whole-document last-write-wins. Atomic
          *     write so a crash can't corrupt it.
          */
-        put: operations["put_filter_presets_filter_presets_put"];
+        put: operations["put_filter_presets_api_filter_presets_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -702,7 +702,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    health_health_get: {
+    health_api_health_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -722,7 +722,7 @@ export interface operations {
             };
         };
     };
-    get_state_state_get: {
+    get_state_api_state_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -742,7 +742,7 @@ export interface operations {
             };
         };
     };
-    monitor_stream_monitor_stream_get: {
+    monitor_stream_api_monitor_stream_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -762,7 +762,7 @@ export interface operations {
             };
         };
     };
-    list_jobs_jobs_get: {
+    list_jobs_api_jobs_get: {
         parameters: {
             query?: {
                 full?: boolean;
@@ -794,7 +794,7 @@ export interface operations {
             };
         };
     };
-    submit_job_jobs_post: {
+    submit_job_api_jobs_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -831,7 +831,7 @@ export interface operations {
             };
         };
     };
-    get_job_jobs__job_id__get: {
+    get_job_api_jobs__job_id__get: {
         parameters: {
             query?: never;
             header?: never;
@@ -862,7 +862,7 @@ export interface operations {
             };
         };
     };
-    cancel_job_jobs__job_id__delete: {
+    cancel_job_api_jobs__job_id__delete: {
         parameters: {
             query?: never;
             header?: never;
@@ -895,7 +895,7 @@ export interface operations {
             };
         };
     };
-    patch_job_jobs__job_id__patch: {
+    patch_job_api_jobs__job_id__patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -932,7 +932,7 @@ export interface operations {
             };
         };
     };
-    list_arenas_arenas_get: {
+    list_arenas_api_arenas_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -952,7 +952,7 @@ export interface operations {
             };
         };
     };
-    get_arena_arenas__arena__get: {
+    get_arena_api_arenas__arena__get: {
         parameters: {
             query?: never;
             header?: never;
@@ -983,7 +983,7 @@ export interface operations {
             };
         };
     };
-    arena_pause_arenas__arena__pause_post: {
+    arena_pause_api_arenas__arena__pause_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1016,7 +1016,7 @@ export interface operations {
             };
         };
     };
-    arena_resume_arenas__arena__resume_post: {
+    arena_resume_api_arenas__arena__resume_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1049,7 +1049,7 @@ export interface operations {
             };
         };
     };
-    arena_reclaim_arenas__arena__reclaim_post: {
+    arena_reclaim_api_arenas__arena__reclaim_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1082,7 +1082,7 @@ export interface operations {
             };
         };
     };
-    arena_cancel_arenas__arena__cancel_post: {
+    arena_cancel_api_arenas__arena__cancel_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1121,7 +1121,7 @@ export interface operations {
             };
         };
     };
-    reclaim_job_jobs__job_id__reclaim_post: {
+    reclaim_job_api_jobs__job_id__reclaim_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1154,7 +1154,7 @@ export interface operations {
             };
         };
     };
-    reclaim_instance_jobs__job_id__instances__instance_id__reclaim_post: {
+    reclaim_instance_api_jobs__job_id__instances__instance_id__reclaim_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1188,7 +1188,7 @@ export interface operations {
             };
         };
     };
-    retry_done_err_jobs__job_id__retry_done_err_post: {
+    retry_done_err_api_jobs__job_id__retry_done_err_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1225,7 +1225,7 @@ export interface operations {
             };
         };
     };
-    archive_job_ep_jobs__job_id__archive_post: {
+    archive_job_ep_api_jobs__job_id__archive_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1258,7 +1258,7 @@ export interface operations {
             };
         };
     };
-    unarchive_job_ep_jobs__job_id__unarchive_post: {
+    unarchive_job_ep_api_jobs__job_id__unarchive_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1291,7 +1291,7 @@ export interface operations {
             };
         };
     };
-    patch_settings_settings_patch: {
+    patch_settings_api_settings_patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -1324,7 +1324,7 @@ export interface operations {
             };
         };
     };
-    get_filter_presets_filter_presets_get: {
+    get_filter_presets_api_filter_presets_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1346,7 +1346,7 @@ export interface operations {
             };
         };
     };
-    put_filter_presets_filter_presets_put: {
+    put_filter_presets_api_filter_presets_put: {
         parameters: {
             query?: never;
             header?: never;

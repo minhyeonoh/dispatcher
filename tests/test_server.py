@@ -36,6 +36,13 @@ def mk_settings() -> Settings:
   )
 
 
+def api_client(app) -> TestClient:
+  """Client rooted at the JSON prefix, so tests name bare
+  resource paths (`/jobs`) exactly like dispatcher_sdk does.
+  The root url space belongs to the web UI."""
+  return TestClient(app, base_url="http://testserver/api/")
+
+
 def mk_client(
   tmp_path: Path,
   *,
@@ -52,7 +59,7 @@ def mk_client(
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )
-  return TestClient(app)
+  return api_client(app)
 
 
 def payload(
@@ -526,7 +533,7 @@ def test_boot_overrides_beat_persisted(tmp_path: Path):
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )
-  with TestClient(app) as client2:
+  with api_client(app) as client2:
     st = client2.get("/state").json()["settings"]
     assert st["max_concurrent"] == 2  # explicit flag wins
   # And the override itself persisted.
@@ -562,8 +569,10 @@ def test_monitor_stream_mounted_and_sse_frame_shape(
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )
-  paths = {getattr(route, "path", None) for route in app.routes}
-  assert "/monitor/stream" in paths
+  # Via the schema, not app.routes: included routers are nested
+  # objects in some FastAPI versions, so walking .routes is not a
+  # stable way to ask "is this path served".
+  assert "/api/monitor/stream" in app.openapi()["paths"]
   frame = _sse("snapshot", {"nested": {"inner": [1, 2, 3]}})
   assert frame.startswith("event: snapshot\ndata: ")
   assert frame.endswith("\n\n")
@@ -595,19 +604,22 @@ def test_ui_mount_serves_spa_with_deep_link_fallback(
     dispatch=fake_dispatch,
     poll=lambda _p: None,
   )
+  # Unprefixed client: these are PAGES, served from the root url
+  # space the SPA owns.
   with TestClient(app) as client:
-    r = client.get("/", follow_redirects=False)
-    assert r.status_code == 307
-    assert r.headers["location"] == "/ui/"
-    assert client.get("/ui/").text == "<div id='root'></div>"
-    assert client.get("/ui/assets/app.js").status_code == 200
-    # Deep link: the SPA owns routing under /ui — refresh must
-    # load the app, not 404.
-    deep = client.get("/ui/jobs/whatever")
-    assert deep.status_code == 200
-    assert deep.text == "<div id='root'></div>"
-    # API routes are not shadowed by the mount.
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/").text == "<div id='root'></div>"
+    assert client.get("/assets/app.js").status_code == 200
+    # Deep links are pages too — refresh must load the app.
+    for page in ("/jobs/whatever", "/arenas/bench/v7", "/settings"):
+      resp = client.get(page)
+      assert resp.status_code == 200, page
+      assert resp.text == "<div id='root'></div>", page
+    # The JSON surface still wins its own prefix …
+    assert client.get("/api/health").json() == {"status": "ok"}
+    # … and an unmatched API path stays a 404: serving the SPA
+    # there would hand a client HTML while it believes it got
+    # JSON.
+    assert client.get("/api/nope").status_code == 404
 
 
 # ── restore ──────────────────────────────────────────────────────

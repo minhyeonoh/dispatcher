@@ -5,10 +5,10 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/health": {
+    "/api/health": {
       "get": {
         "summary": "Health",
-        "operationId": "health_health_get",
+        "operationId": "health_api_health_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -23,10 +23,10 @@
         }
       }
     },
-    "/state": {
+    "/api/state": {
       "get": {
         "summary": "Get State",
-        "operationId": "get_state_state_get",
+        "operationId": "get_state_api_state_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -41,10 +41,10 @@
         }
       }
     },
-    "/monitor/stream": {
+    "/api/monitor/stream": {
       "get": {
         "summary": "Monitor Stream",
-        "operationId": "monitor_stream_monitor_stream_get",
+        "operationId": "monitor_stream_api_monitor_stream_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -57,10 +57,10 @@
         }
       }
     },
-    "/jobs": {
+    "/api/jobs": {
       "get": {
         "summary": "List Jobs",
-        "operationId": "list_jobs_jobs_get",
+        "operationId": "list_jobs_api_jobs_get",
         "parameters": [
           {
             "name": "full",
@@ -106,7 +106,7 @@
       },
       "post": {
         "summary": "Submit Job",
-        "operationId": "submit_job_jobs_post",
+        "operationId": "submit_job_api_jobs_post",
         "requestBody": {
           "required": true,
           "content": {
@@ -127,7 +127,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Submit Job Jobs Post"
+                  "title": "Response Submit Job Api Jobs Post"
                 }
               }
             }
@@ -145,10 +145,10 @@
         }
       }
     },
-    "/jobs/{job_id}": {
+    "/api/jobs/{job_id}": {
       "get": {
         "summary": "Get Job",
-        "operationId": "get_job_jobs__job_id__get",
+        "operationId": "get_job_api_jobs__job_id__get",
         "parameters": [
           {
             "name": "job_id",
@@ -183,7 +183,7 @@
       },
       "patch": {
         "summary": "Patch Job",
-        "operationId": "patch_job_jobs__job_id__patch",
+        "operationId": "patch_job_api_jobs__job_id__patch",
         "parameters": [
           {
             "name": "job_id",
@@ -232,7 +232,7 @@
       },
       "delete": {
         "summary": "Cancel Job",
-        "operationId": "cancel_job_jobs__job_id__delete",
+        "operationId": "cancel_job_api_jobs__job_id__delete",
         "parameters": [
           {
             "name": "job_id",
@@ -252,7 +252,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Cancel Job Jobs  Job Id  Delete"
+                  "title": "Response Cancel Job Api Jobs  Job Id  Delete"
                 }
               }
             }
@@ -270,10 +270,10 @@
         }
       }
     },
-    "/arenas": {
+    "/api/arenas": {
       "get": {
         "summary": "List Arenas",
-        "operationId": "list_arenas_arenas_get",
+        "operationId": "list_arenas_api_arenas_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -284,7 +284,7 @@
                     "$ref": "#/components/schemas/ArenaSummaryOut"
                   },
                   "type": "array",
-                  "title": "Response List Arenas Arenas Get"
+                  "title": "Response List Arenas Api Arenas Get"
                 }
               }
             }
@@ -292,10 +292,10 @@
         }
       }
     },
-    "/arenas/{arena}": {
+    "/api/arenas/{arena}": {
       "get": {
         "summary": "Get Arena",
-        "operationId": "get_arena_arenas__arena__get",
+        "operationId": "get_arena_api_arenas__arena__get",
         "parameters": [
           {
             "name": "arena",
@@ -331,10 +331,10 @@
         }
       }
     },
-    "/arenas/{arena}/pause": {
+    "/api/arenas/{arena}/pause": {
       "post": {
         "summary": "Arena Pause",
-        "operationId": "arena_pause_arenas__arena__pause_post",
+        "operationId": "arena_pause_api_arenas__arena__pause_post",
         "parameters": [
           {
             "name": "arena",
@@ -354,7 +354,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Arena Pause Arenas  Arena  Pause Post"
+                  "title": "Response Arena Pause Api Arenas  Arena  Pause Post"
                 }
               }
             }
@@ -372,10 +372,10 @@
         }
       }
     },
-    "/arenas/{arena}/resume": {
+    "/api/arenas/{arena}/resume": {
       "post": {
         "summary": "Arena Resume",
-        "operationId": "arena_resume_arenas__arena__resume_post",
+        "operationId": "arena_resume_api_arenas__arena__resume_post",
         "parameters": [
           {
             "name": "arena",
@@ -395,7 +395,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Arena Resume Arenas  Arena  Resume Post"
+                  "title": "Response Arena Resume Api Arenas  Arena  Resume Post"
                 }
               }
             }
@@ -413,10 +413,10 @@
         }
       }
     },
-    "/arenas/{arena}/reclaim": {
+    "/api/arenas/{arena}/reclaim": {
       "post": {
         "summary": "Arena Reclaim",
-        "operationId": "arena_reclaim_arenas__arena__reclaim_post",
+        "operationId": "arena_reclaim_api_arenas__arena__reclaim_post",
         "parameters": [
           {
             "name": "arena",
@@ -436,7 +436,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Arena Reclaim Arenas  Arena  Reclaim Post"
+                  "title": "Response Arena Reclaim Api Arenas  Arena  Reclaim Post"
                 }
               }
             }
@@ -454,10 +454,10 @@
         }
       }
     },
-    "/arenas/{arena}/cancel": {
+    "/api/arenas/{arena}/cancel": {
       "post": {
         "summary": "Arena Cancel",
-        "operationId": "arena_cancel_arenas__arena__cancel_post",
+        "operationId": "arena_cancel_api_arenas__arena__cancel_post",
         "parameters": [
           {
             "name": "arena",
@@ -495,7 +495,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Arena Cancel Arenas  Arena  Cancel Post"
+                  "title": "Response Arena Cancel Api Arenas  Arena  Cancel Post"
                 }
               }
             }
@@ -513,10 +513,10 @@
         }
       }
     },
-    "/jobs/{job_id}/reclaim": {
+    "/api/jobs/{job_id}/reclaim": {
       "post": {
         "summary": "Reclaim Job",
-        "operationId": "reclaim_job_jobs__job_id__reclaim_post",
+        "operationId": "reclaim_job_api_jobs__job_id__reclaim_post",
         "parameters": [
           {
             "name": "job_id",
@@ -536,7 +536,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Reclaim Job Jobs  Job Id  Reclaim Post"
+                  "title": "Response Reclaim Job Api Jobs  Job Id  Reclaim Post"
                 }
               }
             }
@@ -554,10 +554,10 @@
         }
       }
     },
-    "/jobs/{job_id}/instances/{instance_id}/reclaim": {
+    "/api/jobs/{job_id}/instances/{instance_id}/reclaim": {
       "post": {
         "summary": "Reclaim Instance",
-        "operationId": "reclaim_instance_jobs__job_id__instances__instance_id__reclaim_post",
+        "operationId": "reclaim_instance_api_jobs__job_id__instances__instance_id__reclaim_post",
         "parameters": [
           {
             "name": "job_id",
@@ -586,7 +586,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Reclaim Instance Jobs  Job Id  Instances  Instance Id  Reclaim Post"
+                  "title": "Response Reclaim Instance Api Jobs  Job Id  Instances  Instance Id  Reclaim Post"
                 }
               }
             }
@@ -604,10 +604,10 @@
         }
       }
     },
-    "/jobs/{job_id}/retry-done-err": {
+    "/api/jobs/{job_id}/retry-done-err": {
       "post": {
         "summary": "Retry Done Err",
-        "operationId": "retry_done_err_jobs__job_id__retry_done_err_post",
+        "operationId": "retry_done_err_api_jobs__job_id__retry_done_err_post",
         "parameters": [
           {
             "name": "job_id",
@@ -644,7 +644,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Retry Done Err Jobs  Job Id  Retry Done Err Post"
+                  "title": "Response Retry Done Err Api Jobs  Job Id  Retry Done Err Post"
                 }
               }
             }
@@ -662,10 +662,10 @@
         }
       }
     },
-    "/jobs/{job_id}/archive": {
+    "/api/jobs/{job_id}/archive": {
       "post": {
         "summary": "Archive Job Ep",
-        "operationId": "archive_job_ep_jobs__job_id__archive_post",
+        "operationId": "archive_job_ep_api_jobs__job_id__archive_post",
         "parameters": [
           {
             "name": "job_id",
@@ -685,7 +685,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Archive Job Ep Jobs  Job Id  Archive Post"
+                  "title": "Response Archive Job Ep Api Jobs  Job Id  Archive Post"
                 }
               }
             }
@@ -703,10 +703,10 @@
         }
       }
     },
-    "/jobs/{job_id}/unarchive": {
+    "/api/jobs/{job_id}/unarchive": {
       "post": {
         "summary": "Unarchive Job Ep",
-        "operationId": "unarchive_job_ep_jobs__job_id__unarchive_post",
+        "operationId": "unarchive_job_ep_api_jobs__job_id__unarchive_post",
         "parameters": [
           {
             "name": "job_id",
@@ -726,7 +726,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Unarchive Job Ep Jobs  Job Id  Unarchive Post"
+                  "title": "Response Unarchive Job Ep Api Jobs  Job Id  Unarchive Post"
                 }
               }
             }
@@ -744,10 +744,10 @@
         }
       }
     },
-    "/settings": {
+    "/api/settings": {
       "patch": {
         "summary": "Patch Settings",
-        "operationId": "patch_settings_settings_patch",
+        "operationId": "patch_settings_api_settings_patch",
         "requestBody": {
           "content": {
             "application/json": {
@@ -782,10 +782,10 @@
         }
       }
     },
-    "/filter-presets": {
+    "/api/filter-presets": {
       "get": {
         "summary": "Get Filter Presets",
-        "operationId": "get_filter_presets_filter_presets_get",
+        "operationId": "get_filter_presets_api_filter_presets_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -794,7 +794,7 @@
                 "schema": {
                   "additionalProperties": true,
                   "type": "object",
-                  "title": "Response Get Filter Presets Filter Presets Get"
+                  "title": "Response Get Filter Presets Api Filter Presets Get"
                 }
               }
             }
@@ -804,7 +804,7 @@
       "put": {
         "summary": "Put Filter Presets",
         "description": "Opaque UI blob; whole-document last-write-wins. Atomic\nwrite so a crash can't corrupt it.",
-        "operationId": "put_filter_presets_filter_presets_put",
+        "operationId": "put_filter_presets_api_filter_presets_put",
         "requestBody": {
           "content": {
             "application/json": {
@@ -825,7 +825,7 @@
                 "schema": {
                   "additionalProperties": true,
                   "type": "object",
-                  "title": "Response Put Filter Presets Filter Presets Put"
+                  "title": "Response Put Filter Presets Api Filter Presets Put"
                 }
               }
             }

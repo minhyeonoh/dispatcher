@@ -11,10 +11,12 @@ import {
   TR,
 } from "@lab/kit";
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { api } from "../../api/client";
 import type { InstanceView } from "../../api/types";
 import { useLive } from "../../live/store";
+import { resolveJobKey } from "./resolve";
 
 const BUCKETS = [
   "running",
@@ -35,9 +37,11 @@ const BUCKET_TONE = {
 function BucketCard({
   name,
   rows,
+  jobId,
 }: {
   name: (typeof BUCKETS)[number];
   rows: Record<string, InstanceView>;
+  jobId: string;
 }) {
   const entries = Object.entries(rows);
   if (entries.length === 0) return null;
@@ -62,7 +66,15 @@ function BucketCard({
           {entries.map(([task, tv]) => (
             <TR key={task}>
               <TD className="font-mono text-xs">{task}</TD>
-              <TD className="font-mono text-xs">{tv.instance_id}</TD>
+              <TD className="font-mono text-xs">
+                <Link
+                  to="/jobs/$jobKey/instances/$instanceId"
+                  params={{ jobKey: jobId, instanceId: tv.instance_id }}
+                  className="text-accent hover:underline"
+                >
+                  {tv.instance_id}
+                </Link>
+              </TD>
               <TD>{tv.host}</TD>
               <TD className="text-fg-muted">
                 {new Date(tv.dispatched_at).toLocaleString()}
@@ -76,11 +88,29 @@ function BucketCard({
 }
 
 export function JobPage() {
-  const { jobId } = useParams({ from: "/jobs/$jobId" });
-  const live = useLive((s) => s.jobs[jobId]);
+  const { jobKey } = useParams({ from: "/jobs/$jobKey" });
+  const navigate = useNavigate();
+  const jobs = useLive((s) => s.jobs);
+  const resolution = resolveJobKey(jobKey, jobs);
+
+  // An alias in the url resolves to the canonical job_id url:
+  // aliases are renameable, so the address bar (and anything
+  // copied out of it) must settle on the stable key.
+  useEffect(() => {
+    if (resolution.kind === "alias") {
+      void navigate({
+        to: "/jobs/$jobKey",
+        params: { jobKey: resolution.jobId },
+        replace: true,
+      });
+    }
+  }, [resolution, navigate]);
+
+  const live = jobs[jobKey];
   const query = useQuery({
-    queryKey: ["job", jobId, live?.counts],
-    queryFn: () => api.job(jobId),
+    queryKey: ["job", jobKey, live?.counts],
+    queryFn: () => api.job(jobKey),
+    enabled: resolution.kind !== "alias",
     placeholderData: (prev) => prev,
   });
   const job = query.data;
@@ -93,7 +123,7 @@ export function JobPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-lg font-semibold">
             {job.alias || job.label}
           </h1>
@@ -104,16 +134,23 @@ export function JobPage() {
           ) : (
             <Badge tone="ok">active</Badge>
           )}
-          {job.arena && <Badge tone="accent">{job.arena}</Badge>}
+          {job.arena && (
+            <Link to="/arenas/$" params={{ _splat: job.arena }}>
+              <Badge tone="accent">{job.arena}</Badge>
+            </Link>
+          )}
           <Badge>pool {job.pool}</Badge>
           <Badge>w {job.weight}</Badge>
+          {job.max_concurrent !== null && (
+            <Badge>mcw {job.max_concurrent}</Badge>
+          )}
         </div>
         <div className="mt-1 font-mono text-xs text-fg-faint">
           {job.job_id} · {job.home_root}
         </div>
       </div>
       {BUCKETS.map((b) => (
-        <BucketCard key={b} name={b} rows={job[b]} />
+        <BucketCard key={b} name={b} rows={job[b]} jobId={job.job_id} />
       ))}
       {job.pending.length > 0 && (
         <Card>

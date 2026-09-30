@@ -1,51 +1,55 @@
+// URL space, mirroring the server's concepts. Pages live at the
+// root; the JSON surface is /api/* (see api/client.ts), so a page
+// path and its API path are siblings: /arenas/bench/v7 ↔
+// /api/arenas/bench/v7.
+//
+//   /                                overview: what needs action
+//   /jobs                            every job
+//   /jobs/:jobKey                    job detail (id, or alias →
+//                                    redirected to the id)
+//   /jobs/:jobKey/instances/:id      one instance
+//   /arenas/*path                    arena subtree
+//   /hosts                           fleet
+//   /settings                        the settings document
+
 import {
   createRootRoute,
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { useMemo } from "react";
-import { AppShell } from "./features/layout/AppShell";
-import { inSubtree } from "./features/arenas/tree";
+import { ArenaPage } from "./features/arenas/ArenaPage";
+import { HostsPage } from "./features/hosts/HostsPage";
+import { InstancePage } from "./features/instances/InstancePage";
 import { JobPage } from "./features/jobs/JobPage";
-import { JobsTable } from "./features/jobs/JobsTable";
-import { useLive, } from "./live/store";
-
-function useOrderedJobs() {
-  const jobs = useLive((s) => s.jobs);
-  const order = useLive((s) => s.order);
-  return useMemo(
-    () =>
-      order.flatMap((id) => {
-        const row = jobs[id];
-        return row ? [row] : [];
-      }),
-    [jobs, order],
-  );
-}
-
-function AllJobsPage() {
-  return <JobsTable jobs={useOrderedJobs()} />;
-}
-
-function ArenaPage() {
-  const { _splat = "" } = arenaRoute.useParams();
-  const rows = useOrderedJobs().filter((j) =>
-    inSubtree(j.arena ?? "", _splat),
-  );
-  return (
-    <div className="flex flex-col gap-3">
-      <h1 className="font-mono text-sm text-fg-muted">{_splat}</h1>
-      <JobsTable jobs={rows} />
-    </div>
-  );
-}
+import { JobsPage } from "./features/jobs/JobsPage";
+import { AppShell } from "./features/layout/AppShell";
+import { OverviewPage } from "./features/overview/OverviewPage";
+import { SettingsPage } from "./features/settings/SettingsPage";
 
 const rootRoute = createRootRoute({ component: AppShell });
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: AllJobsPage,
+  component: OverviewPage,
+});
+
+const jobsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/jobs",
+  component: JobsPage,
+});
+
+const jobRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/jobs/$jobKey",
+  component: JobPage,
+});
+
+const instanceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/jobs/$jobKey/instances/$instanceId",
+  component: InstancePage,
 });
 
 const arenaRoute = createRoute({
@@ -54,15 +58,28 @@ const arenaRoute = createRoute({
   component: ArenaPage,
 });
 
-const jobRoute = createRoute({
+const hostsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/jobs/$jobId",
-  component: JobPage,
+  path: "/hosts",
+  component: HostsPage,
+});
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: SettingsPage,
 });
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute, arenaRoute, jobRoute]),
-  basepath: "/ui",
+  routeTree: rootRoute.addChildren([
+    indexRoute,
+    jobsRoute,
+    jobRoute,
+    instanceRoute,
+    arenaRoute,
+    hostsRoute,
+    settingsRoute,
+  ]),
 });
 
 declare module "@tanstack/react-router" {

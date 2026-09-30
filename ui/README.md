@@ -49,7 +49,17 @@ tokens — no rebuild, no component changes.
 ```
 pnpm install
 pnpm gen:api     # server OpenAPI → apps/monitor/src/api/types.gen.ts
-pnpm dev         # Vite dev server, proxies API to :7200
+pnpm dev         # Vite dev server, proxies /api to :7200
 pnpm build       # → apps/monitor/dist  (serve with --ui-dist)
 pnpm typecheck && pnpm test
 ```
+
+## URL space
+
+The app owns the root paths (`/jobs/abc` is a page); the JSON
+surface is `/api/**`. One proxy rule covers dev, and in prod the
+server mounts `dist/` at `/` with an index.html fallback so deep
+links survive a refresh. Pages: `/` overview, `/jobs`,
+`/jobs/:jobKey` (an alias redirects to its job_id),
+`/jobs/:jobKey/instances/:instanceId`, `/arenas/*path`, `/hosts`,
+`/settings`.

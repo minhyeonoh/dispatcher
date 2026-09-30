@@ -17,11 +17,11 @@ dispatch, failure detection, and state persistence.
   iff a job names it. Names are slash paths
   (`bench/v7/front5`) and a path addresses its SUBTREE — the
   tree is a naming convention, segment meaning is yours, the
-  server never pre-defines structure. `GET /arenas` lists the
+  server never pre-defines structure. `GET /api/arenas` lists the
   paths jobs actually name, with aggregated counts;
-  `GET /arenas/{path}` aggregates the subtree;
-  `POST /arenas/{path}/pause|resume|reclaim` fan the per-job op
-  out over subtree members; `/arenas/{path}/cancel` refuses
+  `GET /api/arenas/{path}` aggregates the subtree;
+  `POST /api/arenas/{path}/pause|resume|reclaim` fan the per-job
+  op out over subtree members; `…/cancel` refuses
   without `{"confirm": true}`, naming every job that would die.
   Submitting many jobs at once (a sweep) is a client convenience
   (`dispatcher_sdk.client.submit_jobs`), not a server concept —
@@ -52,7 +52,7 @@ dispatch, failure detection, and state persistence.
    `dispatcher_sdk.bootstrap` unpacks it to container-local disk
    before exec — one sequential read per instance, no per-file
    NFS traffic. Worker code uses `dispatcher_sdk.run(work)`.
-3. **A submission** (`POST /jobs`, or
+3. **A submission** (`POST /api/jobs`, or
    `dispatcher_sdk.client.submit_job`):
 
    ```json
@@ -145,9 +145,34 @@ future readout might need in `data`. Exit codes: 0 ok, 1 error,
 ```
 uv sync
 dispatcher serve --self-host ml10 --data-dir ~/dispatcher-data \
-  --host ml10=8 --host ml9=8 --max-concurrent 12 --port 7200
+  --host ml10=8 --host ml9=8 --max-concurrent 12 --port 7200 \
+  --ui-dist ui/apps/monitor/dist
 dispatcher monitor --server http://127.0.0.1:7200
 ```
+
+## URL space
+
+Pages and JSON are siblings: the web UI owns the root paths a
+human types, and the whole JSON surface — docs included — lives
+under `/api`, so `/arenas/bench/v7` is the page and
+`/api/arenas/bench/v7` is its data.
+
+```
+/                                overview: what needs attention
+/jobs                            every job
+/jobs/{job_id}                   job detail (an alias in the url
+                                 redirects to its job_id — aliases
+                                 are renameable, ids are not)
+/jobs/{job_id}/instances/{id}    one instance
+/arenas/{path}                   arena subtree
+/hosts  ·  /settings             fleet · the settings document
+/api/**                          JSON  ·  /api/docs = OpenAPI UI
+```
+
+`--ui-dist` mounts the built SPA at `/` (unmatched page paths fall
+back to it, so deep links survive a refresh; `/api/*` never
+does). Without the flag the server is API-only. See
+`ui/README.md` to build the UI.
 
 All timestamps the dispatcher mints (event logs, API responses,
 job ids) are timezone-aware KST (+09:00); external times
@@ -156,9 +181,9 @@ job ids) are timezone-aware KST (+09:00); external times
 State: per-job event log at
 `<home_root>/.dispatcher-state.jsonl` (replayed on restart), an
 jobs index under `--data-dir`, and `settings.json` — every
-`PATCH /settings` persists the whole runtime-tunable document, so
-operator tuning survives restarts. `--host`/`--max-concurrent`
+`PATCH /api/settings` persists the whole runtime-tunable document,
+so operator tuning survives restarts. `--host`/`--max-concurrent`
 are required on the first boot only; afterwards the persisted
 settings win and explicit flags act as overrides.
 `TELEGRAM_BOT_TOKEN` in the env enables progress notifications
-(configure thresholds via `PATCH /settings`).
+(configure thresholds via `PATCH /api/settings`).

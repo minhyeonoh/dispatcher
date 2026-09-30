@@ -1,7 +1,7 @@
 import { cn } from "@lab/kit";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { useLive } from "../../live/store";
+import { useOrderedJobs } from "../jobs/useJobs";
 import { buildArenaTree, type ArenaNode } from "./tree";
 
 function Node({ node, depth }: { node: ArenaNode; depth: number }) {
@@ -30,28 +30,19 @@ function Node({ node, depth }: { node: ArenaNode; depth: number }) {
 }
 
 export function ArenaTree() {
-  const jobs = useLive((s) => s.jobs);
-  const order = useLive((s) => s.order);
+  const jobs = useOrderedJobs();
   const { roots, ungrouped } = useMemo(
-    () =>
-      buildArenaTree(
-        order.flatMap((id) => {
-          const row = jobs[id];
-          return row ? [row] : [];
-        }),
-      ),
-    [jobs, order],
+    () => buildArenaTree(jobs),
+    [jobs],
   );
   return (
     <nav className="flex flex-col gap-0.5">
-      <Link
-        to="/"
-        className="rounded-control px-2 py-1 text-sm font-medium hover:bg-sunken"
-        activeProps={{ className: "bg-accent-surface text-accent" }}
-        activeOptions={{ exact: true }}
-      >
-        all jobs
-      </Link>
+      <div className="px-2 pt-1 pb-2 text-xs font-medium tracking-wide text-fg-faint uppercase">
+        arenas
+      </div>
+      {roots.length === 0 && (
+        <div className="px-2 text-xs text-fg-faint">none</div>
+      )}
       {roots.map((node) => (
         <Node key={node.path} node={node} depth={0} />
       ))}

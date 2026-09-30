@@ -1,4 +1,7 @@
-import type { ArenaDetail, ArenaSummary, FullJob } from "./types";
+import type { ArenaDetail, ArenaSummary, FullJob, StateOut } from "./types";
+
+/** The JSON surface. The root url space belongs to the pages. */
+export const API = "/api";
 
 export class ApiError extends Error {
   constructor(
@@ -10,7 +13,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, {
+  const resp = await fetch(API + path, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
@@ -34,6 +37,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  state: () => request<StateOut>("/state"),
   job: (jobId: string) =>
     request<FullJob>(`/jobs/${encodeURIComponent(jobId)}`),
   arenas: () => request<ArenaSummary[]>("/arenas"),

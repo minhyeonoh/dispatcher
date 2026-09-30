@@ -21,6 +21,7 @@ from dispatcher.tools.monitor_client import (
   render_compact,
   render_detail,
 )
+from dispatcher_sdk.client import API_PREFIX
 
 if TYPE_CHECKING:
   from rich.console import Console
@@ -41,7 +42,7 @@ def _sse_worker(
       with httpx.Client(timeout=None) as client:
         with client.stream(
           "GET",
-          f"{server.rstrip('/')}/monitor/stream",
+          f"{server.rstrip('/')}{API_PREFIX}/monitor/stream",
           headers={"accept": "text/event-stream"},
         ) as response:
           if response.status_code != 200:

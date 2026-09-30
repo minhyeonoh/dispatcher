@@ -1,5 +1,5 @@
 import { Button } from "@lab/kit";
-import { Outlet } from "@tanstack/react-router";
+import { Link, Outlet } from "@tanstack/react-router";
 import { useSyncExternalStore } from "react";
 import { ArenaTree } from "../arenas/ArenaTree";
 import { ClusterBar } from "../cluster/ClusterBar";
@@ -48,12 +48,40 @@ function ThemeToggle() {
   );
 }
 
+const NAV = [
+  { to: "/", label: "overview", exact: true },
+  { to: "/jobs", label: "jobs", exact: false },
+  { to: "/hosts", label: "fleet", exact: false },
+  { to: "/settings", label: "settings", exact: false },
+] as const;
+
+function Nav() {
+  return (
+    <nav className="flex items-center gap-1">
+      {NAV.map(({ to, label, exact }) => (
+        <Link
+          key={to}
+          to={to}
+          className="rounded-control px-2 py-1 text-sm text-fg-muted hover:bg-sunken hover:text-fg"
+          activeProps={{ className: "bg-accent-surface text-accent" }}
+          activeOptions={{ exact }}
+        >
+          {label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
 export function AppShell() {
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-line bg-raised px-4 py-2">
+      <header className="flex items-center justify-between gap-4 border-b border-line bg-raised px-4 py-2">
         <ClusterBar />
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <Nav />
+          <ThemeToggle />
+        </div>
       </header>
       <div className="flex min-h-0 flex-1">
         <aside className="w-56 shrink-0 overflow-y-auto border-r border-line p-2">
