@@ -7,12 +7,14 @@ Shows the whole submitter side of the contract:
 
 Run (the env image must exist on the launcher):
 
-    docker build -t sleepbench-env:1 \
-      -f examples/sleepbench/Dockerfile \
-      --build-context . examples/sleepbench   # see build.sh
+    ./examples/sleepbench/build.sh
     uv run python examples/sleepbench/submit.py \
       --server http://127.0.0.1:7200 \
-      --home-root /hdd/hdd2/omh/dispatcher-demo/<run-id>
+      --home-root <SHARED-FS>/dispatcher-demo/<run-id>
+
+`<SHARED-FS>` must be visible at the same path on every dispatch
+host — `df -T` it on two of them, since a per-host local mount
+looks identical to a shared one (see the README).
 """
 
 from __future__ import annotations
