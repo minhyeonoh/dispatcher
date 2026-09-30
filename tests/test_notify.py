@@ -14,7 +14,7 @@ from dispatcher.services.notify import (
   TelegramSender,
 )
 from tests.test_runtime import mk_attempt
-from tests.test_scheduler import clock_from, name_gen
+from tests.test_scheduler import clock_from, id_gen
 
 if TYPE_CHECKING:
   from pathlib import Path
@@ -51,7 +51,7 @@ def _mk(
     max_concurrent=10,
     hosts={"ml10": HostSettings(max_concurrent=10)},
     clock=clock_from(),
-    name_gen=name_gen(),
+    id_gen=id_gen(),
   )
   sched.submit(mk_attempt(tmp_path, tasks))
   config = NotifySettings(

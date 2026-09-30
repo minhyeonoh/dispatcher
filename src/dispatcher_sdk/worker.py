@@ -80,7 +80,7 @@ def load_trial(
   return TrialContext(
     attempt=spec.get("attempt_id") or e.get("DISPATCHER_ATTEMPT", ""),
     task=spec.get("task_name") or e.get("DISPATCHER_TASK", ""),
-    trial=spec.get("trial_name") or e.get("DISPATCHER_TRIAL", ""),
+    trial=spec.get("trial_id") or e.get("DISPATCHER_TRIAL", ""),
     home=home,
     payload=spec.get("payload"),
     set_label=e.get("DISPATCHER_SET_LABEL", ""),

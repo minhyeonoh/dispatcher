@@ -213,7 +213,7 @@ def test_restore_bumps_pool_for_preexisting_running():
   tv = TrialView(
     task_name="t1",
     state="running",
-    trial_name="t1__0000001",
+    trial_id="t1__0000001",
     host="ml10",
     dispatched_at=datetime.now(UTC),
   )

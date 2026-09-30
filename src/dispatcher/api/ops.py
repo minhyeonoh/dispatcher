@@ -94,7 +94,7 @@ class ServerState:
   resolve_image: Callable[[str], str] | None = None
   _seq: int = field(default=0)
 
-  def next_trial_name(self, task_name: str) -> str:
+  def next_trial_id(self, task_name: str) -> str:
     """`<task[:32]>__<7-digit seq>` — deterministic, monotonic."""
     self._seq += 1
     truncated = task_name[:32].rstrip("_-")
@@ -484,7 +484,7 @@ def _require_paused_live(
 async def reclaim_trial(
   st: ServerState,
   attempt_id: str,
-  trial_name: str,
+  trial_id: str,
   clock_fn: Callable[[], datetime],
 ) -> dict[str, Any]:
   """Kill ONE running trial and put its task back on pending —
@@ -495,7 +495,7 @@ async def reclaim_trial(
   tick with a fresh trial name and home, which is usually the
   point ("kill it and run it again"). The old container's late
   die event / outcome cannot touch the successor — the
-  stale-observation guard drops signals whose trial_name no
+  stale-observation guard drops signals whose trial_id no
   longer occupies the bucket."""
   try:
     state = st.scheduler.attempt_state(attempt_id)
@@ -509,7 +509,7 @@ async def reclaim_trial(
   view = st.scheduler.attempt_view(attempt_id)
   match: tuple[str, TrialView] | None = None
   for task_name, tv in view.running.items():
-    if tv.trial_name == trial_name:
+    if tv.trial_id == trial_id:
       match = (task_name, tv)
       break
   if match is None:
@@ -517,14 +517,13 @@ async def reclaim_trial(
     # need different operator reactions.
     for bucket in ("done_ok", "done_err", "unknown", "ghosted"):
       if any(
-        tv.trial_name == trial_name
-        for tv in getattr(view, bucket).values()
+        tv.trial_id == trial_id for tv in getattr(view, bucket).values()
       ):
         raise Conflict(
-          f"trial {trial_name!r} is not running (state={bucket})"
+          f"trial {trial_id!r} is not running (state={bucket})"
         )
     raise NotFound(
-      f"trial {trial_name!r} not found in attempt {attempt_id!r}"
+      f"trial {trial_id!r} not found in attempt {attempt_id!r}"
     )
   task_name, tv = match
   # Kill first, then reclaim — same order as attempt-level
@@ -535,7 +534,7 @@ async def reclaim_trial(
   if not reclaimed:
     # Natural completion won the race between snapshot and now.
     raise Conflict(
-      f"trial {trial_name!r} completed before it could be reclaimed"
+      f"trial {trial_id!r} completed before it could be reclaimed"
     )
   await append_event_async(
     event_log_path_for(state),
@@ -543,7 +542,7 @@ async def reclaim_trial(
       "type": "reclaim",
       "attempt_id": attempt_id,
       "task_name": task_name,
-      "trial_name": trial_name,
+      "trial_id": trial_id,
       "at": clock_fn().isoformat(),
     },
   )
@@ -558,7 +557,7 @@ async def reclaim_trial(
   return {
     "attempt_id": attempt_id,
     "task_name": task_name,
-    "trial_name": trial_name,
+    "trial_id": trial_id,
     "status": "reclaimed",
   }
 
@@ -587,7 +586,7 @@ async def reclaim_attempt(
           "type": "reclaim",
           "attempt_id": attempt_id,
           "task_name": task_name,
-          "trial_name": tv.trial_name,
+          "trial_id": tv.trial_id,
           "at": at,
         },
       )
@@ -621,10 +620,10 @@ async def retry_done_err(
   done_err_snapshot: dict[str, TrialView] = dict(view.done_err)
 
   targets: list[tuple[str, TrialView]] = []
-  if payload.trial_names:
-    wanted = set(payload.trial_names)
+  if payload.trial_ids:
+    wanted = set(payload.trial_ids)
     for task_name, tv in done_err_snapshot.items():
-      if tv.trial_name in wanted:
+      if tv.trial_id in wanted:
         targets.append((task_name, tv))
   else:
     since_epoch = (
@@ -636,7 +635,7 @@ async def retry_done_err(
       if payload.host is not None and tv.host != payload.host:
         continue
       if since_epoch is not None:
-        outcome_path = state.home_root / tv.trial_name / "outcome.json"
+        outcome_path = state.home_root / tv.trial_id / "outcome.json"
         try:
           mtime = await asyncio.to_thread(
             lambda p=outcome_path: p.stat().st_mtime
@@ -663,7 +662,7 @@ async def retry_done_err(
           "type": "retry",
           "attempt_id": attempt_id,
           "task_name": task_name,
-          "trial_name": tv.trial_name,
+          "trial_id": tv.trial_id,
           "at": at,
         },
       )

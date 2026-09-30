@@ -39,10 +39,10 @@ def test_gc_preserves_running_trial_with_uppercase_name(
   sched.submit(mk_attempt(tmp_path, [task]))
   action = sched.dispatch_one()
   assert action is not None
-  assert action.trial_name != action.trial_name.lower()
+  assert action.trial_id != action.trial_id.lower()
 
   async def fake_census(host, *, self_host, label_filter=None):
-    return [_census_row(action.trial_name, OLD)]
+    return [_census_row(action.trial_id, OLD)]
 
   removed: list[str] = []
 
@@ -69,7 +69,7 @@ def test_gc_preserves_unknown_trials(tmp_path: Path, monkeypatch):
   action = _seed_unknown(sched, tmp_path)
 
   async def fake_census(host, *, self_host, label_filter=None):
-    return [_census_row(action.trial_name, OLD)]
+    return [_census_row(action.trial_id, OLD)]
 
   removed: list[str] = []
 

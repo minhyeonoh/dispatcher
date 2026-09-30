@@ -19,14 +19,14 @@ if TYPE_CHECKING:
 
 
 class RetryDoneErrRequest(BaseModel):
-  """Empty body = retry every done_err trial. `trial_names`
+  """Empty body = retry every done_err trial. `trial_ids`
   overrides the host/since filters."""
 
   model_config = ConfigDict(extra="forbid")
 
   host: str | None = None
   since_iso: datetime | None = None
-  trial_names: list[str] | None = None
+  trial_ids: list[str] | None = None
 
 
 class AttemptCountsOut(BaseModel):
@@ -63,7 +63,7 @@ class AttemptSummaryWithMetricsOut(AttemptSummaryOut):
 
 
 class TrialViewOut(BaseModel):
-  trial_name: str
+  trial_id: str
   host: str
   dispatched_at: datetime
   # Outcome `values` for terminal trials whose envelope is cached;
@@ -189,7 +189,7 @@ def full_attempt_view(
   ) -> dict[str, TrialViewOut]:
     return {
       tn: TrialViewOut(
-        trial_name=tv.trial_name,
+        trial_id=tv.trial_id,
         host=tv.host,
         dispatched_at=tv.dispatched_at,
         values=_values_for(tn),

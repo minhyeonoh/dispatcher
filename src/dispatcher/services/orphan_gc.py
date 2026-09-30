@@ -71,12 +71,12 @@ class OrphanGC:
     now = clock.now()
     preserved: set[str] = set()
     for _aid, tv in self._sched.iter_running():
-      preserved.add(tv.trial_name)
+      preserved.add(tv.trial_id)
     # Right after a restart every previously-running trial sits
     # in unknown until the resolver speaks; GC must not beat it
     # to a live container.
     for _aid, _task, tv in self._sched.iter_unknown():
-      preserved.add(tv.trial_name)
+      preserved.add(tv.trial_id)
 
     per_host_removed: dict[str, int] = {}
     for host in list(self._sched.all_host_settings()):

@@ -87,7 +87,7 @@ def apply_patch(
 
 @dataclass
 class _TrackedTrial:
-  trial_name: str
+  trial_id: str
   max_rss: int
   first_seen: datetime
   last_seen: datetime
@@ -97,7 +97,7 @@ class _TrackedTrial:
 @dataclass
 class TrialPeak:
   host: str
-  trial_name: str
+  trial_id: str
   peak_rss: int
   sample_count: int
   first_seen: datetime
@@ -106,7 +106,7 @@ class TrialPeak:
   def to_json(self) -> dict[str, object]:
     return {
       "host": self.host,
-      "trial_name": self.trial_name,
+      "trial_id": self.trial_id,
       "peak_rss": self.peak_rss,
       "sample_count": self.sample_count,
       "first_seen": self.first_seen.isoformat(),
@@ -117,7 +117,7 @@ class TrialPeak:
   def from_json(cls, obj: dict[str, object]) -> TrialPeak:
     return cls(
       host=str(obj["host"]),
-      trial_name=str(obj["trial_name"]),
+      trial_id=str(obj["trial_id"]),
       peak_rss=int(obj["peak_rss"]),  # type: ignore[arg-type]
       sample_count=int(obj["sample_count"]),  # type: ignore[arg-type]
       first_seen=datetime.fromisoformat(str(obj["first_seen"])),
@@ -259,7 +259,7 @@ def update_tracker(
     tt = tracked_here.pop(name)
     peak = TrialPeak(
       host=host,
-      trial_name=tt.trial_name,
+      trial_id=tt.trial_id,
       peak_rss=tt.max_rss,
       sample_count=tt.sample_count,
       first_seen=tt.first_seen,
@@ -275,7 +275,7 @@ def update_tracker(
     prev = tracked_here.get(tstat.name)
     if prev is None:
       tracked_here[tstat.name] = _TrackedTrial(
-        trial_name=tstat.name,
+        trial_id=tstat.name,
         max_rss=tstat.rss_bytes,
         first_seen=now,
         last_seen=now,
@@ -331,7 +331,7 @@ async def autotune_tick(
         logger.warning(
           "host_autotune: append peak (%s/%s) failed: %s",
           host,
-          peak.trial_name,
+          peak.trial_id,
           exc,
         )
 

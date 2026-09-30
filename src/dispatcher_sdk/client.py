@@ -92,14 +92,14 @@ def reclaim_attempt(server: str, attempt_id: str) -> dict[str, Any]:
 
 
 def reclaim_trial(
-  server: str, attempt_id: str, trial_name: str
+  server: str, attempt_id: str, trial_id: str
 ) -> dict[str, Any]:
   """Kill one running trial; its task re-queues with a fresh
   trial. No pause needed."""
   return _request(
     server,
     "POST",
-    f"/attempts/{attempt_id}/trials/{trial_name}/reclaim",
+    f"/attempts/{attempt_id}/trials/{trial_id}/reclaim",
     {},
   )
 

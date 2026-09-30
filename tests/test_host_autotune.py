@@ -30,7 +30,7 @@ NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 def _peak(rss: int, host: str = "h", name: str = "t") -> TrialPeak:
   return TrialPeak(
     host=host,
-    trial_name=name,
+    trial_id=name,
     peak_rss=rss,
     sample_count=3,
     first_seen=NOW,
@@ -198,7 +198,7 @@ def test_update_tracker_vanished_container_flushes_to_ring(
   completed = update_tracker(
     state, "h", _sample([]), NOW + timedelta(minutes=1), 50
   )
-  assert [p.trial_name for p in completed] == ["c1"]
+  assert [p.trial_id for p in completed] == ["c1"]
   assert [p.peak_rss for p in state.ring["h"]] == [5 * GIB]
   assert state.tracked["h"] == {}
 
@@ -235,7 +235,7 @@ def test_append_then_load_round_trips(tmp_path: Path):
   append_peak(f, _peak(5 * GIB, name="a"))
   append_peak(f, _peak(6 * GIB, name="b"))
   ring = load_ring(f, 50)
-  assert [p.trial_name for p in ring["h"]] == ["a", "b"]
+  assert [p.trial_id for p in ring["h"]] == ["a", "b"]
 
 
 def test_load_ring_trims_per_host(tmp_path: Path):
@@ -243,7 +243,7 @@ def test_load_ring_trims_per_host(tmp_path: Path):
   for i in range(10):
     append_peak(f, _peak(i * GIB, name=f"t{i}"))
   ring = load_ring(f, 3)
-  assert [p.trial_name for p in ring["h"]] == ["t7", "t8", "t9"]
+  assert [p.trial_id for p in ring["h"]] == ["t7", "t8", "t9"]
 
 
 def test_load_ring_skips_malformed_line(tmp_path: Path):
@@ -252,7 +252,7 @@ def test_load_ring_skips_malformed_line(tmp_path: Path):
   with f.open("a") as fh:
     fh.write("{truncat\n")
   ring = load_ring(f, 50)
-  assert [p.trial_name for p in ring["h"]] == ["good"]
+  assert [p.trial_id for p in ring["h"]] == ["good"]
 
 
 def test_truncate_ring_file_shrinks_disk(tmp_path: Path):

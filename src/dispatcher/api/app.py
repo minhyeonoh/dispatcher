@@ -134,7 +134,7 @@ def create_app(
       max_concurrent=settings.max_concurrent,
       hosts=settings.hosts,
       clock=clock_fn,
-      name_gen=lambda task: server_state.next_trial_name(task),
+      id_gen=lambda task: server_state.next_trial_id(task),
       pool_caps=dict(settings.pool_caps),
     )
     docker_events: DockerEventStreamManager | None = None
@@ -173,7 +173,7 @@ def create_app(
     app.state.dispatcher = server_state
     # Restore before anything can dispatch: rebuild AttemptStates
     # from event logs, buckets from outcome files, and push the
-    # trial-name counter past every name on disk.
+    # trial-id counter past every name on disk.
     server_state.advance_seq_to(
       restore_attempts_from_disk(scheduler, metrics, config.data_dir)
     )
@@ -455,12 +455,12 @@ def create_app(
   async def reclaim_attempt(attempt_id: str) -> dict[str, Any]:
     return await ops.reclaim_attempt(_get_state(app), attempt_id, clock_fn)
 
-  @app.post("/attempts/{attempt_id}/trials/{trial_name}/reclaim")
+  @app.post("/attempts/{attempt_id}/trials/{trial_id}/reclaim")
   async def reclaim_trial(
-    attempt_id: str, trial_name: str
+    attempt_id: str, trial_id: str
   ) -> dict[str, Any]:
     return await ops.reclaim_trial(
-      _get_state(app), attempt_id, trial_name, clock_fn
+      _get_state(app), attempt_id, trial_id, clock_fn
     )
 
   @app.post("/attempts/{attempt_id}/retry-done-err")

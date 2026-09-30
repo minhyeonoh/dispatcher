@@ -59,7 +59,7 @@ def build_remote_command(
   spec = state.container
   parts: list[str] = ["docker", "run", "-d"]
   for k, v in labels.main_labels(
-    state.attempt_id, action.trial_name
+    state.attempt_id, action.trial_id
   ).items():
     parts += ["--label", f"{k}={v}"]
   parts += ["-v", f"{trial_home}:{spec.home_mount}"]
@@ -74,11 +74,11 @@ def build_remote_command(
   env = {
     **spec.env,
     **state.env,
-    ENV_TRIAL: action.trial_name,
+    ENV_TRIAL: action.trial_id,
     ENV_TASK: action.task_name,
     ENV_ATTEMPT: state.attempt_id,
     ENV_HOME: spec.home_mount,
-    ENV_SET_LABEL: labels.set_label(action.trial_name),
+    ENV_SET_LABEL: labels.set_label(action.trial_id),
     **({ENV_SOURCE: SOURCE_MOUNT} if state.source_sha256 else {}),
   }
   for k, v in env.items():

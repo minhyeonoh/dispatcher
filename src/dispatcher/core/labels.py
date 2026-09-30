@@ -23,17 +23,17 @@ ATTEMPT = "dispatcher.attempt"
 MANAGED_VALUE = "1"
 
 
-def main_labels(attempt_id: str, trial_name: str) -> dict[str, str]:
+def main_labels(attempt_id: str, trial_id: str) -> dict[str, str]:
   """Labels the dispatcher stamps on the main container."""
   return {
     MANAGED: MANAGED_VALUE,
-    TRIAL: trial_name,
-    SET: trial_name,
+    TRIAL: trial_id,
+    SET: trial_id,
     ATTEMPT: attempt_id,
   }
 
 
-def set_label(trial_name: str) -> str:
+def set_label(trial_id: str) -> str:
   """`k=v` form a worker passes to `docker run --label` for
   sibling containers."""
-  return f"{SET}={trial_name}"
+  return f"{SET}={trial_id}"

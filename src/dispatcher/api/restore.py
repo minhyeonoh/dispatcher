@@ -14,7 +14,7 @@ from dispatcher.core.event_log import (
   read_events,
   replay_events,
   scan_outcomes,
-  seq_in_trial_name,
+  seq_in_trial_id,
 )
 from dispatcher.core.models import TrialView
 from dispatcher.core.outcome import CompletionSnapshot
@@ -37,7 +37,7 @@ def restore_attempts_from_disk(
 ) -> int:
   """Rebuild every live attempt from its event log + on-disk
   outcomes. Malformed logs are skipped (one corrupt attempt must
-  not block startup). Returns the highest trial-name counter seen
+  not block startup). Returns the highest trial-id counter seen
   so the namer never re-mints a used name."""
   max_seq = 0
   for log_path in find_event_logs(data_dir):
@@ -67,14 +67,14 @@ def restore_attempts_from_disk(
     for entry in dispatch_log:
       # Counter first, before any continue: a name handed out is
       # a name taken.
-      max_seq = max(max_seq, seq_in_trial_name(entry.trial_name))
+      max_seq = max(max_seq, seq_in_trial_id(entry.trial_id))
       if entry.attempt_id != attempt.attempt_id:
         continue
       done_ok.pop(entry.task_name, None)
       done_err.pop(entry.task_name, None)
       unknown.pop(entry.task_name, None)
-      latest_trial[entry.task_name] = entry.trial_name
-      outcome = completed.get(entry.trial_name)
+      latest_trial[entry.task_name] = entry.trial_id
+      outcome = completed.get(entry.trial_id)
       if outcome is not None:
         error_present = (not outcome.ok) or outcome.error is not None
         if error_present and outcome.infra:
@@ -91,7 +91,7 @@ def restore_attempts_from_disk(
         tv = TrialView(
           task_name=entry.task_name,
           state="done_err" if error_present else "done_ok",
-          trial_name=entry.trial_name,
+          trial_id=entry.trial_id,
           host=entry.host,
           dispatched_at=entry.dispatched_at,
         )
@@ -103,7 +103,7 @@ def restore_attempts_from_disk(
         unknown[entry.task_name] = TrialView(
           task_name=entry.task_name,
           state="unknown",
-          trial_name=entry.trial_name,
+          trial_id=entry.trial_id,
           host=entry.host,
           dispatched_at=entry.dispatched_at,
         )
@@ -144,8 +144,8 @@ def restore_attempts_from_disk(
     # superseded (requeued) trial's outcome must not win, and
     # must not double-count in metrics.
     trial_to_task = {trial: task for task, trial in latest_trial.items()}
-    for trial_name, outcome in completed.items():
-      task_name = trial_to_task.get(trial_name)
+    for trial_id, outcome in completed.items():
+      task_name = trial_to_task.get(trial_id)
       if task_name is None:
         continue
       # Skip outcomes routed back to pending by the infra rule.

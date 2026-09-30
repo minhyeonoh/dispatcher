@@ -29,7 +29,7 @@ def dispatch_event(task: str, trial: str, attempt_id: str = "A") -> dict:
     "type": "dispatch",
     "attempt_id": attempt_id,
     "task_name": task,
-    "trial_name": trial,
+    "trial_id": trial,
     "host": "ml10",
     "at": "2026-09-28T10:00:01+00:00",
   }
@@ -167,7 +167,7 @@ def test_dispatch_events_appended_to_log():
   )
   assert out is not None
   _, log = out
-  assert [(e.task_name, e.trial_name) for e in log] == [
+  assert [(e.task_name, e.trial_id) for e in log] == [
     ("t1", "t1__0000001"),
     ("t2", "t2__0000002"),
   ]
@@ -185,7 +185,7 @@ def test_dispatch_preserves_order_across_patches():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_name for e in log] == ["n1", "n2"]
+  assert [e.trial_id for e in log] == ["n1", "n2"]
 
 
 def test_dispatch_missing_required_field_raises():
@@ -275,7 +275,7 @@ def _retract(kind: str, task: str, trial: str | None) -> dict:
     "task_name": task,
   }
   if trial is not None:
-    ev["trial_name"] = trial
+    ev["trial_id"] = trial
   return ev
 
 
@@ -290,7 +290,7 @@ def test_reclaim_erases_matching_dispatch_entry():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_name for e in log] == ["n2"]
+  assert [e.trial_id for e in log] == ["n2"]
 
 
 def test_reclaim_then_redispatch_preserves_new_entry():
@@ -304,7 +304,7 @@ def test_reclaim_then_redispatch_preserves_new_entry():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_name for e in log] == ["n3"]
+  assert [e.trial_id for e in log] == ["n3"]
 
 
 def test_retry_erases_the_named_trial_not_the_last_one():
@@ -321,7 +321,7 @@ def test_retry_erases_the_named_trial_not_the_last_one():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_name for e in log] == ["n2"]
+  assert [e.trial_id for e in log] == ["n2"]
 
 
 def test_retract_of_an_already_erased_trial_is_noop():
@@ -348,7 +348,7 @@ def test_reclaim_of_never_dispatched_task_is_noop():
   )
   assert out is not None
   _, log = out
-  assert [e.trial_name for e in log] == ["n1"]
+  assert [e.trial_id for e in log] == ["n1"]
 
 
 @pytest.mark.parametrize("kind", ["reclaim", "retry"])
@@ -358,17 +358,17 @@ def test_retract_missing_task_name_raises(kind: str):
       [
         submit_event(),
         dispatch_event("t1", "n1"),
-        {"type": kind, "attempt_id": "A", "trial_name": "n1"},
+        {"type": kind, "attempt_id": "A", "trial_id": "n1"},
       ]
     )
 
 
 @pytest.mark.parametrize("kind", ["reclaim", "retry"])
-def test_retract_missing_trial_name_raises(kind: str):
+def test_retract_missing_trial_id_raises(kind: str):
   # No legacy last-by-task fallback in this repo: erasing "the
   # last dispatch for the task" deletes the wrong trial once a
   # requeue has appended a second dispatch.
-  with pytest.raises(ReplayError, match="missing 'trial_name'"):
+  with pytest.raises(ReplayError, match="missing 'trial_id'"):
     replay_events(
       [
         submit_event(),

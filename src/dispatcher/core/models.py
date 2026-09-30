@@ -78,7 +78,7 @@ class AttemptState(BaseModel):
   label: str
   task_list: list[str]
   # Directory that holds one subdir per trial
-  # (`<home_root>/<trial_name>/`). Must be unique per attempt and
+  # (`<home_root>/<trial_id>/`). Must be unique per attempt and
   # visible on every dispatch host (shared filesystem).
   home_root: Path
   container: ContainerSpec
@@ -123,7 +123,7 @@ class DispatchEntry(BaseModel):
 
   attempt_id: str
   task_name: str
-  trial_name: str
+  trial_id: str
   host: str
   dispatched_at: datetime
 
@@ -139,7 +139,7 @@ class TrialView(BaseModel):
 
   task_name: str
   state: TrialViewState
-  trial_name: str
+  trial_id: str
   host: str
   dispatched_at: datetime
 

@@ -16,7 +16,7 @@ from dispatcher.core.models import HostSettings
 from dispatcher.core.outcome import CompletionSnapshot
 from dispatcher.core.runtime import DispatcherRuntime
 from dispatcher.core.scheduler import Scheduler
-from tests.test_scheduler import clock_from, name_gen
+from tests.test_scheduler import clock_from, id_gen
 
 if TYPE_CHECKING:
   from pathlib import Path
@@ -66,7 +66,7 @@ def mk_sched(caps: int = 2) -> Scheduler:
     max_concurrent=caps,
     hosts={"ml10": HostSettings(max_concurrent=caps)},
     clock=clock_from(),
-    name_gen=name_gen(),
+    id_gen=id_gen(),
   )
 
 
@@ -129,7 +129,7 @@ def test_runtime_writes_trial_spec_before_dispatch(tmp_path: Path):
 
   async def fake_dispatch(action, state) -> None:
     # By dispatch time the spec file must exist in the trial home.
-    spec_path = tmp_path / action.trial_name / "trial.json"
+    spec_path = tmp_path / action.trial_id / "trial.json"
     assert spec_path.exists()
     captured.append(json.loads(spec_path.read_text()))
 
@@ -296,7 +296,7 @@ def test_live_and_resolver_share_terminal_pipeline(
         runtime._apply_trial_completion(
           action.attempt_id,
           action.task_name,
-          action.trial_name,
+          action.trial_id,
           snapshot,
         )
       )
@@ -348,7 +348,7 @@ def test_resolver_promotes_definitively_dead_to_ghosted(
   sched = mk_sched(1)
   _seed_unknown(sched, tmp_path)
 
-  async def fake_probe(host, trial_name, *, self_host, **kw):
+  async def fake_probe(host, trial_id, *, self_host, **kw):
     return status
 
   monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
@@ -373,7 +373,7 @@ def test_resolver_leaves_transient_states_in_unknown(
   sched = mk_sched(1)
   _seed_unknown(sched, tmp_path)
 
-  async def fake_probe(host, trial_name, *, self_host, **kw):
+  async def fake_probe(host, trial_id, *, self_host, **kw):
     return status
 
   monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
@@ -393,7 +393,7 @@ def test_resolver_adopts_still_running_container(
   sched = mk_sched(1)
   _seed_unknown(sched, tmp_path)
 
-  async def fake_probe(host, trial_name, *, self_host, **kw):
+  async def fake_probe(host, trial_id, *, self_host, **kw):
     return "running"
 
   monkeypatch.setattr("dispatcher.core.runtime.probe_trial", fake_probe)
@@ -482,11 +482,11 @@ def test_ghosted_re_poll_promotes_on_late_ok(tmp_path: Path):
 # ── docker die handler ───────────────────────────────────────────
 
 
-def _die_event(trial_name: str, exit_code: str) -> dict:
+def _die_event(trial_id: str, exit_code: str) -> dict:
   return {
     "Actor": {
       "Attributes": {
-        labels.TRIAL: trial_name,
+        labels.TRIAL: trial_id,
         "exitCode": exit_code,
       }
     }
@@ -498,7 +498,7 @@ def _sched_with_running(home: Path) -> tuple[Scheduler, str]:
   sched.submit(mk_attempt(home, ["t1"]))
   action = sched.dispatch_one()
   assert action is not None
-  return sched, action.trial_name
+  return sched, action.trial_id
 
 
 def test_die_nonzero_exit_with_clean_outcome_is_done_ok(
@@ -506,12 +506,12 @@ def test_die_nonzero_exit_with_clean_outcome_is_done_ok(
 ):
   # Sibling teardown can SIGKILL (137) after the work finished and
   # wrote its envelope — the envelope wins.
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_name, "137"))
+    runtime.handle_docker_die("ml10", _die_event(trial_id, "137"))
   )
   view = sched.attempt_view("att-001")
   assert set(view.done_ok) == {"t1"}
@@ -519,24 +519,22 @@ def test_die_nonzero_exit_with_clean_outcome_is_done_ok(
 
 
 def test_die_with_error_outcome_stays_done_err(tmp_path: Path):
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: errored()
   )
-  asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_name, "1"))
-  )
+  asyncio.run(runtime.handle_docker_die("ml10", _die_event(trial_id, "1")))
   assert set(sched.attempt_view("att-001").done_err) == {"t1"}
 
 
 def test_die_without_outcome_goes_to_unknown(tmp_path: Path):
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   runtime._NFS_POLL_RETRY_DELAYS = ()  # no sleeping in tests
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_name, "137"))
+    runtime.handle_docker_die("ml10", _die_event(trial_id, "137"))
   )
   view = sched.attempt_view("att-001")
   assert set(view.unknown) == {"t1"}
@@ -557,11 +555,11 @@ def test_die_for_foreign_trial_is_ignored(tmp_path: Path):
 def test_duplicate_die_is_ignored(tmp_path: Path):
   # docker --since replay can double-fire across reconnects; the
   # second event finds no running trial and drops.
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
-  ev = _die_event(trial_name, "0")
+  ev = _die_event(trial_id, "0")
   asyncio.run(runtime.handle_docker_die("ml10", ev))
   asyncio.run(runtime.handle_docker_die("ml10", ev))
   assert set(sched.attempt_view("att-001").done_ok) == {"t1"}
@@ -571,12 +569,12 @@ def test_duplicate_die_is_ignored(tmp_path: Path):
 
 
 def test_envelope_infra_requeues_instead_of_scoring(tmp_path: Path):
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: errored(infra=True)
   )
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_name, "75"))
+    runtime.handle_docker_die("ml10", _die_event(trial_id, "75"))
   )
   view = sched.attempt_view("att-001")
   assert view.pending == ["t1"]
@@ -589,13 +587,13 @@ def test_infra_exit_without_outcome_requeues_at_ghost_promotion(
   # 137-killed container, no envelope: park unknown first (the
   # outcome may be NFS-lagged), requeue only once the container is
   # confirmed gone and the file still isn't there.
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   runtime._NFS_POLL_RETRY_DELAYS = ()
   asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_name, "137"))
+    runtime.handle_docker_die("ml10", _die_event(trial_id, "137"))
   )
   assert set(sched.attempt_view("att-001").unknown) == {"t1"}
 
@@ -615,14 +613,12 @@ def test_infra_exit_without_outcome_requeues_at_ghost_promotion(
 def test_non_infra_exit_without_outcome_ghosts(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
   runtime._NFS_POLL_RETRY_DELAYS = ()
-  asyncio.run(
-    runtime.handle_docker_die("ml10", _die_event(trial_name, "1"))
-  )
+  asyncio.run(runtime.handle_docker_die("ml10", _die_event(trial_id, "1")))
 
   async def fake_probe(host, tn, *, self_host, **kw):
     return "gone"
@@ -650,7 +646,7 @@ def test_infra_requeue_budget_exhaustion_scores_done_err(
       runtime._apply_trial_completion(
         action.attempt_id,
         action.task_name,
-        action.trial_name,
+        action.trial_id,
         errored(infra=True),
       )
     )
@@ -707,16 +703,14 @@ def test_dispatch_failure_does_not_log_phantom_dispatch(
 def test_reconcile_from_census_scores_exited_container(
   tmp_path: Path,
 ):
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
   )
   containers = [
     {
       "State": {"Status": "exited", "ExitCode": 0},
-      "Config": {
-        "Labels": {labels.MANAGED: "1", labels.TRIAL: trial_name}
-      },
+      "Config": {"Labels": {labels.MANAGED: "1", labels.TRIAL: trial_id}},
     },
     {"State": {"Status": "running"}, "Config": {"Labels": {}}},
   ]
@@ -727,7 +721,7 @@ def test_reconcile_from_census_scores_exited_container(
 def test_reconcile_remembers_infra_exit_code(
   tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: None
   )
@@ -735,9 +729,7 @@ def test_reconcile_remembers_infra_exit_code(
   containers = [
     {
       "State": {"Status": "exited", "ExitCode": 137},
-      "Config": {
-        "Labels": {labels.MANAGED: "1", labels.TRIAL: trial_name}
-      },
+      "Config": {"Labels": {labels.MANAGED: "1", labels.TRIAL: trial_id}},
     }
   ]
   asyncio.run(runtime.reconcile_from_census("ml10", containers))
@@ -773,7 +765,7 @@ def test_stale_die_observation_cannot_score_new_trial(
   assert sched.requeue_after_infra_failure("att-001", "t1", "running")
   second = sched.dispatch_one()
   assert second is not None
-  assert second.trial_name != first.trial_name
+  assert second.trial_id != first.trial_id
 
   runtime = DispatcherRuntime(
     sched, self_host="ml10", poll=lambda _p: clean()
@@ -781,13 +773,13 @@ def test_stale_die_observation_cannot_score_new_trial(
   # Old trial's completion lands late.
   asyncio.run(
     runtime._apply_trial_completion(
-      "att-001", "t1", first.trial_name, clean({"reward": 0.0})
+      "att-001", "t1", first.trial_id, clean({"reward": 0.0})
     )
   )
   view = sched.attempt_view("att-001")
   # New trial still running, untouched; nothing scored.
   assert set(view.running) == {"t1"}
-  assert view.running["t1"].trial_name == second.trial_name
+  assert view.running["t1"].trial_id == second.trial_id
   assert not view.done_ok and not view.done_err
 
 
@@ -806,12 +798,12 @@ def test_stale_infra_observation_cannot_requeue_new_trial(
   )
   asyncio.run(
     runtime._apply_trial_completion(
-      "att-001", "t1", first.trial_name, errored(infra=True)
+      "att-001", "t1", first.trial_id, errored(infra=True)
     )
   )
   view = sched.attempt_view("att-001")
   # The stale infra report must not bounce the LIVE trial.
-  assert view.running["t1"].trial_name == second.trial_name
+  assert view.running["t1"].trial_id == second.trial_id
 
 
 # ── NFS cache bust in the retry ladder ──────────────────────────
@@ -822,7 +814,7 @@ def test_retry_ladder_busts_cache_between_attempts(tmp_path: Path):
   # client cache answers miss until a bust invalidates it. The
   # die handler must land done_ok on its own, without parking in
   # unknown for the resolver.
-  sched, trial_name = _sched_with_running(tmp_path)
+  sched, trial_id = _sched_with_running(tmp_path)
   busted = [False]
 
   def fake_poll(trial_home):
@@ -840,7 +832,7 @@ def test_retry_ladder_busts_cache_between_attempts(tmp_path: Path):
   rt.bust_dir_cache = fake_bust
   try:
     asyncio.run(
-      runtime.handle_docker_die("ml10", _die_event(trial_name, "0"))
+      runtime.handle_docker_die("ml10", _die_event(trial_id, "0"))
     )
   finally:
     rt.bust_dir_cache = orig

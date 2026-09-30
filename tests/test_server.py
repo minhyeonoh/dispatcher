@@ -658,7 +658,7 @@ def _dispatch_ev(task: str, trial: str) -> dict:
     "type": "dispatch",
     "attempt_id": "att-restore",
     "task_name": task,
-    "trial_name": trial,
+    "trial_id": trial,
     "host": "ml10",
     "at": "2026-09-28T10:00:01+00:00",
   }
@@ -770,7 +770,7 @@ def test_restore_infra_outcome_goes_back_to_pending(
     assert detail["done_err"] == {}
 
 
-def test_restore_advances_trial_name_counter(tmp_path: Path):
+def test_restore_advances_trial_id_counter(tmp_path: Path):
   # A restart that re-minted __0000001 would read the OLD trial
   # dir's outcome as the new trial's — scored before it ran.
   home = tmp_path / "home"
@@ -791,7 +791,7 @@ def test_restore_advances_trial_name_counter(tmp_path: Path):
     ).json()["attempt_id"]
     assert aid
     st = client.app.state.dispatcher  # type: ignore[union-attr]
-    name = st.next_trial_name("x1")
+    name = st.next_trial_id("x1")
     assert int(name.rsplit("__", 1)[1]) > 7
 
 
@@ -865,7 +865,7 @@ def test_reclaim_single_trial_spares_the_rest(tmp_path: Path):
     sched.patch(aid, paused=True)  # freeze so we can assert
     kills: list[dict] = []
     st.runtime.fire_kill_trials = kills.append  # type: ignore[method-assign]
-    resp = client.post(f"/attempts/{aid}/trials/{a1.trial_name}/reclaim")
+    resp = client.post(f"/attempts/{aid}/trials/{a1.trial_id}/reclaim")
     assert resp.status_code == 200
     body = resp.json()
     assert body["task_name"] == a1.task_name
@@ -897,14 +897,12 @@ def test_reclaim_single_trial_no_pause_needed_and_redispatches(
     first = sched.dispatch_one()
     assert first is not None
     st.runtime.fire_kill_trials = lambda r: None  # type: ignore[method-assign]
-    resp = client.post(
-      f"/attempts/{aid}/trials/{first.trial_name}/reclaim"
-    )
+    resp = client.post(f"/attempts/{aid}/trials/{first.trial_id}/reclaim")
     assert resp.status_code == 200  # attempt NOT paused — allowed
     second = sched.dispatch_one()
     assert second is not None
     assert second.task_name == "t1"
-    assert second.trial_name != first.trial_name
+    assert second.trial_id != first.trial_id
 
 
 def test_reclaim_trial_wrong_states(tmp_path: Path):
@@ -931,9 +929,7 @@ def test_reclaim_trial_wrong_states(tmp_path: Path):
       to_state="done_ok",
       outcome=Outcome(ok=True),
     )
-    resp = client.post(
-      f"/attempts/{aid}/trials/{action.trial_name}/reclaim"
-    )
+    resp = client.post(f"/attempts/{aid}/trials/{action.trial_id}/reclaim")
     assert resp.status_code == 409
     assert "done_ok" in resp.json()["detail"]
     assert (
@@ -965,7 +961,7 @@ def test_reclaim_trial_event_survives_restart(tmp_path: Path):
     action = sched.dispatch_one()
     assert action is not None
     st.runtime.fire_kill_trials = lambda r: None  # type: ignore[method-assign]
-    client.post(f"/attempts/{aid}/trials/{action.trial_name}/reclaim")
+    client.post(f"/attempts/{aid}/trials/{action.trial_id}/reclaim")
     sched.patch(aid, paused=True)
   # Restart: the reclaim event erased the dispatch, so the task
   # restores as pending — not as unknown-needing-resolution.

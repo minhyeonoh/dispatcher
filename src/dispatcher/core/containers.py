@@ -406,7 +406,7 @@ async def census_host(
 
 async def probe_trial(
   host: str,
-  trial_name: str,
+  trial_id: str,
   *,
   self_host: str,
   timeout_sec: float = 10.0,
@@ -416,14 +416,14 @@ async def probe_trial(
   real infra problem (never guesses "gone" from a failed ssh)."""
   cmd = (
     "ids=$(docker ps -aq --filter "
-    + shlex.quote(f"label={labels.TRIAL}={trial_name}")
+    + shlex.quote(f"label={labels.TRIAL}={trial_id}")
     + '); if [ -n "$ids" ]; then '
     "docker inspect --format '{{.State.Status}}' $ids; fi"
   )
   r = await run_on(host, self_host, cmd, timeout=timeout_sec)
   if r.returncode != 0:
     raise RuntimeError(
-      f"docker probe on {host!r} for trial {trial_name!r} exited "
+      f"docker probe on {host!r} for trial {trial_id!r} exited "
       f"{r.returncode}: {r.stderr.strip()[:500]}"
     )
   states = [s.strip() for s in r.stdout.splitlines() if s.strip()]
@@ -436,7 +436,7 @@ async def probe_trial(
 
 async def remove_trial_sets(
   host: str,
-  trial_names: list[str],
+  trial_ids: list[str],
   *,
   self_host: str,
 ) -> int:
@@ -444,13 +444,13 @@ async def remove_trial_sets(
   (main + siblings). Returns the count of removed container ids;
   non-fatal on failure (partial removals still counted — docker
   prints each removed id even when others in the batch fail)."""
-  if not trial_names:
+  if not trial_ids:
     return 0
   inner = "\n".join(
     "ids=$(docker ps -aq --filter "
     + shlex.quote(f"label={labels.SET}={name}")
     + '); [ -n "$ids" ] && docker rm -f $ids'
-    for name in trial_names
+    for name in trial_ids
   )
   argv = (
     ["bash", "-c", inner]

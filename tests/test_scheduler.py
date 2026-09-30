@@ -85,7 +85,7 @@ def clock_from(
   return _now
 
 
-def name_gen() -> Callable[[str], str]:
+def id_gen() -> Callable[[str], str]:
   counter = [0]
 
   def _gen(task_name: str) -> str:
@@ -144,7 +144,7 @@ def mk_sched(
     max_concurrent=max_concurrent,
     hosts=hosts or {"ml10": HostSettings(max_concurrent=100)},
     clock=clock_from(),
-    name_gen=name_gen(),
+    id_gen=id_gen(),
     pool_caps=pool_caps,
   )
 
@@ -697,7 +697,7 @@ def test_reclaimed_task_can_be_redispatched():
   sched.reclaim_from_running("A", "t1")
   second = sched.dispatch_one()
   assert second is not None and second.task_name == "t1"
-  assert second.trial_name != first.trial_name
+  assert second.trial_id != first.trial_id
 
 
 # ── infra requeue ────────────────────────────────────────────────

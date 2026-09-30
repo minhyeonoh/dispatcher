@@ -207,7 +207,7 @@ def _action() -> DispatchEntry:
   return DispatchEntry(
     attempt_id="att-001",
     task_name="t1",
-    trial_name="t1__0000001",
+    trial_id="t1__0000001",
     host="ml9",
     dispatched_at=datetime.now(UTC),
   )
@@ -258,7 +258,7 @@ def test_ensure_image_runs_once_per_image_host(
   shipped: list[str] = []
 
   async def fake_docker_dispatch(action, state, **kw):
-    shipped.append(action.trial_name)
+    shipped.append(action.trial_id)
 
   monkeypatch.setattr(
     "dispatcher.core.runtime.docker_dispatch",

@@ -10,7 +10,7 @@ Event types:
                      bucket from disk.
 - `reclaim`/`retry`— operator retraction; erases the NAMED
                      dispatch from the log so restore sees the
-                     task as pending. Matching is by trial_name:
+                     task as pending. Matching is by trial_id:
                      an infra requeue leaves two dispatches for
                      one task, and erasing "the last one for the
                      task" once deleted a successful retry while
@@ -179,15 +179,15 @@ def _erase_dispatch(
   task_name = ev.get("task_name")
   if task_name is None:
     raise ReplayError(f"event {event_index}: {kind} missing 'task_name'")
-  trial_name = ev.get("trial_name")
-  if trial_name is None:
-    raise ReplayError(f"event {event_index}: {kind} missing 'trial_name'")
-  # A trial_name matching nothing erases nothing: the dispatch it
+  trial_id = ev.get("trial_id")
+  if trial_id is None:
+    raise ReplayError(f"event {event_index}: {kind} missing 'trial_id'")
+  # A trial_id matching nothing erases nothing: the dispatch it
   # names is already gone from the log.
   for j in range(len(log) - 1, -1, -1):
     if log[j].task_name != task_name:
       continue
-    if log[j].trial_name != trial_name:
+    if log[j].trial_id != trial_id:
       continue
     del log[j]
     return
@@ -318,7 +318,7 @@ def find_event_logs(data_dir: Path) -> list[Path]:
 
 
 def scan_outcomes(home_root: Path) -> dict[str, Outcome]:
-  """`{trial_name: Outcome}` for every trial dir under an attempt
+  """`{trial_id: Outcome}` for every trial dir under an attempt
   with a parseable outcome.json. Missing / malformed files are
   omitted — same non-answer as the live poll, so restore and the
   resolver classify them identically (unknown)."""
@@ -340,13 +340,13 @@ def scan_outcomes(home_root: Path) -> dict[str, Outcome]:
   return out
 
 
-def seq_in_trial_name(trial_name: str) -> int:
+def seq_in_trial_id(trial_id: str) -> int:
   """The monotonic counter a dispatcher-minted trial name carries
   (`<task>__<seq>`), or 0 for foreign names. Restore feeds the max
   into the namer so a restart never re-mints a name that already
   owns a trial dir — the old dir's outcome would be read as the
   new trial's before it ran."""
-  _, separator, suffix = trial_name.rpartition("__")
+  _, separator, suffix = trial_id.rpartition("__")
   if not separator or not suffix.isdigit():
     return 0
   return int(suffix)

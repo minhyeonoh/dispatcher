@@ -1,5 +1,5 @@
 """On-disk log/index behaviour: truncated tails, index-driven
-discovery, outcome scanning, trial-name counter parsing."""
+discovery, outcome scanning, trial-id counter parsing."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dispatcher.core.event_log import (
   find_event_logs,
   read_events,
   scan_outcomes,
-  seq_in_trial_name,
+  seq_in_trial_id,
 )
 
 if TYPE_CHECKING:
@@ -132,16 +132,16 @@ def test_scan_outcomes_missing_root_is_empty(tmp_path: Path):
   assert scan_outcomes(tmp_path / "nope") == {}
 
 
-# ── trial-name counter ───────────────────────────────────────────
+# ── trial-id counter ───────────────────────────────────────────
 
 
 def test_seq_parsed_from_a_minted_name():
-  assert seq_in_trial_name("task_a__0000042") == 42
+  assert seq_in_trial_id("task_a__0000042") == 42
 
 
 def test_seq_of_foreign_name_is_zero():
-  assert seq_in_trial_name("task_a__abc1234") == 0
+  assert seq_in_trial_id("task_a__abc1234") == 0
 
 
 def test_seq_without_separator_is_zero():
-  assert seq_in_trial_name("task_a-0000042") == 0
+  assert seq_in_trial_id("task_a-0000042") == 0

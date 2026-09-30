@@ -26,7 +26,7 @@ def _spec(home: Path, payload=None) -> dict:
   spec = {
     "attempt_id": "att-1",
     "task_name": "t1",
-    "trial_name": "t1__0000001",
+    "trial_id": "t1__0000001",
     "home": str(home),
     "payload": payload,
   }

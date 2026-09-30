@@ -16,7 +16,7 @@ dispatch, failure detection, and state persistence.
 - **trial** — one execution of a task (`<task>__<seq>`). A task
   can have several trials (infra requeue, operator retry); each
   gets a fresh name and a fresh home dir.
-- **home** — `<home_root>/<trial_name>/`, a directory on a
+- **home** — `<home_root>/<trial_id>/`, a directory on a
   filesystem every dispatch host shares. The dispatcher writes
   `trial.json` into it before dispatch and reads `outcome.json`
   out of it after.
@@ -80,7 +80,7 @@ The dispatcher starts the main container itself
   through verbatim).
 - the trial home bind-mounted at `container.home_mount`
   (default `/dispatcher/home`), containing `trial.json`
-  (`{attempt_id, task_name, trial_name, home, payload}`).
+  (`{attempt_id, task_name, trial_id, home, payload}`).
 - env: `DISPATCHER_TRIAL`, `DISPATCHER_TASK`,
   `DISPATCHER_ATTEMPT`, `DISPATCHER_HOME`,
   `DISPATCHER_SET_LABEL`.

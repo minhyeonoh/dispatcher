@@ -106,7 +106,7 @@ class Scheduler:
     max_concurrent: int,
     hosts: dict[str, HostSettings],
     clock: Callable[[], datetime],
-    name_gen: Callable[[str], str],
+    id_gen: Callable[[str], str],
     pool_caps: dict[str, int] | None = None,
   ) -> None:
     self._max_concurrent = max_concurrent
@@ -121,7 +121,7 @@ class Scheduler:
     }
     self._host_running: dict[str, int] = {host: 0 for host in hosts}
     self._clock = clock
-    self._name_gen = name_gen
+    self._id_gen = id_gen
 
     self._attempts: dict[str, _AttemptRuntime] = {}
     # RR rotation (live attempts only) + full submission order
@@ -477,12 +477,12 @@ class Scheduler:
       return None
 
     task_name = runtime.pending.pop(0)
-    trial_name = self._name_gen(task_name)
+    trial_id = self._id_gen(task_name)
     dispatched_at = self._clock()
     runtime.running[task_name] = TrialView(
       task_name=task_name,
       state="running",
-      trial_name=trial_name,
+      trial_id=trial_id,
       host=host,
       dispatched_at=dispatched_at,
     )
@@ -496,7 +496,7 @@ class Scheduler:
     return DispatchEntry(
       attempt_id=aid,
       task_name=task_name,
-      trial_name=trial_name,
+      trial_id=trial_id,
       host=host,
       dispatched_at=dispatched_at,
     )
@@ -543,7 +543,7 @@ class Scheduler:
     destination[task_name] = TrialView(
       task_name=task_name,
       state=to_state,
-      trial_name=trial_view.trial_name,
+      trial_id=trial_view.trial_id,
       host=host,
       dispatched_at=trial_view.dispatched_at,
     )
@@ -625,7 +625,7 @@ class Scheduler:
 
   def retry_from_done_err(self, attempt_id: str, task_name: str) -> bool:
     """Operator retry: done_err → pending (outcome cache entry
-    dropped). Re-dispatch mints a fresh trial_name, so the old
+    dropped). Re-dispatch mints a fresh trial_id, so the old
     trial dir is never reused."""
     runtime = self._attempts[attempt_id]
     if task_name not in runtime.done_err:

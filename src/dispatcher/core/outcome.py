@@ -82,5 +82,5 @@ def bust_dir_cache(trial_home: Path) -> None:
     pass
 
 
-def trial_home_for(home_root: Path, trial_name: str) -> Path:
-  return home_root / trial_name
+def trial_home_for(home_root: Path, trial_id: str) -> Path:
+  return home_root / trial_id
