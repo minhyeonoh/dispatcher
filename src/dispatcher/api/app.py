@@ -108,16 +108,25 @@ def _get_state(app: FastAPI) -> ServerState:
   return app.state.dispatcher  # type: ignore[no-any-return]
 
 
-async def _refresh_columns(st: ServerState, job_ids: list[str]) -> None:
-  """Bring operator columns up to date before a read projects them.
+async def _refresh_live_cells(st: ServerState, job_ids: list[str]) -> None:
+  """Bring the parts of a job row that still move up to date before a
+  read projects them — operator columns, and what the archives hold.
 
-  This is the whole trigger for the aggregate path: no timer, no
-  background loop — a client asking is what makes it happen, and a
-  job whose values did not change costs a set lookup. Failures are
-  swallowed by the service, which leaves the job dirty so the next
-  read retries and marks the numbers stale meanwhile."""
+  This is the whole trigger for both: no timer, no background loop —
+  a client asking is what makes it happen, and a job whose values did
+  not change costs a set lookup. Column failures are swallowed by the
+  service, which leaves the job dirty so the next read retries and
+  marks the numbers stale meanwhile.
+
+  The pack side has to be here rather than answered from an empty
+  cache: `pack_lag` read before anything loaded would report every
+  terminal instance as unpacked, which is a number that lies in the
+  alarming direction — it sent me to `dispatcher pack` for a job that
+  was already fully packed."""
   if st.readouts is not None:
     await st.readouts.refresh(list(job_ids))
+  if st.packer is not None:
+    await st.packer.load_many(list(job_ids))
 
 
 def create_app(
@@ -176,7 +185,9 @@ def create_app(
       if state.archived_at is None:  # pragma: no cover — defensive
         return
       try:
-        view = full_job_view(scheduler, job_id, readouts.summary)
+        view = full_job_view(
+          scheduler, job_id, readouts.summary, packer.pack_lag
+        )
         scheduler.archive_job(
           job_id,
           at=state.archived_at,
@@ -248,6 +259,7 @@ def create_app(
       event_bus=event_bus,
       resolve_image=resolver,
       readouts=readouts,
+      packer=packer,
     )
     app.state.dispatcher = server_state
     # Restore before anything can dispatch: rebuild JobStates
@@ -405,14 +417,14 @@ def create_app(
     st = _get_state(app)
     # Operator columns are recomputed here, before projecting: at
     # most once per change, and never for a job nobody reads.
-    await _refresh_columns(st, st.scheduler.all_job_ids())
+    await _refresh_live_cells(st, st.scheduler.all_job_ids())
     cluster = cluster_snapshot(
       st.config.self_host, st.settings, st.scheduler
     )
     return StateOut(
       **cluster.model_dump(),
       jobs=[
-        snapshot_job(st.scheduler, aid, st.readout_fn)
+        snapshot_job(st.scheduler, aid, st.readout_fn, st.pack_lag_fn)
         for aid in st.scheduler.all_job_ids()
       ],
     )
@@ -446,11 +458,11 @@ def create_app(
           "snapshot",
           cluster_snapshot(st.config.self_host, st.settings, st.scheduler),
         )
-        await _refresh_columns(st, st.scheduler.all_job_ids())
+        await _refresh_live_cells(st, st.scheduler.all_job_ids())
         for aid in list(st.scheduler.all_job_ids()):
           yield sse(
             "job_updated",
-            snapshot_job(st.scheduler, aid, st.readout_fn),
+            snapshot_job(st.scheduler, aid, st.readout_fn, st.pack_lag_fn),
           )
         while True:
           ev = None
@@ -462,10 +474,12 @@ def create_app(
           if ev.type in state_change_events:
             aid = ev.payload.get("job_id")
             if aid and st.scheduler.has_job(aid):
-              await _refresh_columns(st, [aid])
+              await _refresh_live_cells(st, [aid])
               yield sse(
                 "job_updated",
-                snapshot_job(st.scheduler, aid, st.readout_fn),
+                snapshot_job(
+                  st.scheduler, aid, st.readout_fn, st.pack_lag_fn
+                ),
               )
             yield sse(
               "cluster_updated",
@@ -492,19 +506,24 @@ def create_app(
   ) -> list[JobSummaryOut] | Response:
     st = _get_state(app)
     aids = st.scheduler.all_job_ids()
-    await _refresh_columns(st, aids)
+    await _refresh_live_cells(st, aids)
     if arena:
       aids = [
         aid for aid in aids if st.scheduler.job_state(aid).arena == arena
       ]
     if full:
       body = await asyncio.to_thread(
-        build_full_jobs_body, st.scheduler, aids, st.readout_fn
+        build_full_jobs_body,
+        st.scheduler,
+        aids,
+        st.readout_fn,
+        st.pack_lag_fn,
       )
       return Response(content=body, media_type="application/json")
     return await asyncio.to_thread(
       lambda: [
-        snapshot_job(st.scheduler, aid, st.readout_fn) for aid in aids
+        snapshot_job(st.scheduler, aid, st.readout_fn, st.pack_lag_fn)
+        for aid in aids
       ]
     )
 
@@ -517,17 +536,21 @@ def create_app(
       raise HTTPException(
         status_code=404, detail=f"job {job_id!r} not found"
       )
-    await _refresh_columns(st, [job_id])
+    await _refresh_live_cells(st, [job_id])
     if st.scheduler.is_archived(job_id):
       # Through full_job_bytes, not archived_bytes directly: that is
       # where the readout cell is spliced onto the frozen record, and
       # reaching past it is how the list and this page came to show
       # different numbers for the same job.
       return Response(
-        content=full_job_bytes(st.scheduler, job_id, st.readout_fn),
+        content=full_job_bytes(
+          st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+        ),
         media_type="application/json",
       )
-    return full_job_view(st.scheduler, job_id, st.readout_fn)
+    return full_job_view(
+      st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+    )
 
   @api.post("/jobs")
   async def submit_job(
@@ -555,9 +578,14 @@ def create_app(
       raise HTTPException(
         status_code=404, detail=f"arena {name!r} has no jobs"
       )
-    await _refresh_columns(st, members)
+    await _refresh_live_cells(st, members)
     return await asyncio.to_thread(
-      snapshot_arena, st.scheduler, name, members, st.readout_fn
+      snapshot_arena,
+      st.scheduler,
+      name,
+      members,
+      st.readout_fn,
+      st.pack_lag_fn,
     )
 
   @api.post("/arenas/{arena:path}/pause")

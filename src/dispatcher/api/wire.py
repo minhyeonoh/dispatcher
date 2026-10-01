@@ -25,6 +25,11 @@ if TYPE_CHECKING:
   wire.py stays a projection over scheduler state: None (tests,
   restore) simply means no readout columns."""
 
+  PackLagFn = Callable[[str], int]
+  """`job_id → unpacked terminal instances`. Threaded the same way and
+  for the same reason; None means nothing is packing, which reports as
+  null rather than as a reassuring zero."""
+
 
 class RetryDoneErrRequest(BaseModel):
   """Empty body = retry every done_err instance. `instance_ids`
@@ -47,9 +52,13 @@ class JobCountsOut(BaseModel):
   total: int
 
 
-class ReadoutCellOut(BaseModel):
-  """The readout half of a job row — the ONLY part that can change
-  after a job is archived.
+class LiveCellOut(BaseModel):
+  """The part of a job row that still moves after the job is archived.
+
+  Readouts (the retroactive pass can add values, a `columns` function
+  can be registered or rewritten) and packing (`dispatcher pack` works
+  on any job, archived or not) both outlive a job's own lifetime, so
+  neither may be frozen into the blob.
 
   Split out so both sides of the archive cache derive from one
   definition: the frozen blob excludes exactly these fields, and the
@@ -76,9 +85,16 @@ class ReadoutCellOut(BaseModel):
   # arena (`solved:appworld`) rather than lined up under one header.
   columns_source_arena: str = ""
   columns_source_sha256: str = ""
+  # Terminal instances whose home is not in its host's archive. 0 =
+  # every finished instance is packed; null = nothing is packing, so
+  # the honest answer is unknown rather than a reassuring zero. With
+  # `pack.auto` off this is simply how much `dispatcher pack` would do.
+  pack_lag: int | None = None
 
   @classmethod
-  def of(cls, cell: ReadoutJobSummary) -> ReadoutCellOut:
+  def of(
+    cls, cell: ReadoutJobSummary, *, pack_lag: int | None = None
+  ) -> LiveCellOut:
     return cls(
       readouts=cell.aggregates,
       readout_lag=cell.lag,
@@ -87,13 +103,14 @@ class ReadoutCellOut(BaseModel):
       columns_error=cell.columns_error,
       columns_source_arena=cell.columns_source_arena,
       columns_source_sha256=cell.columns_source_sha256,
+      pack_lag=pack_lag,
     )
 
 
-READOUT_FIELDS: set[str] = set(ReadoutCellOut.model_fields)
+LIVE_FIELDS: set[str] = set(LiveCellOut.model_fields)
 
 
-class JobSummaryOut(ReadoutCellOut):
+class JobSummaryOut(LiveCellOut):
   job_id: str
   label: str
   weight: int
@@ -190,6 +207,7 @@ def snapshot_job(
   scheduler: Scheduler,
   job_id: str,
   readouts: ReadoutSummaryFn | None = None,
+  pack_lag: PackLagFn | None = None,
 ) -> JobSummaryOut:
   state = scheduler.job_state(job_id)
   cell = readouts(job_id) if readouts is not None else ReadoutJobSummary()
@@ -211,7 +229,10 @@ def snapshot_job(
     source_sha256=state.source_sha256,
     archived_at=state.archived_at,
     archive_kind=state.archive_kind or "",
-    **ReadoutCellOut.of(cell).model_dump(),
+    **LiveCellOut.of(
+      cell,
+      pack_lag=None if pack_lag is None else pack_lag(job_id),
+    ).model_dump(),
   )
 
 
@@ -282,11 +303,15 @@ def snapshot_arena(
   arena: str,
   member_ids: list[str],
   readouts: ReadoutSummaryFn | None = None,
+  pack_lag: PackLagFn | None = None,
 ) -> ArenaDetailOut:
   base = _arena_summary(scheduler, arena, member_ids)
   return ArenaDetailOut(
     **base.model_dump(),
-    members=[snapshot_job(scheduler, aid, readouts) for aid in member_ids],
+    members=[
+      snapshot_job(scheduler, aid, readouts, pack_lag)
+      for aid in member_ids
+    ],
   )
 
 
@@ -306,9 +331,10 @@ def full_job_view(
   scheduler: Scheduler,
   job_id: str,
   readouts: ReadoutSummaryFn | None = None,
+  pack_lag: PackLagFn | None = None,
 ) -> FullJobOut:
   view = scheduler.job_view(job_id)
-  base = snapshot_job(scheduler, job_id, readouts)
+  base = snapshot_job(scheduler, job_id, readouts, pack_lag)
 
   def _bucket(
     d: dict[str, InstanceView],
@@ -342,10 +368,15 @@ def archive_payload_bytes(view: FullJobOut) -> bytes:
   function can be registered or rewritten at any time. Freezing them
   made the jobs list (projected live) and the detail endpoint (served
   from the blob) show different numbers for the same job."""
-  return view.model_dump_json(exclude=READOUT_FIELDS).encode("utf-8")
+  return view.model_dump_json(exclude=LIVE_FIELDS).encode("utf-8")
 
 
-def splice_readout_cell(blob: bytes, cell: ReadoutJobSummary) -> bytes:
+def splice_live_cell(
+  blob: bytes,
+  cell: ReadoutJobSummary,
+  *,
+  pack_lag: int | None = None,
+) -> bytes:
   """Put today's readout cell onto a frozen blob.
 
   Surgery rather than parse-and-redump: the blob exists so the hot
@@ -356,7 +387,11 @@ def splice_readout_cell(blob: bytes, cell: ReadoutJobSummary) -> bytes:
   stripped = blob.rstrip()
   if not stripped.endswith(b"}") or stripped == b"{}":
     return blob  # pragma: no cover — a FullJobOut is never empty
-  tail = ReadoutCellOut.of(cell).model_dump_json().encode("utf-8")
+  tail = (
+    LiveCellOut.of(cell, pack_lag=pack_lag)
+    .model_dump_json()
+    .encode("utf-8")
+  )
   return stripped[:-1] + b"," + tail[1:]
 
 
@@ -364,14 +399,19 @@ def full_job_bytes(
   scheduler: Scheduler,
   job_id: str,
   readouts: ReadoutSummaryFn | None = None,
+  pack_lag: PackLagFn | None = None,
 ) -> bytes:
   if scheduler.is_archived(job_id):
     cell = (
       readouts(job_id) if readouts is not None else ReadoutJobSummary()
     )
-    return splice_readout_cell(scheduler.archived_bytes(job_id), cell)
+    return splice_live_cell(
+      scheduler.archived_bytes(job_id),
+      cell,
+      pack_lag=None if pack_lag is None else pack_lag(job_id),
+    )
   return (
-    full_job_view(scheduler, job_id, readouts)
+    full_job_view(scheduler, job_id, readouts, pack_lag)
     .model_dump_json()
     .encode("utf-8")
   )
@@ -381,6 +421,7 @@ def build_full_jobs_body(
   scheduler: Scheduler,
   aids: list[str],
   readouts: ReadoutSummaryFn | None = None,
+  pack_lag: PackLagFn | None = None,
 ) -> bytes:
   """Concatenated JSON array; archived jobs splice their
   cached bytes verbatim so the hot path never rebuilds them.
@@ -393,7 +434,7 @@ def build_full_jobs_body(
   for i, aid in enumerate(aids):
     if i > 0:
       parts.append(b",")
-    parts.append(full_job_bytes(scheduler, aid, readouts))
+    parts.append(full_job_bytes(scheduler, aid, readouts, pack_lag))
   parts.append(b"]")
   return b"".join(parts)
 

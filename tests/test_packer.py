@@ -1,10 +1,16 @@
-"""Automatic packing: the queue, the coalescing, and the promises that
+"""Automatic packing: the gap, its convergence, and the promises that
 make it safe to leave on.
 
-Three properties carry the design, so each gets a test that would fail
-if it broke: `offer` never blocks or raises on the terminal path,
-cancellation travels so shutdown cannot hang, and a failing append is
-invisible to everything else."""
+The design's claim is that nothing is ever lost — the work is
+re-derived from disk on every look rather than remembered, so a failed
+append, a host that was away or a spell with `auto` off all show up in
+`pack_lag` and get closed by the next completion. The convergence test
+is the one that would catch that claim breaking.
+
+Three other properties each get a test because each is load-bearing:
+`offer` never blocks or raises on the terminal path, cancellation
+travels so shutdown cannot hang, and only terminal instances are ever
+packed."""
 
 from __future__ import annotations
 
@@ -20,7 +26,6 @@ from dispatcher.services.packer import (
   Packer,
   PackPatch,
   PackSettings,
-  _group,
   apply_patch,
 )
 from tests.test_runtime import mk_job
@@ -31,126 +36,264 @@ if TYPE_CHECKING:
 
   from dispatcher.core.models import JobState
 
+SELF = "ml10"
+HOSTS = (SELF,)
+"""One host, and it IS `self_host`.
+
+`run_on` really does ssh for any other name, so a second host here
+would send an append to a live machine — where the test's `tmp_path`
+does not exist, since /tmp is per-node. A test that appends must stay
+local; the one test that needs two hosts never appends."""
+
 
 def mk_packer(
-  tmp_path: Path, *, auto: bool = True, self_host: str = "ml10"
-) -> tuple[Packer, JobState]:
-  """A real `Scheduler`, so `job_state` behaves — including raising for
-  a job that is gone, which is a case the packer has to survive."""
+  tmp_path: Path,
+  *,
+  auto: bool = True,
+  tasks: int = 2,
+  hosts: tuple[str, ...] = HOSTS,
+) -> tuple[Packer, Scheduler, JobState]:
+  """A real `Scheduler`, so `job_view` and `job_state` behave —
+  including raising for a job that is gone, a case the packer
+  survives."""
   scheduler = Scheduler(
-    max_concurrent=2,
-    hosts={"ml10": HostSettings(max_concurrent=2)},
+    max_concurrent=tasks,
+    hosts={h: HostSettings(max_concurrent=tasks) for h in hosts},
     clock=clock_from(),
     id_gen=id_gen(),
   )
-  job = mk_job(tmp_path / "home", ["t1", "t2"])
+  job = mk_job(tmp_path / "home", [f"t{i}" for i in range(tasks)])
   job.home_root.mkdir(parents=True, exist_ok=True)
   scheduler.submit(job)
   packer = Packer(
     scheduler=scheduler,
     settings=PackSettings(auto=auto),
-    self_host=self_host,
+    self_host=SELF,
   )
-  return packer, job
+  return packer, scheduler, job
 
 
-def lay_down(home_root: Path, instance_id: str) -> None:
-  home = home_root / instance_id
-  home.mkdir(parents=True, exist_ok=True)
-  (home / "outcome.json").write_text('{"ok": true}', encoding="utf-8")
+def finish(
+  packer: Packer,
+  scheduler: Scheduler,
+  job: JobState,
+  task_id: str,
+  *,
+  state: str = "done_ok",
+  lay: bool = True,
+  tell: bool = True,
+) -> str:
+  """Move a task to a terminal state the way the runtime would, write
+  its home, and offer it — `lay=False` and `tell=False` isolate the
+  cases where one of those did not happen."""
+  scheduler.dispatch_one()
+  scheduler.transition_instance(
+    job_id=job.job_id,
+    task_id=task_id,
+    from_state="running",
+    to_state=state,  # type: ignore[arg-type]
+  )
+  view = getattr(scheduler.job_view(job.job_id), state)[task_id]
+  if lay:
+    home = job.home_root / view.instance_id
+    (home / "agent").mkdir(parents=True, exist_ok=True)
+    (home / "agent" / "events.jsonl").write_text(
+      f"from {view.instance_id}\n", encoding="utf-8"
+    )
+  if tell:
+    packer.offer(job.job_id, view.instance_id, view.host)
+  return view.instance_id
 
 
-# ── the queue ────────────────────────────────────────────────────
+async def drain(packer: Packer, job_id: str) -> None:
+  """Run one pass by hand, the way the consumer would."""
+  await packer._pass(job_id)
+
+
+def held(packer: Packer, job_id: str) -> set[str]:
+  """Every instance the cache believes is archived, flattened.
+
+  Reaches into `_held` in one place so the tests do not all couple to
+  its shape — it is a `(stamp, contents)` pair per host, and the stamp
+  is what lets another process's write invalidate it."""
+  return {i for _stamp, ids in packer._held[job_id].values() for i in ids}
+
+
+# ── offer ────────────────────────────────────────────────────────
 
 
 def test_offer_is_dropped_when_packing_is_off(tmp_path: Path):
   # Not merely ignored downstream — never queued, so a server with
   # packing off cannot accumulate a backlog behind a consumer that
   # will not act on it.
-  packer, job = mk_packer(tmp_path, auto=False)
+  packer, _s, job = mk_packer(tmp_path, auto=False)
   packer.offer(job.job_id, "i-1", "ml9")
   assert packer._queue.qsize() == 0
 
 
 def test_offer_ignores_an_instance_with_no_host(tmp_path: Path):
-  packer, job = mk_packer(tmp_path)
+  packer, _s, job = mk_packer(tmp_path)
   packer.offer(job.job_id, "i-1", "")
   packer.offer(job.job_id, "", "ml9")
   assert packer._queue.qsize() == 0
 
 
-def test_offer_does_not_block_or_raise(tmp_path: Path):
-  # It runs on the terminal pipeline, so this is the whole contract.
-  packer, job = mk_packer(tmp_path)
-  for i in range(500):
+def test_offer_queues_a_job_once_however_many_completions(
+  tmp_path: Path,
+):
+  # What is queued is a JOB, so a burst on one job is one wake. The
+  # consumer re-derives the whole gap anyway, so remembering each
+  # instance would buy nothing.
+  packer, _s, job = mk_packer(tmp_path)
+  for i in range(200):
     packer.offer(job.job_id, f"i-{i}", "ml9")
-  assert packer._queue.qsize() == 500
-
-
-def test_offer_for_an_unknown_job_is_harmless(tmp_path: Path):
-  packer, _job = mk_packer(tmp_path)
-  packer.offer("job-that-went-away", "i-1", "ml9")
   assert packer._queue.qsize() == 1
 
 
-# ── coalescing ───────────────────────────────────────────────────
+def test_offer_does_not_block_or_raise(tmp_path: Path):
+  # It runs on the terminal pipeline, so this is the whole contract.
+  packer, _s, job = mk_packer(tmp_path)
+  for i in range(500):
+    packer.offer(job.job_id, f"i-{i}", SELF)
+  packer.offer("job-that-went-away", "i-x", "ml9")
+  assert packer._queue.qsize() == 2
 
 
-def test_group_is_one_archive_per_entry():
-  grouped = _group(
-    [
-      ("job-a", "i-1", "ml9"),
-      ("job-a", "i-2", "ml9"),
-      ("job-a", "i-3", "ml10"),
-      ("job-b", "i-4", "ml9"),
-    ]
-  )
-  assert grouped == {
-    ("job-a", "ml9"): ["i-1", "i-2"],
-    ("job-a", "ml10"): ["i-3"],
-    ("job-b", "ml9"): ["i-4"],
-  }
+# ── the gap ──────────────────────────────────────────────────────
 
 
-def test_group_dedupes_a_re_offered_instance():
-  # A restart can re-offer what is already in flight.
-  assert _group([("j", "i-1", "ml9"), ("j", "i-1", "ml9")]) == {
-    ("j", "ml9"): ["i-1"]
-  }
+async def test_lag_counts_terminal_instances_not_in_an_archive(
+  tmp_path: Path,
+):
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0")
+  finish(packer, scheduler, job, "t1")
+  await packer.load(job.job_id)
+  assert packer.pack_lag(job.job_id) == 2
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 0
 
 
-def test_drain_takes_everything_waiting(tmp_path: Path):
-  packer, job = mk_packer(tmp_path)
-  for i in range(5):
-    packer.offer(job.job_id, f"i-{i}", "ml9")
-  first = packer._queue.get_nowait()
-  rest = packer._drain()
-  assert len(rest) == 4
+async def test_only_terminal_instances_are_counted_or_packed(
+  tmp_path: Path,
+):
+  # The one way this design could be WRONG rather than slow: a pack is
+  # preferred over the original, so a half-written home inside one
+  # would be served as the whole.
+  packer, scheduler, job = mk_packer(tmp_path, tasks=2)
+  scheduler.dispatch_one()  # t0 left running
+  finish(packer, scheduler, job, "t1")
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 0  # the running one is not owed
+  assert len(held(packer, job.job_id)) == 1
+
+
+async def test_done_err_is_packed_too(tmp_path: Path):
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0", state="done_err")
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 0
+
+
+async def test_lag_is_visible_with_auto_off(tmp_path: Path):
+  # The number has to be honest whether or not anything is closing it:
+  # that is what makes `dispatcher pack` something an operator can see
+  # a reason to run.
+  packer, scheduler, job = mk_packer(tmp_path, auto=False)
+  finish(packer, scheduler, job, "t0")
+  await packer.load(job.job_id)
+  assert packer.pack_lag(job.job_id) == 1
   assert packer._queue.qsize() == 0
-  assert first[1] == "i-0"
 
 
-# ── running it for real ──────────────────────────────────────────
+# ── convergence ──────────────────────────────────────────────────
 
 
-async def test_a_batch_becomes_one_archive(tmp_path: Path):
-  packer, job = mk_packer(tmp_path)
-  for name in ("i-1", "i-2"):
-    lay_down(job.home_root, name)
-    packer.offer(job.job_id, name, "ml10")
+async def test_a_failed_append_is_picked_up_by_a_later_completion(
+  tmp_path: Path,
+):
+  """The whole point of re-deriving instead of remembering.
+
+  An append that fails loses its offer — and must not lose the work.
+  Here the pack dir is blocked by a FILE so `mkdir -p` cannot make it,
+  the blockage is cleared, and the NEXT completion closes both."""
+  packer, scheduler, job = mk_packer(tmp_path, tasks=2)
+  blocked = pack_path(job.home_root, SELF).parent
+  blocked.write_text("not a directory", encoding="utf-8")
+
+  first = finish(packer, scheduler, job, "t0")
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 1  # still owed, and visible
+
+  blocked.unlink()
+  second = finish(packer, scheduler, job, "t1")
+  await drain(packer, job.job_id)
+
+  assert packer.pack_lag(job.job_id) == 0
+  assert held(packer, job.job_id) == {first, second}
+
+
+async def test_an_instance_that_was_never_offered_is_still_packed(
+  tmp_path: Path,
+):
+  # Covers a restart mid-job and a spell with `auto` off: the gap comes
+  # from disk, so an instance nobody told the packer about is picked up
+  # by the next pass all the same.
+  packer, scheduler, job = mk_packer(tmp_path, tasks=2)
+  missed = finish(packer, scheduler, job, "t0", tell=False)
+  finish(packer, scheduler, job, "t1")
+  await drain(packer, job.job_id)
+  assert missed in held(packer, job.job_id)
+
+
+async def test_a_pass_that_moves_nothing_does_not_requeue(
+  tmp_path: Path,
+):
+  # No progress with work remaining must not become a spin against a
+  # host that is down — the gap is left visible instead.
+  packer, scheduler, job = mk_packer(tmp_path)
+  blocked = pack_path(job.home_root, SELF).parent
+  blocked.write_text("not a directory", encoding="utf-8")
+  finish(packer, scheduler, job, "t0")
+  packer._queue.get_nowait()
+  packer._queued.discard(job.job_id)
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 1
+  assert packer._queue.qsize() == 0
+
+
+async def test_a_homeless_instance_does_not_cost_its_batch(
+  tmp_path: Path,
+):
+  # `mksquashfs` fails the WHOLE invocation on a source it cannot
+  # stat, so without the precondition check one missing home would
+  # keep everything batched with it out of the archive.
+  packer, scheduler, job = mk_packer(tmp_path, tasks=2)
+  finish(packer, scheduler, job, "t0", lay=False)
+  good = finish(packer, scheduler, job, "t1")
+  await drain(packer, job.job_id)
+  assert good in held(packer, job.job_id)
+
+
+# ── the consumer ─────────────────────────────────────────────────
+
+
+async def test_the_consumer_closes_the_gap(tmp_path: Path):
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0")
+  finish(packer, scheduler, job, "t1")
   task = asyncio.create_task(packer.run())
-  archive = pack_path(job.home_root, "ml10")
   async with asyncio.timeout(60):
-    while not archive.is_file():
-      await asyncio.sleep(0.05)
-    while packed_instances(archive) != {"i-1", "i-2"}:
+    while packer.pack_lag(job.job_id) != 0 or not packer._held:
       await asyncio.sleep(0.05)
   task.cancel()
   with pytest.raises(asyncio.CancelledError):
     await task
-  # Both offers coalesced into a single archive — and the originals
-  # are untouched, which is what keeps readers correct either way.
-  assert (job.home_root / "i-1" / "outcome.json").is_file()
+  # The originals are untouched, which is what keeps readers correct
+  # whichever path they take.
+  for archive in (job.home_root / ".packs").glob("*.sqfs"):
+    assert packed_instances(archive)
+  assert list(job.home_root.glob("t*__*"))
 
 
 async def test_cancellation_travels_so_shutdown_cannot_hang(
@@ -158,7 +301,7 @@ async def test_cancellation_travels_so_shutdown_cannot_hang(
 ):
   # The lifespan does `task.cancel()` then `await task`. A consumer
   # that swallowed CancelledError would leave that await forever.
-  packer, _job = mk_packer(tmp_path)
+  packer, _s, _job = mk_packer(tmp_path)
   task = asyncio.create_task(packer.run())
   await asyncio.sleep(0)
   task.cancel()
@@ -167,78 +310,92 @@ async def test_cancellation_travels_so_shutdown_cannot_hang(
       await task
 
 
-async def test_a_homeless_instance_does_not_cost_its_batch(
-  tmp_path: Path,
-):
-  # `mksquashfs` fails the WHOLE invocation on a source it cannot
-  # stat, and the offers in that batch are already consumed — so
-  # without the precondition check one missing home would silently
-  # keep every instance batched with it out of the archive forever.
-  packer, job = mk_packer(tmp_path)
-  lay_down(job.home_root, "i-ok")
-  packer.offer(job.job_id, "never-existed", "ml10")
-  packer.offer(job.job_id, "i-ok", "ml10")
-  assert packer._queue.qsize() == 2  # one batch, as the consumer sees it
-  task = asyncio.create_task(packer.run())
-  archive = pack_path(job.home_root, "ml10")
-  async with asyncio.timeout(60):
-    while "i-ok" not in packed_instances(archive):
-      await asyncio.sleep(0.05)
-  task.cancel()
-  with pytest.raises(asyncio.CancelledError):
-    await task
-  assert packed_instances(archive) == {"i-ok"}
-
-
-async def test_the_loop_survives_a_failing_append(tmp_path: Path):
-  # An archive path that cannot be written at all: the consumer must
-  # log and come back for more rather than die on it.
-  packer, job = mk_packer(tmp_path)
-  blocked = pack_path(job.home_root, "ml9").parent
-  blocked.parent.mkdir(parents=True, exist_ok=True)
-  blocked.write_text("not a directory", encoding="utf-8")
-  lay_down(job.home_root, "i-1")
-  packer.offer(job.job_id, "i-1", "ml9")
-  task = asyncio.create_task(packer.run())
-  await asyncio.sleep(2.0)
-  assert not task.done()
-  task.cancel()
-  with pytest.raises(asyncio.CancelledError):
-    await task
-
-
 async def test_an_unknown_job_is_skipped_not_fatal(tmp_path: Path):
-  packer, job = mk_packer(tmp_path)
-  packer.offer("job-that-went-away", "i-1", "ml10")
-  lay_down(job.home_root, "i-2")
-  packer.offer(job.job_id, "i-2", "ml10")
+  packer, scheduler, job = mk_packer(tmp_path)
+  packer.offer("job-that-went-away", "i-1", SELF)
+  finish(packer, scheduler, job, "t0")
   task = asyncio.create_task(packer.run())
   async with asyncio.timeout(60):
-    while "i-2" not in packed_instances(pack_path(job.home_root, "ml10")):
+    while packer.pack_lag(job.job_id) != 0 or not packer._held:
       await asyncio.sleep(0.05)
   task.cancel()
   with pytest.raises(asyncio.CancelledError):
     await task
 
 
-async def test_an_already_packed_instance_is_not_appended_twice(
+# ── the cache must not lie ───────────────────────────────────────
+
+
+async def test_lag_before_loading_would_lie_so_load_fixes_it(
   tmp_path: Path,
 ):
-  packer, job = mk_packer(tmp_path)
-  lay_down(job.home_root, "i-1")
-  packer.offer(job.job_id, "i-1", "ml10")
-  task = asyncio.create_task(packer.run())
-  archive = pack_path(job.home_root, "ml10")
-  async with asyncio.timeout(60):
-    while "i-1" not in packed_instances(archive):
-      await asyncio.sleep(0.05)
-  size = archive.stat().st_size
-  packer.offer(job.job_id, "i-1", "ml10")
-  await asyncio.sleep(1.0)
-  task.cancel()
-  with pytest.raises(asyncio.CancelledError):
-    await task
-  assert archive.stat().st_size == size
+  """Found on the live server: every job reported its full terminal
+  count as unpacked, including ones that were fully packed.
+
+  `pack_lag` reads the cache, and a cold cache means "nothing is
+  archived" — a number wrong in the alarming direction, which sent me
+  to `dispatcher pack` for a job that needed nothing. The fix is that
+  reads load first; this pins both halves."""
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0")
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 0
+
+  # A fresh packer over the same archives is the cold-cache case.
+  cold = Packer(
+    scheduler=scheduler,
+    settings=PackSettings(auto=True),
+    self_host=SELF,
+  )
+  assert cold.pack_lag(job.job_id) == 1  # the lie, unavoidable
+  await cold.load(job.job_id)
+  assert cold.pack_lag(job.job_id) == 0  # and gone once loaded
+
+
+async def test_an_archive_written_by_another_process_is_noticed(
+  tmp_path: Path,
+):
+  """Found on the live server: `dispatcher pack` closed a job's gap and
+  the server kept reporting it.
+
+  Only `offer` invalidated the cache, so a write from any other process
+  — which is exactly what the catch-up command is — was invisible. The
+  cache is keyed by the archive's (mtime, size) now, so a load notices
+  whoever wrote it."""
+  packer, scheduler, job = mk_packer(tmp_path, tasks=2)
+  first = finish(packer, scheduler, job, "t0")
+  await drain(packer, job.job_id)
+  assert packer.pack_lag(job.job_id) == 0
+
+  # A second terminal instance, packed by somebody else entirely.
+  second = finish(packer, scheduler, job, "t1", tell=False)
+  other = Packer(
+    scheduler=scheduler,
+    settings=PackSettings(auto=True),
+    self_host=SELF,
+  )
+  await drain(other, job.job_id)
+  assert held(other, job.job_id) == {first, second}
+
+  # The first packer never saw that happen — and must still agree.
+  await packer.load(job.job_id)
+  assert packer.pack_lag(job.job_id) == 0
+  assert held(packer, job.job_id) == {first, second}
+
+
+async def test_a_cached_read_is_reused_while_the_archive_is_untouched(
+  tmp_path: Path,
+):
+  # The stamp is what makes the check cheap: an unchanged archive must
+  # not be decompressed again on every job row of every poll.
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0")
+  await drain(packer, job.job_id)
+  before = packer._held[job.job_id]
+  await packer.load(job.job_id)
+  after = packer._held[job.job_id]
+  # Same tuples, not merely equal sets — the contents were not re-read.
+  assert all(after[h] is before[h] for h in before)
 
 
 # ── settings ─────────────────────────────────────────────────────
@@ -246,13 +403,18 @@ async def test_an_already_packed_instance_is_not_appended_twice(
 
 def test_packing_is_off_by_default():
   # It reads finished homes back over NFS, so it competes with running
-  # trials; switching it on is the operator's call.
+  # trials; switching it on is the operator's call. `pack_lag` is
+  # reported either way.
   assert PackSettings().auto is False
 
 
 def test_patch_applies_each_knob():
   settings = PackSettings()
-  apply_patch(settings, PackPatch(auto=True, processors=4))
-  assert (settings.auto, settings.processors) == (True, 4)
+  apply_patch(settings, PackPatch(auto=True, processors=4, timeout_sec=5))
+  assert (settings.auto, settings.processors, settings.timeout_sec) == (
+    True,
+    4,
+    5,
+  )
   apply_patch(settings, PackPatch())
-  assert (settings.auto, settings.processors) == (True, 4)
+  assert settings.auto is True

@@ -1694,7 +1694,7 @@ async def test_an_archived_job_reports_todays_columns(tmp_path: Path):
 def test_the_frozen_blob_carries_no_readout_cell(tmp_path: Path):
   """If it did, the two halves could disagree again."""
   from dispatcher.api.wire import (
-    READOUT_FIELDS,
+    LIVE_FIELDS,
     full_job_view,
   )
 
@@ -1703,7 +1703,7 @@ def test_the_frozen_blob_carries_no_readout_cell(tmp_path: Path):
   frozen = json.loads(
     archive_payload_bytes(full_job_view(scheduler, job.job_id))
   )
-  assert READOUT_FIELDS and not (READOUT_FIELDS & set(frozen))
+  assert LIVE_FIELDS and not (LIVE_FIELDS & set(frozen))
 
 
 async def test_descriptions_come_back_with_the_values(tmp_path: Path):

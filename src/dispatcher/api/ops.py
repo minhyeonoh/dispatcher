@@ -53,13 +53,18 @@ if TYPE_CHECKING:
   from datetime import datetime
 
   from dispatcher.api.config import Config
-  from dispatcher.api.wire import JobSummaryOut, ReadoutSummaryFn
+  from dispatcher.api.wire import (
+    JobSummaryOut,
+    PackLagFn,
+    ReadoutSummaryFn,
+  )
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.models import InstanceView, JobState
   from dispatcher.core.readout_service import ReadoutService
   from dispatcher.core.runtime import DispatcherRuntime
   from dispatcher.core.scheduler import Scheduler
   from dispatcher.services.notify import TelegramSender
+  from dispatcher.services.packer import Packer
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,7 @@ class ServerState:
   # None in fake-dispatch (test) mode — then nothing is pinned.
   resolve_image: Callable[[str], str] | None = None
   readouts: ReadoutService | None = None
+  packer: Packer | None = None
   _seq: int = field(default=0)
 
   @property
@@ -107,6 +113,13 @@ class ServerState:
     service is attached (tests) — then job rows simply carry no
     readout columns."""
     return None if self.readouts is None else self.readouts.summary
+
+  @property
+  def pack_lag_fn(self) -> PackLagFn | None:
+    """The same, for packing. None when no packer is attached, which
+    reports as a null `pack_lag` rather than a zero — "nothing is
+    watching" and "nothing is missing" must not look alike."""
+    return None if self.packer is None else self.packer.pack_lag
 
   def next_instance_id(self, task_id: str) -> str:
     """`<task[:32]>__<7-digit seq>` — deterministic, monotonic."""
@@ -331,9 +344,9 @@ async def submit_job(
   )
   st.event_bus.publish(
     "job_submitted",
-    snapshot_job(st.scheduler, job.job_id, st.readout_fn).model_dump(
-      mode="json"
-    ),
+    snapshot_job(
+      st.scheduler, job.job_id, st.readout_fn, st.pack_lag_fn
+    ).model_dump(mode="json"),
   )
   return {
     "job_id": job.job_id,
@@ -427,11 +440,11 @@ async def patch_job(
     )
   st.event_bus.publish(
     "job_patched",
-    snapshot_job(st.scheduler, job_id, st.readout_fn).model_dump(
-      mode="json"
-    ),
+    snapshot_job(
+      st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+    ).model_dump(mode="json"),
   )
-  return snapshot_job(st.scheduler, job_id, st.readout_fn)
+  return snapshot_job(st.scheduler, job_id, st.readout_fn, st.pack_lag_fn)
 
 
 async def cancel_job(
@@ -441,7 +454,9 @@ async def cancel_job(
 ) -> dict[str, Any]:
   if not st.scheduler.has_job(job_id):
     raise NotFound(f"job {job_id!r} not found")
-  final_snapshot = snapshot_job(st.scheduler, job_id, st.readout_fn)
+  final_snapshot = snapshot_job(
+    st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+  )
   state = st.scheduler.job_state(job_id)
   runtime_state = st.scheduler.cancel(job_id)
   # Fire-and-forget remote kill; the GC catches stragglers.
@@ -758,7 +773,9 @@ async def archive_job(
   kind: str = "manual",
 ) -> dict[str, Any]:
   try:
-    view = full_job_view(st.scheduler, job_id, st.readout_fn)
+    view = full_job_view(
+      st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+    )
   except KeyError as exc:
     raise NotFound(f"job {job_id!r} not found") from exc
   payload_bytes = archive_payload_bytes(view)
@@ -786,7 +803,9 @@ async def archive_job(
       f"{counts.done_err} instance(s) ended in done_err — archived "
       f"anyway (unarchive at any time to inspect / retry)"
     )
-  snapshot = snapshot_job(st.scheduler, job_id, st.readout_fn)
+  snapshot = snapshot_job(
+    st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+  )
   st.event_bus.publish("job_archived", {"job_id": job_id, "kind": kind})
   return {
     "job_id": job_id,
@@ -822,7 +841,9 @@ async def unarchive_job(
       "at": clock_fn().isoformat(),
     },
   )
-  snapshot = snapshot_job(st.scheduler, job_id, st.readout_fn)
+  snapshot = snapshot_job(
+    st.scheduler, job_id, st.readout_fn, st.pack_lag_fn
+  )
   st.event_bus.publish("job_unarchived", {"job_id": job_id})
   return {
     "job_id": job_id,
