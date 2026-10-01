@@ -59,7 +59,9 @@ function chain(job: FullJob, task: string): InstanceView[] {
 function Row({ label, children }: { label: string; children: unknown }) {
   return (
     <div className="flex gap-3 py-1">
-      <div className="w-28 shrink-0 text-xs text-fg-faint">{label}</div>
+      <div className="w-24 shrink-0 text-xs text-fg-faint sm:w-28">
+        {label}
+      </div>
       <div className="min-w-0 text-sm">{children as never}</div>
     </div>
   );

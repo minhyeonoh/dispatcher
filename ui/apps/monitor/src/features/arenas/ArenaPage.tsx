@@ -25,8 +25,8 @@ export function ArenaPage() {
   const segments = _splat.split("/");
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <h1 className="font-mono text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="min-w-0 font-mono text-sm break-all">
           {segments.map((s, i) => (
             <span key={i}>
               {i > 0 && <span className="text-fg-faint"> / </span>}

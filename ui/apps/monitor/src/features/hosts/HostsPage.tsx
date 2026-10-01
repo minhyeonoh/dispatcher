@@ -28,83 +28,89 @@ export function HostsPage() {
             {cluster.settings.max_concurrent}
           </span>
         </CardHeader>
-        <Table>
-          <THead>
-            <TR>
-              <TH>host</TH>
-              <TH>state</TH>
-              <TH className="text-right">running</TH>
-              <TH className="text-right">cap</TH>
-              <TH className="w-48">utilisation</TH>
-            </TR>
-          </THead>
-          <tbody>
-            {hosts.map(([host, hs]) => {
-              const running = cluster.running_per_host[host] ?? 0;
-              return (
-                <TR key={host}>
-                  <TD className="font-medium">{host}</TD>
-                  <TD className="flex gap-1.5">
-                    {!hs.alive && <Badge tone="danger">dead</Badge>}
-                    {!hs.active && <Badge tone="warn">inactive</Badge>}
-                    {hs.alive && hs.active && (
-                      <Badge tone="ok">ready</Badge>
-                    )}
-                  </TD>
-                  <TD className="text-right tabular-nums">{running}</TD>
-                  <TD className="text-right tabular-nums">
-                    {hs.max_concurrent}
-                  </TD>
-                  <TD>
-                    <SegmentBar
-                      segments={[
-                        { value: running, tone: "accent" },
-                        {
-                          value: Math.max(0, hs.max_concurrent - running),
-                          tone: "muted",
-                        },
-                      ]}
-                    />
-                  </TD>
-                </TR>
-              );
-            })}
-          </tbody>
-        </Table>
+        {/* Five columns do not fit a phone, and squeezing them
+            turns the utilisation bar into a sliver. Scroll. */}
+        <div className="overflow-x-auto">
+          <Table className="min-w-[36rem]">
+            <THead>
+              <TR>
+                <TH>host</TH>
+                <TH>state</TH>
+                <TH className="text-right">running</TH>
+                <TH className="text-right">cap</TH>
+                <TH className="w-48">utilisation</TH>
+              </TR>
+            </THead>
+            <tbody>
+              {hosts.map(([host, hs]) => {
+                const running = cluster.running_per_host[host] ?? 0;
+                return (
+                  <TR key={host}>
+                    <TD className="font-medium">{host}</TD>
+                    <TD className="flex gap-1.5">
+                      {!hs.alive && <Badge tone="danger">dead</Badge>}
+                      {!hs.active && <Badge tone="warn">inactive</Badge>}
+                      {hs.alive && hs.active && (
+                        <Badge tone="ok">ready</Badge>
+                      )}
+                    </TD>
+                    <TD className="text-right tabular-nums">{running}</TD>
+                    <TD className="text-right tabular-nums">
+                      {hs.max_concurrent}
+                    </TD>
+                    <TD>
+                      <SegmentBar
+                        segments={[
+                          { value: running, tone: "accent" },
+                          {
+                            value: Math.max(0, hs.max_concurrent - running),
+                            tone: "muted",
+                          },
+                        ]}
+                      />
+                    </TD>
+                  </TR>
+                );
+              })}
+            </tbody>
+          </Table>
+        </div>
       </Card>
       <Card>
         <CardHeader>
           <CardTitle>pools</CardTitle>
         </CardHeader>
-        <Table>
-          <THead>
-            <TR>
-              <TH>pool</TH>
-              <TH className="text-right">running</TH>
-              <TH className="text-right">cap</TH>
-            </TR>
-          </THead>
-          <tbody>
-            {Object.entries(cluster.running_per_pool ?? {}).map(
-              ([pool, n]) => {
-                const cap = cluster.settings.pool_caps?.[pool];
-                return (
-                  <TR key={pool}>
-                    <TD>{pool}</TD>
-                    <TD className="text-right tabular-nums">{n}</TD>
-                    <TD className="text-right tabular-nums">
-                      {cap === undefined ? (
-                        <span className="text-fg-faint">unbounded</span>
-                      ) : (
-                        cap
-                      )}
-                    </TD>
-                  </TR>
-                );
-              },
-            )}
-          </tbody>
-        </Table>
+        <div className="overflow-x-auto">
+          <Table>
+            <THead>
+              <TR>
+                <TH>pool</TH>
+                <TH className="text-right">running</TH>
+                <TH className="text-right">cap</TH>
+              </TR>
+            </THead>
+            <tbody>
+              {Object.entries(cluster.running_per_pool ?? {}).map(
+                ([pool, n]) => {
+                  const cap = cluster.settings.pool_caps?.[pool];
+                  return (
+                    <TR key={pool}>
+                      <TD>{pool}</TD>
+                      <TD className="text-right tabular-nums">{n}</TD>
+                      <TD className="text-right tabular-nums">
+                        {cap === undefined ? (
+                          <span className="text-fg-faint">unbounded</span>
+                        ) : (
+                          cap
+                        )}
+                      </TD>
+                    </TR>
+                  );
+                },
+              )}
+            </tbody>
+          </Table>
+        </div>
       </Card>
     </div>
   );

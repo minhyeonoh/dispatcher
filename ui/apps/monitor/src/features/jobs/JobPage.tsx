@@ -74,42 +74,44 @@ function BucketCard({
           <Badge tone={BUCKET_TONE[name]}>{entries.length}</Badge>
         </CardTitle>
       </CardHeader>
-      <Table>
-        <THead>
-          <TR>
-            <TH>task</TH>
-            <TH>instance</TH>
-            <TH>host</TH>
-            <TH>dispatched</TH>
-            <TH className="text-right">
-              {name === "running" ? "running for" : "took"}
-            </TH>
-          </TR>
-        </THead>
-        <tbody>
-          {entries.map(([task, tv]) => (
-            <TR key={task}>
-              <TD className="font-mono text-xs">{task}</TD>
-              <TD className="font-mono text-xs">
-                <Link
-                  to="/jobs/$jobKey/instances/$instanceId"
-                  params={{ jobKey: jobId, instanceId: tv.instance_id }}
-                  className="text-accent hover:underline"
-                >
-                  {tv.instance_id}
-                </Link>
-              </TD>
-              <TD>{tv.host}</TD>
-              <TD className="text-fg-muted">
-                {new Date(tv.dispatched_at).toLocaleString()}
-              </TD>
-              <TD className="text-right tabular-nums text-fg-muted">
-                <Elapsed view={tv} />
-              </TD>
+      <div className="overflow-x-auto">
+        <Table className="min-w-[34rem]">
+          <THead>
+            <TR>
+              <TH>task</TH>
+              <TH>instance</TH>
+              <TH>host</TH>
+              <TH>dispatched</TH>
+              <TH className="text-right">
+                {name === "running" ? "running for" : "took"}
+              </TH>
             </TR>
-          ))}
-        </tbody>
-      </Table>
+          </THead>
+          <tbody>
+            {entries.map(([task, tv]) => (
+              <TR key={task}>
+                <TD className="font-mono text-xs">{task}</TD>
+                <TD className="font-mono text-xs">
+                  <Link
+                    to="/jobs/$jobKey/instances/$instanceId"
+                    params={{ jobKey: jobId, instanceId: tv.instance_id }}
+                    className="text-accent hover:underline"
+                  >
+                    {tv.instance_id}
+                  </Link>
+                </TD>
+                <TD>{tv.host}</TD>
+                <TD className="text-fg-muted">
+                  {new Date(tv.dispatched_at).toLocaleString()}
+                </TD>
+                <TD className="text-right tabular-nums text-fg-muted">
+                  <Elapsed view={tv} />
+                </TD>
+              </TR>
+            ))}
+          </tbody>
+        </Table>
+      </div>
     </Card>
   );
 }
@@ -202,7 +204,9 @@ export function JobPage() {
             <Badge>mcw {job.max_concurrent}</Badge>
           )}
         </div>
-        <div className="mt-1 font-mono text-xs text-fg-faint">
+        {/* An absolute NFS path has no spaces to wrap at, so
+            without break-all it sets the whole page's width. */}
+        <div className="mt-1 font-mono text-xs break-all text-fg-faint">
           {job.job_id} · {job.home_root}
         </div>
       </div>
