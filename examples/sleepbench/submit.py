@@ -78,6 +78,9 @@ READOUTS = [
 ]
 
 
+COLUMNS_ENTRYPOINT = "readouts:columns"
+
+
 def register_readouts(server: str, arena: str) -> None:
   """Register before submitting so values land as instances finish.
 
@@ -105,6 +108,24 @@ def register_readouts(server: str, arena: str) -> None:
       # path. Re-running submit.py must not be a failure.
       detail = exc.read().decode(errors="replace")[:200]
       print(f"{'readout':>24}  {spec['name']}: {exc.code} {detail}")
+  # The column function: one per arena, and it decides the whole
+  # column set. Unlike readouts it needs no backfill — it runs over
+  # values already on disk.
+  req = urllib.request.Request(
+    f"{server.rstrip('/')}/api/readouts/columns",
+    data=json.dumps(
+      {"arena": arena, "columns": COLUMNS_ENTRYPOINT}
+    ).encode(),
+    headers={"Content-Type": "application/json"},
+    method="PUT",
+  )
+  try:
+    with urllib.request.urlopen(req, timeout=60) as resp:
+      resp.read()
+    print(f"{'columns':>24}  {COLUMNS_ENTRYPOINT}")
+  except urllib.error.HTTPError as exc:
+    detail = exc.read().decode(errors="replace")[:200]
+    print(f"{'columns':>24}  {exc.code} {detail}")
 
 
 def make_payloads(

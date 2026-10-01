@@ -3,7 +3,9 @@ scoring itself), the retroactive pass, and the HTTP surface."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import pathlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,14 +26,14 @@ from dispatcher.core.readout import (
   request_path,
   values_path,
 )
-from dispatcher.core.scheduler import Scheduler
-from dispatcher.services.readouts import (
+from dispatcher.core.readout_service import (
   ReadoutConflict,
   ReadoutRegistry,
   ReadoutService,
   ReadoutSettings,
   build_readout_argv,
 )
+from dispatcher.core.scheduler import Scheduler
 from dispatcher_sdk import readout as sdk_readout
 from tests.test_runtime import mk_job
 from tests.test_scheduler import clock_from, id_gen
@@ -1016,8 +1018,10 @@ def test_http_register_list_unregister(tmp_path: Path):
     assert body["hint"] == ""
 
     listed = client.get("/readouts").json()["by_arena"]
-    assert [s["name"] for s in listed["bench/v7"]] == ["reward"]
-    assert listed["bench/v7"][0]["timeout_sec"] == 600.0
+    specs = listed["bench/v7"]["readouts"]
+    assert [s["name"] for s in specs] == ["reward"]
+    assert specs[0]["timeout_sec"] == 600.0
+    assert listed["bench/v7"]["columns"] == ""
 
     clash = register(client, "bench")
     assert clash.status_code == 409
@@ -1133,3 +1137,305 @@ def test_http_an_unregistered_arena_carries_no_columns(tmp_path: Path):
     assert row["readouts"] == {}
     assert row["readout_lag"] == 0
     assert runner.requests == []
+
+
+# ── operator columns: the resident process ───────────────────────
+
+
+def fake_spawn(script: str):
+  """Spawn a real python process (not docker) running the SDK
+  aggregate loop against a module we write on the fly. Exercises the
+  actual protocol — pipes, ndjson, one line in one line out."""
+  import os
+  import sys
+  import tempfile
+
+  tmp = tempfile.mkdtemp()
+  pathlib.Path(tmp, "opcolumns.py").write_text(script, encoding="utf-8")
+
+  async def spawn(state):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (
+      tmp + os.pathsep + str(pathlib.Path("src").resolve())
+    )
+    return await asyncio.create_subprocess_exec(
+      sys.executable,
+      "-m",
+      "dispatcher_sdk.aggregate",
+      stdin=asyncio.subprocess.PIPE,
+      stdout=asyncio.subprocess.PIPE,
+      stderr=asyncio.subprocess.DEVNULL,
+      env=env,
+    )
+
+  return spawn
+
+
+MEDIAN_COLUMNS = """
+def columns(job):
+  xs = sorted(v for v in job.columns["reward"] if v is not None)
+  return {
+    "reward_median": xs[len(xs) // 2] if xs else None,
+    "n_hosts": len(set(job.columns["host"])),
+    "ok_rate": job.done_ok / max(1, job.done_ok + job.done_err),
+    "label": "arbitrary strings are fine",
+  }
+"""
+
+
+async def mk_columns_world(
+  tmp_path: Path, *, script: str = MEDIAN_COLUMNS, tasks: int = 5
+):
+  from dispatcher.core.aggregate_pool import AggregatePool
+
+  scheduler, service, runner, job = mk_world(
+    tmp_path, tasks=[f"t{i}" for i in range(tasks)]
+  )
+  pool = AggregatePool(spawn=fake_spawn(script), request_timeout_sec=10.0)
+  service._pool = pool
+  service.registry.set_columns("bench/v7", "opcolumns:columns")
+  for i in range(tasks):
+    instance_id = finish(scheduler, job.job_id, f"t{i}")
+    await service.record(
+      job.job_id,
+      f"t{i}",
+      instance_id,
+      [
+        ReadoutValue(
+          name="reward", instance_id=instance_id, value=0.1 * (i + 1)
+        )
+      ],
+    )
+  return scheduler, service, pool, job
+
+
+async def test_operator_columns_reach_the_job_row(tmp_path: Path):
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    # Dirty until a read asks — nothing runs in the background.
+    assert service.summary(job.job_id).columns == {}
+    assert service.summary(job.job_id).columns_stale is True
+
+    await service.refresh([job.job_id])
+    cell = service.summary(job.job_id)
+    assert cell.columns["reward_median"] == pytest.approx(0.3)
+    assert cell.columns["n_hosts"] == 1
+    assert cell.columns["ok_rate"] == 1.0
+    assert cell.columns["label"] == "arbitrary strings are fine"
+    assert cell.columns_stale is False
+    assert cell.columns_error == ""
+    # And the facts stay alongside the operator's numbers.
+    assert cell.aggregates["reward"].n == 5
+
+    row = snapshot_job(scheduler, job.job_id, service.summary)
+    assert row.columns["reward_median"] == pytest.approx(0.3)
+  finally:
+    await pool.close()
+
+
+async def test_one_process_serves_many_refreshes(tmp_path: Path):
+  """Resident, not per-request: the whole point of the design."""
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    for _ in range(5):
+      service.invalidate([job.job_id])
+      await service.refresh([job.job_id])
+    held = pool.snapshot()
+    assert len(held) == 1
+    assert held[0]["requests"] == 5
+    assert held[0]["alive"] is True
+  finally:
+    await pool.close()
+
+
+async def test_a_clean_job_costs_nothing(tmp_path: Path):
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    await service.refresh([job.job_id])
+    before = pool.snapshot()[0]["requests"]
+    await service.refresh([job.job_id])  # not dirty
+    assert pool.snapshot()[0]["requests"] == before
+  finally:
+    await pool.close()
+
+
+async def test_new_values_make_columns_stale_then_fresh(tmp_path: Path):
+  scheduler, service, pool, job = await mk_columns_world(tmp_path, tasks=6)
+  try:
+    await service.refresh([job.job_id])
+    assert service.summary(job.job_id).columns_stale is False
+    # One more value: the single invalidation path is `_append`.
+    instance_id = scheduler.job_view(job.job_id).done_ok["t0"].instance_id
+    await service.record(
+      job.job_id,
+      "t0",
+      instance_id,
+      [ReadoutValue(name="reward", instance_id=instance_id, value=9.0)],
+    )
+    assert service.summary(job.job_id).columns_stale is True
+    # Stale shows the LAST GOOD numbers rather than nothing.
+    assert "reward_median" in service.summary(job.job_id).columns
+    await service.refresh([job.job_id])
+    assert service.summary(job.job_id).columns_stale is False
+  finally:
+    await pool.close()
+
+
+async def test_a_raising_columns_function_keeps_the_last_good_numbers(
+  tmp_path: Path,
+):
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    await service.refresh([job.job_id])
+    good = dict(service.summary(job.job_id).columns)
+    assert good
+    # Point at a function that raises; values unchanged.
+    service.registry.set_columns("bench/v7", "opcolumns:boom")
+    service.invalidate([job.job_id])
+    await service.refresh([job.job_id])
+    cell = service.summary(job.job_id)
+    assert cell.columns == good  # never invented, never blanked
+    assert cell.columns_stale is True  # and said so
+    assert "AttributeError" in cell.columns_error or cell.columns_error
+  finally:
+    await pool.close()
+
+
+async def test_a_wedged_columns_function_times_out(tmp_path: Path):
+  from dispatcher.core.aggregate_pool import AggregatePool
+
+  scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
+  pool = AggregatePool(
+    spawn=fake_spawn("import time\ndef columns(job):\n  time.sleep(30)\n"),
+    request_timeout_sec=0.4,
+  )
+  service._pool = pool
+  service.registry.set_columns("bench/v7", "opcolumns:columns")
+  instance_id = finish(scheduler, job.job_id, "t1")
+  await service.record(
+    job.job_id,
+    "t1",
+    instance_id,
+    [ReadoutValue(name="reward", instance_id=instance_id, value=1.0)],
+  )
+  try:
+    await service.refresh([job.job_id])
+    cell = service.summary(job.job_id)
+    assert cell.columns == {}
+    assert "exceeded" in cell.columns_error
+    assert cell.columns_stale is True
+    # The wedged process was dropped, not reused — a late answer on
+    # that pipe would desynchronise every later request.
+    assert pool.snapshot() == []
+  finally:
+    await pool.close()
+
+
+async def test_the_pool_is_capped_and_evicts_lru(tmp_path: Path):
+  from dispatcher.core.aggregate_pool import AggregatePool
+
+  pool = AggregatePool(
+    spawn=fake_spawn(MEDIAN_COLUMNS),
+    max_processes=2,
+    request_timeout_sec=10.0,
+  )
+  scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
+  finish(scheduler, job.job_id, "t1")
+  frame = {"columns": {"reward": [1.0], "host": ["ml10"]}, "done_ok": 1}
+  try:
+    for i in range(4):
+      job.image_id = f"sha256:image{i}"
+      await pool.compute(job, entrypoint="opcolumns:columns", frame=frame)
+    held = pool.snapshot()
+    assert len(held) == 2  # the cap is a real ceiling
+    assert {h["image_id"] for h in held} == {
+      "sha256:image2",
+      "sha256:image3",
+    }
+  finally:
+    await pool.close()
+
+
+async def test_frame_carries_metadata_and_marks_errors(tmp_path: Path):
+  scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1", "t2"])
+  ok_id = finish(scheduler, job.job_id, "t1")
+  err_id = finish(scheduler, job.job_id, "t2")
+  await service.record(
+    job.job_id,
+    "t1",
+    ok_id,
+    [ReadoutValue(name="reward", instance_id=ok_id, value=0.5)],
+  )
+  await service.record(
+    job.job_id,
+    "t2",
+    err_id,
+    [
+      ReadoutValue(
+        name="reward", instance_id=err_id, ok=False, error="KeyError"
+      )
+    ],
+  )
+  frame = service._frame(
+    job.job_id, service.registry.for_arena("bench/v7")
+  )
+  cols = frame["columns"]
+  assert set(cols) >= {
+    "instance_id",
+    "task_id",
+    "state",
+    "host",
+    "dispatched_at",
+    "finished_at",
+    "duration_s",
+    "reward",
+  }
+  assert cols["host"] == ["ml10", "ml10"]
+  # An errored readout is None in the frame — same as a null return —
+  # and the distinction lives in `errors`.
+  assert sorted(v for v in cols["reward"] if v is not None) == [0.5]
+  assert frame["errors"] == {"reward": 1}
+  assert (frame["done_ok"], frame["done_err"]) == (2, 0)
+
+
+async def test_no_pool_means_no_columns(tmp_path: Path):
+  """A dispatcher without the pool (tests, fake dispatch) simply
+  serves no operator columns — never an error."""
+  scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
+  service.registry.set_columns("bench/v7", "opcolumns:columns")
+  instance_id = finish(scheduler, job.job_id, "t1")
+  await service.record(
+    job.job_id,
+    "t1",
+    instance_id,
+    [ReadoutValue(name="reward", instance_id=instance_id, value=1.0)],
+  )
+  await service.refresh([job.job_id])
+  assert service.summary(job.job_id).columns == {}
+
+
+def test_registry_keeps_the_pre_columns_file_format(tmp_path: Path):
+  """The registry on the running dispatcher predates `columns`; a
+  migration that lost it would lose the only copy of that intent."""
+  (tmp_path / "readouts.json").write_text(
+    json.dumps(
+      {"bench": [{"name": "reward", "entrypoint": "readouts:reward"}]}
+    ),
+    encoding="utf-8",
+  )
+  reg = ReadoutRegistry.load(tmp_path)
+  assert [s.name for s in reg.for_arena("bench")] == ["reward"]
+  assert reg.columns_entrypoint("bench") == ""
+  reg.set_columns("bench", "readouts:columns")
+  assert ReadoutRegistry.load(tmp_path).columns_entrypoint("bench/v7") == (
+    "readouts:columns"
+  )
+
+
+def test_columns_entrypoint_takes_the_nearest_node(tmp_path: Path):
+  reg = mk_registry(tmp_path)
+  reg.set_columns("bench", "a:columns")
+  reg.set_columns("bench/v7", "b:columns")
+  assert reg.columns_entrypoint("bench/v7/front5") == "b:columns"
+  assert reg.columns_entrypoint("bench/v8") == "a:columns"
+  assert reg.columns_entrypoint("other") == ""

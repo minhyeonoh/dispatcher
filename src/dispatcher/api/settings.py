@@ -29,6 +29,10 @@ from pydantic import (
 )
 
 from dispatcher.core.models import HostSettings
+from dispatcher.core.readout_service import ReadoutPatch, ReadoutSettings
+from dispatcher.core.readout_service import (
+  apply_patch as _apply_readouts,
+)
 from dispatcher.core.runtime import (
   StateReconciliationPatch,
   StateReconciliationSettings,
@@ -61,10 +65,6 @@ from dispatcher.services.orphan_gc import (
 )
 from dispatcher.services.orphan_gc import (
   apply_patch as _apply_gc,
-)
-from dispatcher.services.readouts import ReadoutPatch, ReadoutSettings
-from dispatcher.services.readouts import (
-  apply_patch as _apply_readouts,
 )
 
 if TYPE_CHECKING:

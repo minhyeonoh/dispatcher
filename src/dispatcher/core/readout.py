@@ -175,6 +175,20 @@ class ReadoutJobSummary(BaseModel):
   aggregates: dict[str, ReadoutAggregate] = Field(default_factory=dict)
   lag: int | None = None
 
+  columns: dict[str, Any] = Field(default_factory=dict)
+  """What the arena's `columns` function returned — arbitrary
+  operator-defined numbers, recomputed whenever values change. Empty
+  when the arena registers no such function, in which case the table
+  falls back to `aggregates`."""
+
+  columns_stale: bool = False
+  """Values changed and the columns have not caught up yet (or the
+  last attempt failed). Shown rather than hidden: a silently stale
+  number is the one failure mode that reaches a figure."""
+
+  columns_error: str = ""
+  """Why the last attempt failed, if it did."""
+
 
 def aggregate(values: dict[str, ReadoutValue]) -> ReadoutAggregate:
   numbers: list[float] = []

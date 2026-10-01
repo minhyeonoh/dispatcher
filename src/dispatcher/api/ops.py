@@ -39,13 +39,13 @@ from dispatcher.core.outcome import (
   read_completion,
 )
 from dispatcher.core.readout import BadReadout, ReadoutSpec
+from dispatcher.core.readout_service import ReadoutConflict
 from dispatcher.core.scheduler import (
   AliasCollisionError,
   AliasFormatError,
   NotArchivableError,
   NotArchivedError,
 )
-from dispatcher.services.readouts import ReadoutConflict
 
 if TYPE_CHECKING:
   from collections.abc import AsyncIterator, Callable
@@ -55,10 +55,10 @@ if TYPE_CHECKING:
   from dispatcher.api.wire import JobSummaryOut, ReadoutSummaryFn
   from dispatcher.core.event_bus import EventBus
   from dispatcher.core.models import InstanceView, JobState
+  from dispatcher.core.readout_service import ReadoutService
   from dispatcher.core.runtime import DispatcherRuntime
   from dispatcher.core.scheduler import Scheduler
   from dispatcher.services.notify import TelegramSender
-  from dispatcher.services.readouts import ReadoutService
 
 logger = logging.getLogger(__name__)
 
@@ -928,12 +928,48 @@ def _require_readouts(st: ServerState) -> ReadoutService:
 
 
 def list_readouts(st: ServerState) -> dict[str, Any]:
+  """Per arena: the per-instance readouts, and the `columns`
+  function that turns their values into the job's columns."""
   service = _require_readouts(st)
+  return {"by_arena": service.registry.snapshot()}
+
+
+async def set_columns(
+  st: ServerState, payload: dict[str, Any]
+) -> dict[str, Any]:
+  """Point an arena at its `columns` function (empty entrypoint
+  removes it).
+
+  Unlike a readout, this takes effect on the next READ — the
+  function runs in a resident process over values already on disk,
+  so there is nothing to backfill and no instance has to re-run."""
+  service = _require_readouts(st)
+  if not isinstance(payload, dict):
+    raise Invalid("body must be an object")
+  arena = normalize_arena(payload.get("arena", ""))
+  if not arena:
+    raise Invalid("arena is required")
+  entrypoint = str(payload.get("columns") or "").strip()
+  if entrypoint and ":" not in entrypoint:
+    raise Invalid(
+      f"columns entrypoint {entrypoint!r} must be 'module.path:callable'"
+    )
+  try:
+    service.registry.set_columns(arena, entrypoint)
+  except OSError as exc:
+    raise Internal(f"readout registry write failed: {exc}") from exc
+  members = arena_members(st.scheduler, arena)
+  service.invalidate(members)
+  await service.refresh(members)
   return {
-    "by_arena": {
-      arena: [s.model_dump(mode="json") for s in specs]
-      for arena, specs in service.registry.snapshot().items()
-    }
+    "arena": arena,
+    "columns": entrypoint,
+    "members": members,
+    "errors": {
+      aid: err
+      for aid in members
+      if (err := service.summary(aid).columns_error)
+    },
   }
 
 

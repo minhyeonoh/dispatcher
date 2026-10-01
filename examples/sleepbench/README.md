@@ -102,6 +102,23 @@ That is the retroactive path doing what it exists for — and the
 same `readouts.py`, imported in a container from the job's pinned
 image instead of in the worker.
 
+## And the columns are arbitrary
+
+`readouts.py` also has a `columns(job)` that gets the whole job as a
+dataframe and returns whatever the table should show:
+
+| column | why it could not be an enum |
+| --- | --- |
+| `reward_median` | a median, so one slow instance cannot move it |
+| `p90_duration` | a quantile |
+| `overhead_s` | arithmetic ACROSS readouts — `duration_s - wall_seconds`, the dispatcher's timing minus the worker's own account |
+| `slowest_host` | a group-by, returning a string |
+
+These update while the sweep runs, in a single resident container
+shared by all three arms (`docker ps --filter
+label=dispatcher.readout=aggregate` — there is exactly one). The
+image installs pandas for this; the SDK itself does not need it.
+
 ## An instance sees only its own home
 
 Making the retry succeed needs state that outlives the first

@@ -76,6 +76,12 @@ class JobSummaryOut(BaseModel):
   # is unknown. A growing number means computation is losing the
   # race against completion.
   readout_lag: int | None = None
+  # Operator-defined columns (an arena's `columns` function). The
+  # table shows these when present; `readouts` above stays as the
+  # facts (n / errors / nulls) either way.
+  columns: dict[str, Any] = Field(default_factory=dict)
+  columns_stale: bool = False
+  columns_error: str = ""
 
 
 class InstanceViewOut(BaseModel):
@@ -175,6 +181,9 @@ def snapshot_job(
     archive_kind=state.archive_kind or "",
     readouts=cell.aggregates,
     readout_lag=cell.lag,
+    columns=cell.columns,
+    columns_stale=cell.columns_stale,
+    columns_error=cell.columns_error,
   )
 
 

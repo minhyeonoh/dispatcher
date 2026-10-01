@@ -153,14 +153,13 @@ POST /api/readouts
   invalidates every figure already drawn from it. Registering a
   name that already exists elsewhere on the same arena path is a
   409, not an overwrite.
-- **One value per instance** is the whole contract. Job-level
-  numbers are arithmetic over those values, so no operator code
-  runs at that level: numbers get a mean, bools get a rate (`True`
-  counts 1), a column with a string in it gets a count and nothing
-  invented on top of it. Return `None` for "not applicable here" —
-  it is excluded from the mean rather than averaged as zero, which
-  is the difference between reporting a broken run and reporting a
-  worse method.
+- **One value per instance** is a readout's whole contract. With no
+  `columns` function (below) the table rolls those values up itself:
+  numbers get a mean, bools get a rate (`True` counts 1), a column
+  with a string in it gets a count and nothing invented on top. In
+  every case `None` means "not applicable here" and is excluded from
+  the mean rather than averaged as zero — the difference between
+  reporting a broken run and reporting a worse method.
 
 ### Where it runs
 
@@ -218,12 +217,65 @@ last line winning, written by the dispatcher alone. Both paths
 write the same format, and each line records the `source_sha256` +
 `image_id` that produced it.
 
+### Columns are yours too
+
+A readout produces one value per instance. What the table SHOWS is a
+second question, and the answer is another function of yours —
+registered once per arena, handed the job as a frame, returning the
+column dict:
+
+```python
+def columns(job):
+  df = job.df                                  # pandas, if you want it
+  ok = df[df.state == "done_ok"]
+  return {
+    "reward_median": ok.reward.median(),
+    "p90_duration":  df.duration_s.quantile(0.9),
+    "overhead_s":    (df.duration_s - df.wall_seconds).median(),
+    "slowest_host":  df.groupby("host").duration_s.mean().idxmax(),
+  }
+```
+
+```
+PUT /api/readouts/columns  {"arena": "...", "columns": "readouts:columns"}
+```
+
+Its keys are the columns; nothing is declared in advance. So the
+dispatcher never learns what a median is, and the number in the
+table is produced by the same code as the number in your paper.
+
+The frame is one row per finished instance: `instance_id`,
+`task_id`, `state`, `host`, `dispatched_at`, `finished_at`,
+`duration_s`, and one column per readout. `job.df` imports pandas
+lazily — `job.columns` (dict of lists) and `job.records` are always
+there, so an image without pandas still works and
+`pl.DataFrame(job.columns)` covers polars. A readout that returned
+`None` and one that raised are both `None` in the frame; `job.errors`
+keeps that distinction for the rare column that wants it. There is
+no filesystem: one process serves every job sharing an image and
+source, so artifact reading belongs in a per-instance readout.
+
+**It runs in a resident process**, one per `(image, source)`, started
+on the first read that needs it. A round trip is ~3ms for a
+1344-instance job, so the trigger is simply "a read, when values
+changed since the last one" — no timer, no background loop, no
+queue, and no computation at all for a job nobody is looking at. The
+invalidation is one line in the one function that appends values.
+
+Failures never invent a number: a timeout (`readouts.
+aggregate_timeout_sec`, default 5s) or a raising function leaves the
+last good columns in place with `columns_stale` set and
+`columns_error` saying why, and the next read retries. The pool is
+capped (`readouts.max_aggregate_processes`) and evicts least-recently
+used, so months of submissions cannot accumulate processes.
+
 ```
 GET    /api/readouts                    what is registered where
 POST   /api/readouts                    register (no containers; the
                                         reply names jobs needing the
                                         retroactive command)
 DELETE /api/readouts?arena=..&name=..   stop computing (values stay)
+PUT    /api/readouts/columns            the arena's column function
 GET    /api/jobs/{id}/readouts          every value, per instance
 POST   /api/readouts/compute            the retroactive pass, as an
                                         ndjson stream (the CLI's

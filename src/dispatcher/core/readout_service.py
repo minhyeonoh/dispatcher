@@ -28,11 +28,12 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from dispatcher.core import clock, labels
+from dispatcher.core.aggregate_pool import AggregateError, AggregatePool
 from dispatcher.core.dispatch import (
   ENV_JOB,
   ENV_SOURCE,
@@ -102,12 +103,28 @@ class ReadoutSettings(BaseModel):
   runner is the real guard; this catches a container that never gets
   that far."""
 
+  max_aggregate_processes: PositiveInt = 4
+  """Resident column processes, keyed by (image, source). The cap is
+  what stops months of submissions from accumulating them; the LRU
+  evicts the least recently used."""
+
+  aggregate_timeout_sec: float = 5.0
+  """One column computation. Measured at ~6ms for 1344 instances, so
+  this only ever catches a runaway."""
+
+  aggregate_idle_sec: float = 900.0
+  """Close a process unused this long. Checked when another request
+  arrives, never on a timer."""
+
 
 class ReadoutPatch(BaseModel):
   model_config = ConfigDict(extra="forbid")
 
   batch: PositiveInt | None = None
   container_timeout_sec: float | None = None
+  max_aggregate_processes: PositiveInt | None = None
+  aggregate_timeout_sec: float | None = None
+  aggregate_idle_sec: float | None = None
 
 
 def apply_patch(settings: ReadoutSettings, patch: ReadoutPatch) -> None:
@@ -115,6 +132,12 @@ def apply_patch(settings: ReadoutSettings, patch: ReadoutPatch) -> None:
     settings.batch = patch.batch
   if patch.container_timeout_sec is not None:
     settings.container_timeout_sec = patch.container_timeout_sec
+  if patch.max_aggregate_processes is not None:
+    settings.max_aggregate_processes = patch.max_aggregate_processes
+  if patch.aggregate_timeout_sec is not None:
+    settings.aggregate_timeout_sec = patch.aggregate_timeout_sec
+  if patch.aggregate_idle_sec is not None:
+    settings.aggregate_idle_sec = patch.aggregate_idle_sec
 
 
 # ── registry ─────────────────────────────────────────────────────
@@ -148,45 +171,100 @@ class ReadoutRegistry:
     self,
     path: Path,
     by_arena: dict[str, list[ReadoutSpec]] | None = None,
+    columns: dict[str, str] | None = None,
   ) -> None:
     self._path = path
     self._by_arena: dict[str, list[ReadoutSpec]] = by_arena or {}
+    # arena → `module:callable` that turns a job's frame into its
+    # columns. Separate from the readout list because it is a
+    # different kind of thing: one per arena, job-level, and it runs
+    # in a resident process rather than in each instance.
+    self._columns: dict[str, str] = columns or {}
 
   @classmethod
   def load(cls, data_dir: Path) -> ReadoutRegistry:
     """A corrupt file raises rather than booting empty: the registry
     is operator intent that nothing else on disk can reconstruct, and
-    silently dropping it would leave every new instance unscored."""
+    silently dropping it would leave every new instance unscored.
+
+    A bare list per arena is the pre-`columns` format and still
+    loads — the registry on a running dispatcher predates this
+    field, and a migration that needed the operator to re-register
+    would lose exactly the intent this file exists to keep."""
     path = data_dir / READOUTS_FILENAME
     if not path.is_file():
       return cls(path)
     try:
       raw = json.loads(path.read_text(encoding="utf-8"))
-      by_arena = {
-        arena: [ReadoutSpec.model_validate(s).validated() for s in specs]
-        for arena, specs in raw.items()
-      }
+      by_arena: dict[str, list[ReadoutSpec]] = {}
+      columns: dict[str, str] = {}
+      for arena, node in raw.items():
+        specs = (
+          node if isinstance(node, list) else (node.get("readouts") or [])
+        )
+        by_arena[arena] = [
+          ReadoutSpec.model_validate(s).validated() for s in specs
+        ]
+        if isinstance(node, dict) and node.get("columns"):
+          columns[arena] = str(node["columns"])
     except Exception as exc:
       raise RuntimeError(
         f"readout registry {path} is unreadable ({exc}); refusing "
         f"to boot with silently-dropped readouts — fix or delete it"
       ) from exc
-    return cls(path, by_arena)
+    return cls(path, by_arena, columns)
 
   def save(self) -> None:
     self._path.parent.mkdir(parents=True, exist_ok=True)
     tmp = self._path.with_suffix(".json.tmp")
-    body = {
-      arena: [s.model_dump(mode="json") for s in specs]
-      for arena, specs in sorted(self._by_arena.items())
-    }
+    body: dict[str, dict[str, Any]] = {}
+    for arena in sorted(set(self._by_arena) | set(self._columns)):
+      node: dict[str, Any] = {
+        "readouts": [
+          s.model_dump(mode="json") for s in self._by_arena.get(arena, [])
+        ]
+      }
+      if self._columns.get(arena):
+        node["columns"] = self._columns[arena]
+      body[arena] = node
     tmp.write_text(
       json.dumps(body, indent=2, sort_keys=True), encoding="utf-8"
     )
     tmp.replace(self._path)
 
-  def snapshot(self) -> dict[str, list[ReadoutSpec]]:
-    return {a: list(s) for a, s in sorted(self._by_arena.items())}
+  def snapshot(self) -> dict[str, dict[str, Any]]:
+    return {
+      arena: {
+        "readouts": [
+          s.model_dump(mode="json") for s in self._by_arena.get(arena, [])
+        ],
+        "columns": self._columns.get(arena, ""),
+      }
+      for arena in sorted(set(self._by_arena) | set(self._columns))
+    }
+
+  def columns_entrypoint(self, arena: str) -> str:
+    """The nearest `columns` function on this arena's path, or empty.
+
+    Nearest wins rather than erroring: unlike a readout name (which
+    IS a column's identity), this is one function per arena deciding
+    the whole column set, so a subtree overriding its parent is a
+    coherent thing to want."""
+    if not arena:
+      return ""
+    segments = arena.split("/")
+    for i in range(len(segments), 0, -1):
+      found = self._columns.get("/".join(segments[:i]))
+      if found:
+        return found
+    return ""
+
+  def set_columns(self, arena: str, entrypoint: str) -> None:
+    if entrypoint:
+      self._columns[arena] = entrypoint
+    else:
+      self._columns.pop(arena, None)
+    self.save()
 
   def for_arena(self, arena: str) -> list[ReadoutSpec]:
     """Everything that applies to a job in `arena` — its own node
@@ -288,6 +366,7 @@ class ReadoutService:
     runner: ReadoutRunner,
     clock_fn: Callable[[], datetime] = clock.now,
     on_values_written: Callable[[str], None] | None = None,
+    pool: AggregatePool | None = None,
   ) -> None:
     self._scheduler = scheduler
     self._registry = registry
@@ -295,12 +374,20 @@ class ReadoutService:
     self._runner = runner
     self._clock = clock_fn
     self._on_values_written = on_values_written
+    self._pool = pool
     # job_id → readout name → instance_id → value.
     self._values: dict[str, dict[str, dict[str, ReadoutValue]]] = {}
     # (job_id, name) pairs read off disk. Per-NAME, so registering a
     # readout later still picks up values an earlier dispatcher
     # generation wrote for it.
     self._loaded: set[tuple[str, str]] = set()
+    # Operator columns: the last answer per job, and whether its
+    # input changed since. Values change in exactly ONE function
+    # (`_append`), so marking dirty is one line and there is no
+    # "did I miss an invalidation path" to worry about.
+    self._columns: dict[str, dict[str, Any]] = {}
+    self._dirty: set[str] = set()
+    self._column_error: dict[str, str] = {}
 
   @property
   def registry(self) -> ReadoutRegistry:
@@ -494,9 +581,113 @@ class ReadoutService:
       for value in values:
         index[value.instance_id] = value
       written += len(values)
-    if written and self._on_values_written is not None:
-      self._on_values_written(job_id)
+    if written:
+      # THE invalidation. Values change here and nowhere else, so
+      # this one line is the whole staleness story — no timer
+      # watches for drift and no path can forget to mark.
+      self._dirty.add(job_id)
+      if self._on_values_written is not None:
+        self._on_values_written(job_id)
     return written
+
+  # ── operator columns ─────────────────────────────────────────
+
+  def _frame(
+    self, job_id: str, specs: list[ReadoutSpec]
+  ) -> dict[str, Any]:
+    """The job as a columnar frame: row per finished instance.
+
+    Columnar rather than records because it is half the bytes and
+    the fastest path into a DataFrame on the other side (measured:
+    3.3ms vs 5.9ms round trip at 1344 rows)."""
+    view = self._scheduler.job_view(job_id)
+    values = self._values.get(job_id, {})
+    cols: dict[str, list[Any]] = {
+      key: []
+      for key in (
+        "instance_id",
+        "task_id",
+        "state",
+        "host",
+        "dispatched_at",
+        "finished_at",
+        "duration_s",
+      )
+    }
+    for spec in specs:
+      cols[spec.name] = []
+    errors = dict.fromkeys((s.name for s in specs), 0)
+    for bucket in ("done_ok", "done_err"):
+      for task_id, tv in getattr(view, bucket).items():
+        cols["instance_id"].append(tv.instance_id)
+        cols["task_id"].append(task_id)
+        cols["state"].append(bucket)
+        cols["host"].append(tv.host)
+        cols["dispatched_at"].append(tv.dispatched_at.isoformat())
+        cols["finished_at"].append(
+          tv.finished_at.isoformat() if tv.finished_at else None
+        )
+        cols["duration_s"].append(
+          (tv.finished_at - tv.dispatched_at).total_seconds()
+          if tv.finished_at
+          else None
+        )
+        for spec in specs:
+          found = values.get(spec.name, {}).get(tv.instance_id)
+          # A readout that raised and one that returned None are both
+          # None here. `errors` keeps the distinction for the rare
+          # column that needs it.
+          cols[spec.name].append(
+            None if found is None or not found.ok else found.value
+          )
+          if found is not None and not found.ok:
+            errors[spec.name] += 1
+    return {
+      "columns": cols,
+      "errors": {k: v for k, v in errors.items() if v},
+      "done_ok": len(view.done_ok),
+      "done_err": len(view.done_err),
+    }
+
+  def invalidate(self, job_ids: list[str]) -> None:
+    """Mark columns as needing recomputation. Used when the
+    `columns` function itself changes — the values did not move, but
+    what they mean did."""
+    self._dirty.update(job_ids)
+
+  async def refresh(self, job_ids: list[str]) -> None:
+    """Recompute operator columns for any of these jobs whose values
+    changed. Called by read paths before they project — so the cost
+    is paid at most once per change, and not at all for a job nobody
+    is looking at."""
+    if self._pool is None:
+      return
+    for job_id in job_ids:
+      if job_id not in self._dirty:
+        continue
+      try:
+        state = self._scheduler.job_state(job_id)
+      except KeyError:
+        self._dirty.discard(job_id)
+        continue
+      entrypoint = self._registry.columns_entrypoint(state.arena)
+      if not entrypoint:
+        self._dirty.discard(job_id)
+        continue
+      specs = self._registry.for_arena(state.arena)
+      frame = self._frame(job_id, specs)
+      try:
+        self._columns[job_id] = await self._pool.compute(
+          state, entrypoint=entrypoint, frame=frame
+        )
+        self._column_error.pop(job_id, None)
+        # Cleared only on success: a failed refresh leaves the job
+        # dirty so the next read tries again, and the last good
+        # numbers stay visible marked stale.
+        self._dirty.discard(job_id)
+      except AggregateError as exc:
+        self._column_error[job_id] = str(exc)
+        logger.warning("columns failed job=%s: %s", job_id, exc)
 
   def _unscored(
     self, job_id: str, specs: list[ReadoutSpec]
@@ -612,7 +803,15 @@ class ReadoutService:
       # signal ("run the retroactive pass"), not a ledger.
       lag += max(0, terminal - len(values))
     return ReadoutJobSummary(
-      aggregates=aggregates, lag=None if unloaded else lag
+      aggregates=aggregates,
+      lag=None if unloaded else lag,
+      # The operator's own columns, if this arena registered a
+      # `columns` function. `aggregates` stays either way — n /
+      # errors / nulls / lag are facts the operator should not have
+      # to reproduce, and a column function is free to ignore them.
+      columns=dict(self._columns.get(job_id, {})),
+      columns_stale=job_id in self._dirty,
+      columns_error=self._column_error.get(job_id, ""),
     )
 
   def jobs_with_lag(self, job_ids: list[str]) -> list[str]:

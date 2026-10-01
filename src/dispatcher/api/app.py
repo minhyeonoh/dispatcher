@@ -58,6 +58,7 @@ from dispatcher.api.wire import (
   sse,
 )
 from dispatcher.core import clock as clock_mod
+from dispatcher.core.aggregate_pool import AggregatePool
 from dispatcher.core.containers import (
   DockerEventStreamManager,
   census_host,
@@ -65,6 +66,11 @@ from dispatcher.core.containers import (
 )
 from dispatcher.core.event_bus import EventBus
 from dispatcher.core.loops import LoopSkip, supervised
+from dispatcher.core.readout_service import (
+  ReadoutRegistry,
+  ReadoutService,
+  docker_readout_run,
+)
 from dispatcher.core.runtime import (
   DispatcherRuntime,
   resolver_loop,
@@ -84,11 +90,6 @@ from dispatcher.services.notify import (
   telegram_bot_token_from_env,
 )
 from dispatcher.services.orphan_gc import OrphanGC, gc_loop
-from dispatcher.services.readouts import (
-  ReadoutRegistry,
-  ReadoutService,
-  docker_readout_run,
-)
 
 if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
@@ -104,6 +105,18 @@ def _get_state(app: FastAPI) -> ServerState:
   return app.state.dispatcher  # type: ignore[no-any-return]
 
 
+async def _refresh_columns(st: ServerState, job_ids: list[str]) -> None:
+  """Bring operator columns up to date before a read projects them.
+
+  This is the whole trigger for the aggregate path: no timer, no
+  background loop — a client asking is what makes it happen, and a
+  job whose values did not change costs a set lookup. Failures are
+  swallowed by the service, which leaves the job dirty so the next
+  read retries and marks the numbers stale meanwhile."""
+  if st.readouts is not None:
+    await st.readouts.refresh(list(job_ids))
+
+
 def create_app(
   config: Config,
   *,
@@ -114,6 +127,7 @@ def create_app(
   clock: Callable[[], datetime] | None = None,
   resolve_image: Callable[[str], str] | None = None,
   readout_runner: Callable[..., Any] | None = None,
+  aggregate_spawn: Callable[..., Any] | None = None,
   heartbeat_interval: float = 15.0,
 ) -> FastAPI:
   """`settings` is the SEED, used only when no settings.json is
@@ -169,6 +183,18 @@ def create_app(
       except Exception:
         logger.exception("readout: archive refresh failed job=%s", job_id)
 
+    # The resident pool: operator column functions, one process per
+    # (image, source). Nothing starts until a read needs one.
+    aggregate_pool = (
+      None
+      if dispatch is not None and aggregate_spawn is None
+      else AggregatePool(
+        max_processes=settings.readouts.max_aggregate_processes,
+        request_timeout_sec=settings.readouts.aggregate_timeout_sec,
+        idle_timeout_sec=settings.readouts.aggregate_idle_sec,
+        spawn=aggregate_spawn,
+      )
+    )
     readouts = ReadoutService(
       scheduler=scheduler,
       registry=readout_registry,
@@ -176,6 +202,7 @@ def create_app(
       runner=_pick_readout_runner(readout_runner, dispatch),
       clock_fn=clock_fn,
       on_values_written=_refresh_archive_bytes,
+      pool=aggregate_pool,
     )
     docker_events: DockerEventStreamManager | None = None
     runtime = DispatcherRuntime(
@@ -327,6 +354,8 @@ def create_app(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
           await task
+      if aggregate_pool is not None:
+        await aggregate_pool.close()
       if server_state.notify_sender is not None:
         await server_state.notify_sender.close()
       if docker_events is not None:
@@ -360,6 +389,9 @@ def create_app(
   @api.get("/state")
   async def get_state() -> StateOut:
     st = _get_state(app)
+    # Operator columns are recomputed here, before projecting: at
+    # most once per change, and never for a job nobody reads.
+    await _refresh_columns(st, st.scheduler.all_job_ids())
     cluster = cluster_snapshot(
       st.config.self_host, st.settings, st.scheduler
     )
@@ -400,6 +432,7 @@ def create_app(
           "snapshot",
           cluster_snapshot(st.config.self_host, st.settings, st.scheduler),
         )
+        await _refresh_columns(st, st.scheduler.all_job_ids())
         for aid in list(st.scheduler.all_job_ids()):
           yield sse(
             "job_updated",
@@ -415,6 +448,7 @@ def create_app(
           if ev.type in state_change_events:
             aid = ev.payload.get("job_id")
             if aid and st.scheduler.has_job(aid):
+              await _refresh_columns(st, [aid])
               yield sse(
                 "job_updated",
                 snapshot_job(st.scheduler, aid, st.readout_fn),
@@ -444,6 +478,7 @@ def create_app(
   ) -> list[JobSummaryOut] | Response:
     st = _get_state(app)
     aids = st.scheduler.all_job_ids()
+    await _refresh_columns(st, aids)
     if arena:
       aids = [
         aid for aid in aids if st.scheduler.job_state(aid).arena == arena
@@ -473,6 +508,7 @@ def create_app(
         content=st.scheduler.archived_bytes(job_id),
         media_type="application/json",
       )
+    await _refresh_columns(st, [job_id])
     return full_job_view(st.scheduler, job_id, st.readout_fn)
 
   @api.post("/jobs")
@@ -501,6 +537,7 @@ def create_app(
       raise HTTPException(
         status_code=404, detail=f"arena {name!r} has no jobs"
       )
+    await _refresh_columns(st, members)
     return await asyncio.to_thread(
       snapshot_arena, st.scheduler, name, members, st.readout_fn
     )
@@ -595,6 +632,10 @@ def create_app(
   @api.delete("/readouts")
   async def unregister_readout(arena: str, name: str) -> dict[str, Any]:
     return ops.unregister_readout(_get_state(app), arena, name)
+
+  @api.put("/readouts/columns")
+  async def set_columns(payload: dict[str, Any]) -> dict[str, Any]:
+    return await ops.set_columns(_get_state(app), payload)
 
   @api.post("/readouts/compute")
   async def compute_readouts(payload: dict[str, Any] | None = None):

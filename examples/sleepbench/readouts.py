@@ -54,3 +54,33 @@ def kind(instance: ReadoutInstance) -> str:
   it from `payload` rather than `data` also makes it available for
   instances that failed before returning anything."""
   return str((instance.payload or {}).get("kind", "?"))
+
+
+def columns(job):
+  """The job's columns, computed in a resident process whenever a
+  value changes.
+
+  This is the arbitrary half: the keys become the table columns and
+  nothing about them is declared anywhere. The dispatcher hands over
+  one row per finished instance and takes a dict back — it never
+  learns what a median is.
+
+  Note what the frame makes easy that a per-instance readout cannot:
+  filtering (`df[df.state == …]`), a quantile, arithmetic ACROSS
+  readouts, a per-host breakdown. Those were the gaps."""
+  df = job.df
+  ok = df[df.state == "done_ok"]
+  return {
+    # A median rather than a mean — one slow instance should not move
+    # the column, which is exactly what `mean` would let it do.
+    "reward_median": ok.reward.median(),
+    "solved": df.solved.mean(),
+    # Arithmetic across readouts. `wall_seconds` is the worker's own
+    # account of itself; duration_s is the dispatcher's.
+    "overhead_s": (df.duration_s - df.wall_seconds).median(),
+    "p90_duration": df.duration_s.quantile(0.9),
+    # And a non-numeric column, because the operator decides.
+    "slowest_host": (
+      df.groupby("host").duration_s.mean().idxmax() if len(df) else None
+    ),
+  }
