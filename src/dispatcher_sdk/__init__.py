@@ -21,10 +21,23 @@ dispatcher requeues instead of scoring.
 
 Sibling containers a worker starts MUST carry the label in
 `instance.set_label` (`docker run --label "$DISPATCHER_SET_LABEL"`),
-or cleanup cannot see them and they leak."""
+or cleanup cannot see them and they leak.
+
+`run` also applies the job's registered **readouts** — named
+functions of one finished instance that become columns:
+
+    def reward(instance: ReadoutInstance) -> float | None:
+      if instance.state != "done_ok":
+        return None            # not applicable, not zero
+      return instance.data["reward"]
+
+There is nothing to call: the dispatcher names them in the instance
+spec and `run` applies them to the envelope it is about to write.
+See `dispatcher_sdk.readout`."""
 
 from __future__ import annotations
 
+from dispatcher_sdk.readout import ReadoutInstance, ReadoutTimeout
 from dispatcher_sdk.worker import (
   EX_INFRA,
   InfraFailure,
@@ -38,6 +51,8 @@ __all__ = [
   "EX_INFRA",
   "InfraFailure",
   "InstanceContext",
+  "ReadoutInstance",
+  "ReadoutTimeout",
   "load_instance",
   "run",
   "write_outcome",
