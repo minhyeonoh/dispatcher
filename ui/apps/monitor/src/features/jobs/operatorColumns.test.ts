@@ -115,3 +115,19 @@ describe("summariseColumns", () => {
     expect(summariseColumns(row("", {}))).toBe("");
   });
 });
+
+describe("picker sections", () => {
+  it("groups operator columns under their source arena", () => {
+    // The group is what the picker shows as a heading, so it has to be
+    // the arena, not the hash: "where did this column come from" is
+    // the question a heading answers.
+    const spec = collectOperatorColumns([
+      row("appworld", { tgc: 0.5 }),
+      row("bench/v7", { solved: 1 }),
+    ]);
+    expect(spec.columns.map((c) => c.source)).toEqual([
+      "appworld",
+      "bench/v7",
+    ]);
+  });
+});

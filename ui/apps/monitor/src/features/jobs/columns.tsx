@@ -26,6 +26,11 @@ export interface ColumnMeta {
   align?: "right";
   /** Narrow numeric column — tabular figures, tighter padding. */
   numeric?: boolean;
+  /** Which section of the column picker this belongs under. Unset =
+   * built in. Operator columns carry the arena their `columns`
+   * function is registered on, so the picker can say where each one
+   * came from instead of leaving it to the header suffix. */
+  group?: string;
 }
 
 export type JobColumn = ColumnDef<JobRow> & { meta?: ColumnMeta };
@@ -104,6 +109,7 @@ function operatorColumns(spec: OperatorSpec): JobColumn[] {
     header: label,
     meta: {
       title: `${label} — from the columns function on ${source || "?"}`,
+      group: source,
       ...(numeric ? { align: "right" as const, numeric: true } : {}),
     },
     accessorFn: (job: JobRow) =>

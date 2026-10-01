@@ -124,7 +124,11 @@ export function JobsTable({
         total={jobs.length}
         shown={rows.length}
       >
-        <ColumnPicker table={table} columns={columns} />
+        <ColumnPicker
+          table={table}
+          columns={columns}
+          operator={stableOperator}
+        />
       </JobsToolbar>
       {rows.length === 0 ? (
         <div className="rounded-panel border border-line p-4 text-sm text-fg-faint">
