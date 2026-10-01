@@ -13,7 +13,7 @@ import type { JobRow } from "../../live/fold";
 import { useLive } from "../../live/store";
 import { ColumnPicker } from "./ColumnPicker";
 import {
-  columnTitle,
+  columnName,
   defaultVisibility,
   jobColumns,
   type ColumnMeta,
@@ -162,7 +162,7 @@ export function JobsTable({
                         }
                         title={
                           sortable
-                            ? `sort by ${columnTitle(
+                            ? `sort by ${columnName(
                                 header.column.columnDef,
                               )}`
                             : undefined

@@ -6,7 +6,7 @@ import { api } from "../../api/client";
 import type { JobRow } from "../../live/fold";
 import {
   columnDescription,
-  columnTitle,
+  columnName,
   defaultVisibility,
   type ColumnMeta,
   type JobColumn,
@@ -83,9 +83,9 @@ export function ColumnPicker({
     const q = query.trim().toLowerCase();
     if (!q) return true;
     const def = byId.get(column.id);
-    const title = def ? columnTitle(def) : column.id;
+    const name = def ? columnName(def) : column.id;
     return (
-      title.toLowerCase().includes(q) ||
+      name.toLowerCase().includes(q) ||
       describe(column).toLowerCase().includes(q)
     );
   };
@@ -165,7 +165,7 @@ export function ColumnPicker({
                     onChange={column.getToggleVisibilityHandler()}
                   >
                     <span className="font-medium">
-                      {def ? columnTitle(def) : column.id}
+                      {def ? columnName(def) : column.id}
                     </span>
                   </Checkbox>
                   {/* Indented to the label rather than the box: the

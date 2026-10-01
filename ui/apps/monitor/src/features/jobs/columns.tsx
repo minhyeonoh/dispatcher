@@ -21,8 +21,6 @@ import {
 
 /** Extra per-column knowledge the table header/cells need. */
 export interface ColumnMeta {
-  /** Shown in the column picker; falls back to the header text. */
-  title?: string;
   align?: "right";
   /** Narrow numeric column — tabular figures, tighter padding. */
   numeric?: boolean;
@@ -44,34 +42,38 @@ export interface ColumnMeta {
  * is the kind that gets misread in a screenshot. */
 const BUILT_IN_DESCRIPTION: Record<string, string> = {
   job: "the job's label, with its alias underneath",
-  arena: "the comparison group it belongs to; a path, and a path owns its subtree",
+  arena:
+    "the comparison group it belongs to; a path, and a path owns its subtree",
   state: "active, paused, archived or cancelled",
-  ok: "instances that finished with a clean envelope",
-  err: "instances whose envelope reported a failure of the work",
+  ok: "done ok — instances that finished with a clean envelope",
+  err: "done err — instances whose envelope reported a failure of the work",
   unresolved:
-    "instances that ended with no readable envelope — unknown plus ghosted. These block drain and archive, and the resolver is what clears them",
-  run: "instances executing right now",
-  pnd: "tasks not yet dispatched",
-  tot: "tasks in the job, which is what the other counts are out of",
-  done_pct: "finished share of the task list, ok and err together",
+    "unknown plus ghosted: instances that ended with no readable envelope. These block drain and archive, and the resolver is what clears them",
+  run: "running right now",
+  pnd: "pending — tasks not yet dispatched",
+  tot: "total tasks in the job, which is what the other counts are out of",
+  done_pct: "done % — finished share of the task list, ok and err together",
   err_rate:
-    "failures as a share of SCORED instances — not of the whole task list, so it does not drift down as pending work dispatches",
+    "err % of SCORED instances — not of the whole task list, so it does not drift down as pending work dispatches",
   progress: "the same counts as a bar, in task order",
   blocked:
     "why pending work is not dispatching right now, straight from the scheduler's own decision rather than a guess",
   submitted: "when the job was accepted",
   pool: "capacity axis — a pool cap limits every job in it at once",
-  weight: "round-robin share against other jobs; higher dispatches more often",
-  max_concurrent: "this job's own ceiling on simultaneous instances",
+  weight:
+    "round-robin share against other jobs; higher dispatches more often",
+  max_concurrent:
+    "max concurrent for THIS job — its own ceiling on simultaneous instances, under the pool and global caps",
   pause_on_error:
-    "pause the job on the first failed instance. Unset means auto: on when max concurrent is 1",
-  image_id: "the immutable image id resolved at submit; every instance ran this",
+    "pause on error: stop the job at its first failed instance. Unset means auto — on when max concurrent is 1",
+  image_id:
+    "image id, the immutable one resolved at submit; every instance ran exactly this",
   source_sha256:
     "sha256 of the frozen source archive — the record of what code ran",
-  home_root: "shared directory holding one subdir per instance",
+  home_root: "home root: the shared directory holding one subdir per instance",
   job_id: "the stable key; aliases are renameable, this is not",
   columns:
-    "every operator-defined column for this row in one cell. Not sortable, and the one that works when the rows do not share a columns function",
+    "every operator-defined column for this row in one cell, compact. Not sortable, and the one that works when the rows do not share a columns function",
 };
 
 export type JobColumn = ColumnDef<JobRow> & { meta?: ColumnMeta };
@@ -88,13 +90,13 @@ function countColumn(
   id: string,
   header: string,
   pick: (job: JobRow) => number,
-  opts: { title?: string; danger?: boolean; warn?: boolean } = {},
+  opts: { danger?: boolean; warn?: boolean } = {},
 ): JobColumn {
   return {
     id,
     header,
     accessorFn: pick,
-    meta: { align: "right", numeric: true, ...(opts.title ? { title: opts.title } : {}) },
+    meta: { align: "right", numeric: true },
     cell: ({ getValue }) => {
       const n = getValue<number>();
       const hot = n > 0 && (opts.danger || opts.warn);
@@ -149,7 +151,6 @@ function operatorColumns(spec: OperatorSpec): JobColumn[] {
     id: operatorColumnId(source, key),
     header: label,
     meta: {
-      title: `${label} — from the columns function on ${source || "?"}`,
       group: source,
       ...(numeric ? { align: "right" as const, numeric: true } : {}),
     },
@@ -229,24 +230,21 @@ export function jobColumns(
               : "active",
       cell: ({ row }) => <StateBadge job={row.original} />,
     },
-    countColumn("ok", "ok", (j) => j.counts.done_ok, { title: "done ok" }),
+    countColumn("ok", "ok", (j) => j.counts.done_ok),
     countColumn("err", "err", (j) => j.counts.done_err, {
-      title: "done err",
       danger: true,
     }),
     countColumn(
       "unresolved",
       "unres",
       (j) => j.counts.unknown + j.counts.ghosted,
-      { title: "unresolved (unknown + ghosted)", warn: true },
+      { warn: true },
     ),
     countColumn("run", "run", (j) => j.counts.running, {
-      title: "running",
     }),
     countColumn("pnd", "pnd", (j) => j.counts.pending, {
-      title: "pending",
     }),
-    countColumn("tot", "tot", (j) => j.counts.total, { title: "tasks" }),
+    countColumn("tot", "tot", (j) => j.counts.total),
     {
       id: "done_pct",
       header: "done",
@@ -254,7 +252,7 @@ export function jobColumns(
         const { done_ok, done_err, total } = job.counts;
         return total === 0 ? 0 : (100 * (done_ok + done_err)) / total;
       },
-      meta: { align: "right", numeric: true, title: "done %" },
+      meta: { align: "right", numeric: true },
       cell: ({ getValue }) => `${Math.floor(getValue<number>())}%`,
     },
     {
@@ -267,7 +265,6 @@ export function jobColumns(
       meta: {
         align: "right",
         numeric: true,
-        title: "err % (of scored)",
       },
       cell: ({ getValue, row }) => {
         const scored =
@@ -327,7 +324,7 @@ export function jobColumns(
       // Sort on the instant, render the age: "2h ago" scans, the
       // exact stamp is one hover away.
       accessorFn: (job) => Date.parse(job.submitted_at),
-      meta: { align: "right", numeric: true, title: "submitted" },
+      meta: { align: "right", numeric: true },
       cell: ({ row }) => {
         const iso = row.original.submitted_at;
         return (
@@ -344,7 +341,7 @@ export function jobColumns(
       id: "weight",
       header: "w",
       accessorFn: (job) => job.weight,
-      meta: { align: "right", numeric: true, title: "weight" },
+      meta: { align: "right", numeric: true },
     },
     {
       id: "max_concurrent",
@@ -353,7 +350,6 @@ export function jobColumns(
       meta: {
         align: "right",
         numeric: true,
-        title: "max concurrent (per job)",
       },
       cell: ({ row }) =>
         row.original.max_concurrent ?? (
@@ -365,7 +361,6 @@ export function jobColumns(
       header: "on error",
       accessorFn: (job) =>
         job.pause_on_error === null ? "auto" : String(job.pause_on_error),
-      meta: { title: "pause on error" },
       cell: ({ getValue }) => (
         <span className="text-xs text-fg-muted">
           {getValue<string>() === "true"
@@ -380,7 +375,6 @@ export function jobColumns(
       id: "image_id",
       header: "image",
       accessorFn: (job) => job.image_id,
-      meta: { title: "image id (pinned)" },
       cell: ({ getValue }) => {
         const id = getValue<string>().replace(/^sha256:/, "");
         return id ? (
@@ -396,7 +390,6 @@ export function jobColumns(
       id: "source_sha256",
       header: "source",
       accessorFn: (job) => job.source_sha256,
-      meta: { title: "source archive sha256" },
       cell: ({ getValue }) => {
         const sha = getValue<string>();
         return sha ? (
@@ -412,7 +405,6 @@ export function jobColumns(
       id: "home_root",
       header: "home",
       accessorFn: (job) => job.home_root,
-      meta: { title: "home root" },
       cell: ({ getValue }) => (
         <span className="font-mono text-xs break-all text-fg-muted">
           {getValue<string>()}
@@ -447,7 +439,6 @@ function compactColumn(): JobColumn {
   return {
     id: "columns",
     header: "columns",
-    meta: { title: "operator columns (compact)" },
     accessorFn: (job) => summariseColumns(job),
     enableSorting: false,
     cell: ({ row }) => {
@@ -505,8 +496,15 @@ export function defaultVisibility(
   );
 }
 
-export function columnTitle(column: JobColumn): string {
-  return column.meta?.title ?? String(column.header ?? column.id);
+/** A column's NAME: exactly the text in its table header.
+ *
+ * The picker exists to find the column you saw in the table (or to go
+ * looking for one), so it has to name it identically — an expanded
+ * label like "max concurrent (per job)" beside a header reading `mcw`
+ * leaves you matching them up by guesswork, and the expansion is
+ * description material anyway. */
+export function columnName(column: JobColumn): string {
+  return String(column.header ?? column.id);
 }
 
 export function columnDescription(column: JobColumn): string {

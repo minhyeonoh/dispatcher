@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { JobCounts } from "../../api/types";
 import type { JobRow } from "../../live/fold";
 import {
-  columnTitle,
+  columnName,
+  columnDescription,
   DEFAULT_VISIBLE,
   defaultVisibility,
   jobColumns,
@@ -61,13 +62,33 @@ describe("column registry", () => {
     expect(job?.enableHiding).toBe(false);
   });
 
-  it("names columns for the picker, never leaving a bare id", () => {
+  it("names a column exactly as its table header reads", () => {
+    // The picker exists to find the column you saw in the table, so an
+    // expanded label beside a `mcw` header would leave you matching
+    // them up by guesswork.
     for (const column of columns) {
-      expect(columnTitle(column).length).toBeGreaterThan(0);
+      expect(columnName(column).length).toBeGreaterThan(0);
     }
-    expect(columnTitle(columns.find((c) => c.id === "unresolved")!)).toBe(
-      "unresolved (unknown + ghosted)",
+    // The id is `unresolved` and the header reads `unres`; the picker
+    // must say `unres`, because that is what is on screen.
+    expect(columnName(columns.find((c) => c.id === "unresolved")!)).toBe(
+      "unres",
     );
+    expect(columnName(columns.find((c) => c.id === "max_concurrent")!)).toBe(
+      "mcw",
+    );
+  });
+
+  it("describes every built-in column", () => {
+    // Operator columns are made to describe themselves at
+    // registration; ours have no such gate, so the test is the gate.
+    for (const column of columns) {
+      if ((column.meta as { group?: string } | undefined)?.group) continue;
+      expect(
+        columnDescription(column),
+        `no description for column ${String(column.id)}`,
+      ).not.toBe("");
+    }
   });
 });
 
