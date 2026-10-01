@@ -37,6 +37,9 @@ which is what lets the whole thing be a pure optimisation.
 
 from __future__ import annotations
 
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 from dispatcher.core.outcome import instance_home_for
@@ -50,6 +53,34 @@ needs no change there."""
 DEFAULT_MOUNT_BASE = Path.home() / ".cache" / "dispatcher" / "mounts"
 """Per-node and rebuildable from the archives, so a cache dir rather
 than anything under `--data-dir`."""
+
+_ROOT_PREFIX = "squashfs-root/"
+
+MKSQUASHFS_OPTS = (
+  "-comp",
+  "zstd",
+  "-Xcompression-level",
+  "6",
+  "-no-xattrs",
+  "-quiet",
+  "-no-progress",
+  "-keep-as-directory",
+)
+"""The same flags whether the archive is being created or extended —
+appending is `mksquashfs`'s DEFAULT (there is no `-append` flag, only
+`-noappend` to turn it off), and passing the archive's own compressor
+again is accepted.
+
+`-keep-as-directory` is the one that must not be dropped. Without it
+a SINGLE source directory contributes its CONTENTS to the archive
+root rather than itself, so a batch of one instance would land
+`agent/`, `outcome.json` and friends at the top instead of under
+`<instance_id>/`. Batches of one are the normal case when completions
+trickle, so the wrong layout would be the common one.
+
+`-no-progress` as well as `-quiet`: the two are separate flags and
+`-quiet` alone still draws the bar, which lands in the operator's
+report when the command runs over ssh."""
 
 
 def pack_dir(home_root: Path) -> Path:
@@ -82,12 +113,21 @@ def packed_hosts(home_root: Path) -> list[str]:
     return []
 
 
+def job_mount_dir(job_id: str, *, base: Path | None = None) -> Path:
+  """Everything this node has mounted for one job.
+
+  Its children are named by host, which is what lets `umount` find
+  them without asking a server — unmounting has to work when the
+  dispatcher is down."""
+  return (base or DEFAULT_MOUNT_BASE) / job_id
+
+
 def mount_dir(job_id: str, host: str, *, base: Path | None = None) -> Path:
   """Where this node mounts one archive.
 
   Keyed by both because a node may hold several jobs open at once and
   the host is half the archive's identity."""
-  return (base or DEFAULT_MOUNT_BASE) / job_id / host
+  return job_mount_dir(job_id, base=base) / host
 
 
 def read_home_for(
@@ -115,3 +155,127 @@ def read_home_for(
     if candidate.is_dir():
       return candidate, True
   return instance_home_for(home_root, instance_id), False
+
+
+# ── what an archive already holds ─────────────────────────────────
+
+
+def list_top_level_cmd(archive: Path) -> list[str]:
+  """List an archive's top-level names and nothing deeper.
+
+  `-max-depth 1` because the top level IS the instance list, and the
+  depth bound is what keeps this cheap on a big archive."""
+  return ["unsquashfs", "-l", "-max-depth", "1", str(archive)]
+
+
+def parse_top_level(stdout: str) -> set[str]:
+  """Instance ids from `list_top_level_cmd` output.
+
+  Lines are `squashfs-root/<name>`, plus a bare `squashfs-root` for
+  the root itself. Anything with a further slash is ignored so a
+  future change to the depth bound cannot silently start reporting
+  files as instances."""
+  out: set[str] = set()
+  for line in stdout.splitlines():
+    line = line.strip()
+    if not line.startswith(_ROOT_PREFIX):
+      continue
+    name = line[len(_ROOT_PREFIX) :]
+    if name and "/" not in name:
+      out.add(name)
+  return out
+
+
+def packed_instances(archive: Path) -> set[str]:
+  """Which instance homes this archive already holds.
+
+  Asked of the archive instead of a record kept beside it. Measured
+  0.02s on a 415MB / 41,892-file archive and 0.00s with the depth
+  bound, over NFS — `unsquashfs` reads only the metadata tables — so
+  a manifest would buy nothing and would introduce the one failure a
+  manifest always introduces: disagreeing with the thing it
+  describes.
+
+  A missing or unreadable archive is an empty set, which makes the
+  caller treat every instance as unpacked. That is the safe
+  direction: it re-packs work rather than skipping it."""
+  if not archive.is_file():
+    return set()
+  try:
+    done = subprocess.run(
+      list_top_level_cmd(archive),
+      capture_output=True,
+      text=True,
+      timeout=120,
+      check=False,
+    )
+  except (OSError, subprocess.SubprocessError):
+    return set()
+  if done.returncode != 0:
+    return set()
+  return parse_top_level(done.stdout)
+
+
+# ── building the archive ──────────────────────────────────────────
+
+
+def pack_shell_cmd(
+  home_root: Path,
+  host: str,
+  instance_ids: list[str],
+  *,
+  processors: int = 2,
+) -> str:
+  """The shell line that appends these instance homes to `<host>`'s
+  archive, to be run ON that host.
+
+  On that host because the instances just finished there, so the
+  files are still in its page cache and reading them back is close to
+  free; the dispatcher would have to pull them over NFS instead.
+
+  `flock` is not for the dispatcher's own appends — it keeps one
+  appender per host already. It covers what outlives a single
+  process: a restart with an append in flight, and a second
+  dispatcher pointed at the same job."""
+  archive = pack_path(home_root, host)
+  sources = [str(instance_home_for(home_root, i)) for i in instance_ids]
+  inner = [
+    "mksquashfs",
+    *sources,
+    str(archive),
+    *MKSQUASHFS_OPTS,
+    "-processors",
+    str(processors),
+  ]
+  return (
+    f"mkdir -p {shlex.quote(str(pack_dir(home_root)))} && "
+    f"flock {shlex.quote(str(lock_path(home_root, host)))} "
+    f"{shlex.join(inner)}"
+  )
+
+
+# ── mounting ──────────────────────────────────────────────────────
+
+
+def squashfuse_bin() -> str | None:
+  """The mounter, preferring the low-level build.
+
+  `squashfuse_ll` uses FUSE's low-level API and is the faster of the
+  two; both ship in the same package. Neither is installed on these
+  hosts by default, so callers have to be able to say so — hence a
+  None rather than an exception."""
+  for name in ("squashfuse_ll", "squashfuse"):
+    found = shutil.which(name)
+    if found:
+      return found
+  return None
+
+
+def mount_cmd(archive: Path, mountpoint: Path, binary: str) -> list[str]:
+  return [binary, str(archive), str(mountpoint)]
+
+
+def umount_cmd(mountpoint: Path) -> list[str]:
+  """`fusermount3 -u`, not `umount`: the mount belongs to this user
+  and unmounting it must not need root."""
+  return ["fusermount3", "-u", str(mountpoint)]

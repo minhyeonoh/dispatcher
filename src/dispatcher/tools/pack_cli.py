@@ -1,11 +1,16 @@
-"""`dispatcher path` and `dispatcher readouts` — the read side.
+"""`dispatcher path`, `readouts`, `pack`, `mount`, `umount`.
 
-Both exist so that an analysis script never spells out a job's
-layout. Today `path` almost always answers with the NFS home and
-`readouts` is a thin wrapper over an endpoint; that is the point —
-once packs land, scripts written against these two get the faster
-read without being edited, and the one place that knows whether a
-pack is mounted is `core.pack`.
+`path` and `readouts` are the read side, and exist so that an
+analysis script never spells out a job's layout: scripts written
+against them get the faster read once packs exist, without being
+edited, and the one place that knows whether a pack is mounted is
+`core.pack`.
+
+`pack` builds the archives and `mount`/`umount` attach them here.
+Commands, not a background loop: `pack` reaches out over ssh and
+competes for the same NFS bandwidth as running trials, and `mount`
+changes this node's mount table. Both are an operator's decision to
+make and watch, the same reason `dispatcher readout` is a command.
 
 They also separate two things that are easy to conflate, because the
 answer is different for each:
@@ -27,15 +32,52 @@ find a readout value is the slow way round by a factor of ~15.
 from __future__ import annotations
 
 import json
+import socket
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from dispatcher.core.pack import mount_dir, pack_path, read_home_for
+from dispatcher.core.hosts import SSH_OPTS
+from dispatcher.core.outcome import bust_dir_cache
+from dispatcher.core.pack import (
+  job_mount_dir,
+  mount_cmd,
+  mount_dir,
+  pack_dir,
+  pack_path,
+  pack_shell_cmd,
+  packed_hosts,
+  packed_instances,
+  read_home_for,
+  squashfuse_bin,
+  umount_cmd,
+)
 
 _BUCKETS = ("done_ok", "done_err", "running", "ghosted", "unknown")
+
+_PACKABLE = ("done_ok", "done_err")
+"""Only instances whose envelope the server has already read.
+
+This is the one place the design can produce a WRONG read rather
+than a slow one. A pack never deletes, but `read_home_for` prefers
+it, so an archive holding a half-written instance home would serve
+that half as though it were the whole. `running` is mid-write by
+definition, and `unknown`/`ghosted` mean the dispatcher has no
+terminal signal — which is exactly the state a home being written
+looks like. Packing any of them trades the design's safety property
+for a few seconds."""
+
+_INSTALL_HINT = (
+  "squashfuse is not installed. It is a 27KB package and needs no "
+  "root:\n"
+  "  curl -O http://archive.ubuntu.com/ubuntu/pool/universe/s/"
+  "squashfuse/squashfuse_0.5.0-2build1_amd64.deb\n"
+  "  dpkg-deb -x squashfuse_0.5.0-2build1_amd64.deb /tmp/sqf\n"
+  "  cp /tmp/sqf/usr/bin/squashfuse_ll ~/bin/"
+)
 
 
 def resolve_instance(job: dict[str, Any], ident: str) -> tuple[str, str]:
@@ -172,3 +214,209 @@ def dump_readouts(
   json.dump(shaped, out, indent=2, sort_keys=True, default=str)
   print(file=out)
   return 0
+
+
+# ── building and attaching the archives ──────────────────────────
+
+
+def packable_by_host(
+  job: dict[str, Any], hosts: list[str]
+) -> dict[str, list[str]]:
+  """`{host: [instance_id]}` for the instances it is safe to pack.
+
+  Grouped by host because that is the archive's identity, and taken
+  only from the terminal buckets — see `_PACKABLE` for why that bound
+  is the design's safety property rather than a nicety."""
+  out: dict[str, list[str]] = {}
+  wanted = set(hosts)
+  for bucket in _PACKABLE:
+    for view in (job.get(bucket) or {}).values():
+      if not isinstance(view, dict):
+        continue
+      host = str(view.get("host") or "")
+      instance_id = str(view.get("instance_id") or "")
+      if not host or not instance_id:
+        continue
+      if wanted and host not in wanted:
+        continue
+      out.setdefault(host, []).append(instance_id)
+  return {h: sorted(v) for h, v in sorted(out.items())}
+
+
+def _see_fresh(home_root: Path) -> None:
+  """Drop this client's cached listings for the pack dir and its
+  parent, so a just-written archive is visible.
+
+  mksquashfs ran on another host. Without this the launcher's
+  negative-dentry cache keeps answering "no such file" for up to
+  acdirmax — 60s by default — and the verification below reads that
+  as a failed pack while the archive sits there complete. The old
+  router measured the same trap as 43% of instances parking in
+  `unknown`, which is why `outcome.bust_dir_cache` exists; this is
+  the same trick applied one directory up, because what appeared is
+  `.packs/` itself and then a file inside it."""
+  bust_dir_cache(home_root)
+  packs = pack_dir(home_root)
+  if packs.is_dir():
+    bust_dir_cache(packs)
+
+
+def _run(cmd: list[str], *, timeout: float) -> tuple[int, str]:
+  try:
+    done = subprocess.run(
+      cmd,
+      capture_output=True,
+      text=True,
+      timeout=timeout,
+      check=False,
+      # A tmux C-c on the operator's pane must not forward SIGINT
+      # into an append that is rewriting an archive's tables.
+      start_new_session=True,
+    )
+  except subprocess.TimeoutExpired:
+    return 124, "timed out"
+  except OSError as exc:
+    return 1, str(exc)
+  tail = (done.stderr or done.stdout or "").strip()
+  return done.returncode, tail[-400:]
+
+
+def do_pack(
+  *,
+  server: str,
+  job_id: str,
+  hosts: list[str],
+  this_node: str | None = None,
+  processors: int = 2,
+  dry_run: bool = False,
+  timeout: float = 3600.0,
+  out: Any = sys.stdout,
+) -> int:
+  """Append every not-yet-packed terminal instance to its host's
+  archive.
+
+  Idempotent and safe to interrupt: what is already in an archive is
+  read from the archive itself, so a re-run picks up exactly what the
+  last one did not finish. Nothing is deleted either way, so the
+  worst outcome of a failed pack is that reads stay on NFS."""
+  job = _get(server, f"/api/jobs/{job_id}")
+  if job is None:
+    return 1
+  home_root = Path(str(job.get("home_root") or ""))
+  if not home_root.is_absolute():
+    print(f"job {job_id!r} has no home_root", file=sys.stderr)
+    return 1
+  groups = packable_by_host(job, hosts)
+  if not groups:
+    print("nothing terminal to pack", file=out)
+    return 0
+  failures = 0
+  _see_fresh(home_root)
+  for host, instance_ids in groups.items():
+    already = packed_instances(pack_path(home_root, host))
+    todo = [i for i in instance_ids if i not in already]
+    if not todo:
+      print(f"{host:6s} {len(already):>5} packed, nothing new", file=out)
+      continue
+    cmd = pack_shell_cmd(home_root, host, todo, processors=processors)
+    if dry_run:
+      print(f"{host:6s} +{len(todo)} would run: {cmd}", file=out)
+      continue
+    # Skip ssh when the host is the machine running this command —
+    # whoever that is, which is not necessarily the launcher.
+    local = this_node if this_node is not None else socket.gethostname()
+    argv = (
+      ["bash", "-c", cmd]
+      if host == local
+      else ["ssh", *SSH_OPTS, host, cmd]
+    )
+    code, tail = _run(argv, timeout=timeout)
+    _see_fresh(home_root)
+    # Verify against the archive rather than the exit code: a
+    # truncated archive that still exits 0 is the failure worth
+    # catching, because readers would be served the truncation.
+    now = packed_instances(pack_path(home_root, host))
+    missing = [i for i in todo if i not in now]
+    if code != 0 or missing:
+      failures += 1
+      print(
+        f"{host:6s} +{len(todo) - len(missing)}/{len(todo)}  FAILED"
+        + (f" (exit {code})" if code else "")
+        + (f" {len(missing)} missing" if missing else "")
+        + (f"  {tail}" if tail else ""),
+        file=out,
+      )
+    else:
+      print(f"{host:6s} +{len(todo):<5} now {len(now)} packed", file=out)
+  return 1 if failures else 0
+
+
+def do_mount(
+  *,
+  server: str,
+  job_id: str,
+  hosts: list[str],
+  mount_base: Path | None = None,
+  out: Any = sys.stdout,
+) -> int:
+  """Attach this job's archives on this node."""
+  binary = squashfuse_bin()
+  if binary is None:
+    print(_INSTALL_HINT, file=sys.stderr)
+    return 1
+  job = _get(server, f"/api/jobs/{job_id}")
+  if job is None:
+    return 1
+  home_root = Path(str(job.get("home_root") or ""))
+  # The archives were written from other hosts, so this client may
+  # still be caching a listing that predates them.
+  _see_fresh(home_root)
+  available = packed_hosts(home_root)
+  chosen = (
+    [h for h in available if h in set(hosts)] if hosts else available
+  )
+  if not chosen:
+    print(f"no packs under {home_root / '.packs'}", file=out)
+    return 0
+  failures = 0
+  for host in chosen:
+    point = mount_dir(job_id, host, base=mount_base)
+    if point.is_dir() and any(point.iterdir()):
+      print(f"{host:6s} already mounted at {point}", file=out)
+      continue
+    point.mkdir(parents=True, exist_ok=True)
+    code, tail = _run(
+      mount_cmd(pack_path(home_root, host), point, binary), timeout=120
+    )
+    if code != 0:
+      failures += 1
+      print(f"{host:6s} FAILED {tail}", file=out)
+    else:
+      print(f"{host:6s} {point}", file=out)
+  return 1 if failures else 0
+
+
+def do_umount(
+  *,
+  job_id: str,
+  mount_base: Path | None = None,
+  out: Any = sys.stdout,
+) -> int:
+  """Detach every archive this node holds for a job.
+
+  Takes no server: unmounting has to work when the dispatcher is
+  down, and the mount points are discoverable from the filesystem."""
+  base = job_mount_dir(job_id, base=mount_base)
+  if not base.is_dir():
+    print(f"nothing mounted under {base}", file=out)
+    return 0
+  failures = 0
+  for point in sorted(p for p in base.iterdir() if p.is_dir()):
+    code, tail = _run(umount_cmd(point), timeout=60)
+    if code != 0:
+      failures += 1
+      print(f"{point.name:6s} FAILED {tail}", file=out)
+    else:
+      point.rmdir()
+      print(f"{point.name:6s} unmounted", file=out)
+  return 1 if failures else 0

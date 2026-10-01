@@ -159,6 +159,51 @@ def main(argv: list[str] | None = None) -> int:
   )
   path_cmd.add_argument("--server", default="http://127.0.0.1:7200")
 
+  pack = sub.add_parser(
+    "pack",
+    help="archive finished instance homes, one archive per host",
+  )
+  pack.add_argument("job_id", metavar="JOB_ID")
+  pack.add_argument(
+    "--host",
+    action="append",
+    default=[],
+    metavar="HOST",
+    help="only this host's archive; repeatable (default: all)",
+  )
+  pack.add_argument(
+    "--processors",
+    type=int,
+    default=2,
+    help="mksquashfs workers on the remote host",
+  )
+  pack.add_argument(
+    "--dry-run",
+    action="store_true",
+    help="print what would run and change nothing",
+  )
+  pack.add_argument("--server", default="http://127.0.0.1:7200")
+
+  mount = sub.add_parser(
+    "mount", help="attach this job's archives on this node"
+  )
+  mount.add_argument("job_id", metavar="JOB_ID")
+  mount.add_argument(
+    "--host",
+    action="append",
+    default=[],
+    metavar="HOST",
+    help="only this host's archive; repeatable (default: all)",
+  )
+  mount.add_argument("--mount-base", type=Path, default=None)
+  mount.add_argument("--server", default="http://127.0.0.1:7200")
+
+  umount = sub.add_parser(
+    "umount", help="detach this job's archives from this node"
+  )
+  umount.add_argument("job_id", metavar="JOB_ID")
+  umount.add_argument("--mount-base", type=Path, default=None)
+
   args = ap.parse_args(argv)
 
   if args.cmd == "readout":
@@ -207,6 +252,32 @@ def main(argv: list[str] | None = None) -> int:
       ident=args.ident,
       mount_base=args.mount_base,
     )
+
+  if args.cmd == "pack":
+    from dispatcher.tools.pack_cli import do_pack
+
+    return do_pack(
+      server=args.server,
+      job_id=args.job_id,
+      hosts=list(args.host),
+      processors=args.processors,
+      dry_run=args.dry_run,
+    )
+
+  if args.cmd == "mount":
+    from dispatcher.tools.pack_cli import do_mount
+
+    return do_mount(
+      server=args.server,
+      job_id=args.job_id,
+      hosts=list(args.host),
+      mount_base=args.mount_base,
+    )
+
+  if args.cmd == "umount":
+    from dispatcher.tools.pack_cli import do_umount
+
+    return do_umount(job_id=args.job_id, mount_base=args.mount_base)
 
   if args.cmd == "monitor":
     from rich.console import Console

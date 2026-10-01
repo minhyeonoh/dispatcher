@@ -14,14 +14,22 @@ import io
 import json
 
 from dispatcher.core.pack import (
+  MKSQUASHFS_OPTS,
   PACK_DIRNAME,
+  job_mount_dir,
+  list_top_level_cmd,
   lock_path,
   mount_dir,
   pack_path,
+  pack_shell_cmd,
   packed_hosts,
+  packed_instances,
+  parse_top_level,
   read_home_for,
+  umount_cmd,
 )
 from dispatcher.tools.pack_cli import (
+  packable_by_host,
   resolve_instance,
   shape_values,
 )
@@ -223,3 +231,104 @@ def test_dump_shape_is_json_serialisable():
   buf = io.StringIO()
   json.dump(shape_values(_readout_body(), []), buf)
   assert json.loads(buf.getvalue())["reward"]["i-1"] == 1
+
+
+# ── building the archives ────────────────────────────────────────
+
+
+def test_only_terminal_instances_are_packable():
+  # The design's one way to be WRONG rather than slow: a pack is
+  # preferred over the original, so a half-written home inside one
+  # would be served as the whole. running/unknown/ghosted are exactly
+  # what a home mid-write looks like.
+  job = _job_body()
+  groups = packable_by_host(job, [])
+  assert groups == {
+    "ml10": ["task-002__0000297"],
+    "ml9": ["task-001__0000288"],
+  }
+  flat = [i for ids in groups.values() for i in ids]
+  assert not any("task-003" in i or "task-004" in i for i in flat)
+
+
+def test_packable_filters_by_host():
+  assert set(packable_by_host(_job_body(), ["ml9"])) == {"ml9"}
+
+
+def test_packable_on_a_job_with_nothing_finished():
+  assert packable_by_host({"running": {"t": {}}}, []) == {}
+
+
+def test_pack_cmd_keeps_the_directory_and_locks(tmp_path):
+  cmd = pack_shell_cmd(tmp_path, "ml9", ["i-1", "i-2"], processors=4)
+  # Without -keep-as-directory a one-instance batch flattens that
+  # instance's contents into the archive root, and batches of one are
+  # the normal case.
+  assert "-keep-as-directory" in cmd
+  assert "flock" in cmd
+  assert str(lock_path(tmp_path, "ml9")) in cmd
+  assert str(pack_path(tmp_path, "ml9")) in cmd
+  assert str(tmp_path / "i-1") in cmd
+  assert str(tmp_path / "i-2") in cmd
+  assert "-processors 4" in cmd
+  # The pack dir has to exist before flock can make its lock file.
+  assert cmd.startswith("mkdir -p ")
+
+
+def test_pack_cmd_never_passes_noappend(tmp_path):
+  # Appending is mksquashfs's default; -noappend would silently
+  # replace the archive and drop every instance already in it.
+  assert "-noappend" not in pack_shell_cmd(tmp_path, "ml9", ["i-1"])
+  assert "-noappend" not in MKSQUASHFS_OPTS
+
+
+def test_pack_cmd_quotes_awkward_paths(tmp_path):
+  home = tmp_path / "a dir"
+  home.mkdir()
+  cmd = pack_shell_cmd(home, "ml9", ["i-1"])
+  assert "'" in cmd  # the quoted pack dir / lock path
+  assert "a dir" in cmd
+
+
+def test_parse_top_level_takes_names_not_files():
+  out = parse_top_level(
+    "squashfs-root\n"
+    "squashfs-root/i-1\n"
+    "squashfs-root/i-2\n"
+    "squashfs-root/i-1/agent\n"
+    "\n"
+    "noise\n"
+  )
+  assert out == {"i-1", "i-2"}
+
+
+def test_parse_top_level_on_empty_output():
+  assert parse_top_level("") == set()
+
+
+def test_list_cmd_bounds_the_depth(tmp_path):
+  cmd = list_top_level_cmd(tmp_path / "a.sqfs")
+  assert cmd[:4] == ["unsquashfs", "-l", "-max-depth", "1"]
+
+
+def test_packed_instances_of_a_missing_archive_is_empty(tmp_path):
+  # Empty means "nothing packed", so the caller re-packs rather than
+  # skipping — the safe direction when the archive cannot be read.
+  assert packed_instances(tmp_path / "nope.sqfs") == set()
+
+
+def test_packed_instances_of_a_corrupt_archive_is_empty(tmp_path):
+  bad = tmp_path / "bad.sqfs"
+  bad.write_bytes(b"not a squashfs image")
+  assert packed_instances(bad) == set()
+
+
+def test_umount_uses_fusermount_not_umount(tmp_path):
+  # The mount belongs to this user; unmounting must not need root.
+  assert umount_cmd(tmp_path)[:2] == ["fusermount3", "-u"]
+
+
+def test_job_mount_dir_is_the_parent_of_the_host_mounts(tmp_path):
+  assert mount_dir("job-a", "ml9", base=tmp_path).parent == job_mount_dir(
+    "job-a", base=tmp_path
+  )
