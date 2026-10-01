@@ -92,11 +92,15 @@ export function Sheet({
             aria-modal="false"
             aria-label={typeof title === "string" ? title : undefined}
             className={cn(
-              // Full height, and full width only where there is no
-              // room beside it — a phone has nothing to leave visible.
-              "fixed inset-y-0 right-0 z-50 flex w-full flex-col",
+              "fixed inset-y-0 right-0 z-50 flex flex-col",
               "border-l border-line bg-raised shadow-floating",
-              "sm:w-96",
+              // Half the viewport where there is something worth
+              // leaving visible, all of it where there is not. The
+              // breakpoint is `md`, the same one the app shell uses
+              // for "this is a desktop" — below it, half a phone is
+              // too narrow to read a sentence in, and the thing
+              // behind would be unusable anyway.
+              "w-full md:w-1/2",
               panelClassName,
             )}
           >
