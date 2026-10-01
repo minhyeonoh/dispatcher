@@ -282,6 +282,68 @@ keeps that distinction for the rare column that wants it. There is
 no filesystem: one process serves every job sharing an image and
 source, so artifact reading belongs in a per-instance readout.
 
+### Inheritance: readouts add up, columns is replaced
+
+Both are registered on an arena path and both reach the subtree, but
+they combine differently, because they are different kinds of thing.
+
+A readout is **one named column of per-instance values** — an item.
+Two of them are independent, so they accumulate down the path:
+
+```
+appworld          readouts: [reward]
+appworld/v7       readouts: [v7_probe]
+→ a job in appworld/v7 computes BOTH
+```
+
+If readouts overrode instead, registering `v7_probe` on the subtree
+would silently delete `reward` from those jobs.
+
+`columns` is **one function returning the whole column set** — an
+answer, not an item. Two of them cannot both hold, so the nearest
+one wins:
+
+```
+appworld          columns: def columns(job): return {"tgc": …}
+appworld/v7       columns: def columns(job): return {"other": …}
+→ a job in appworld/v7 gets ONLY {"other": …}
+→ a job in appworld/v1 gets {"tgc": …}
+```
+
+Merging the two dicts instead would let both emit `tgc` from
+different code — the same "one name, two computations" collision a
+readout registration refuses outright, except silent.
+
+**So: define `columns` once at the comparison root.** With `tgc` on
+`appworld`, every version arm inherits it and the jobs table can put
+them under one sortable header, which is the whole point of the arena
+being the comparison unit.
+
+**And when one arm needs an extra number, add a READOUT, not an
+override.** Readouts accumulate, so it exists only there; the shared
+`columns` function emits it where it finds it:
+
+```python
+# registered on appworld/v7 only
+def v7_probe(instance):
+  return float(instance.data["duration_s"])
+
+# the ONE function on appworld, used by every arm
+def columns(job):
+  xs = [v for v in job.columns.get("reward", []) if v is not None]
+  out = {"tgc": sum(xs) / len(xs) if xs else None}
+  if "v7_probe" in job.columns:        # only v7 has it
+    out["v7_probe_max"] = max(v for v in job.columns["v7_probe"] if v)
+  return out
+```
+
+Overriding `columns` on `appworld/v7` to add one key would cost the
+table its shared `tgc` column — a different function is a different
+header, even when it computes the same thing. The pattern above keeps
+one function, so `tgc` stays comparable across every arm and only v7
+carries the extra. That asymmetry is the point of it: a subtree can
+add **data** freely, while the **view** stays one definition.
+
 **It runs in a resident process**, one per `(image, source)`, started
 on the first read that needs it. A round trip is ~3ms for a
 1344-instance job, so the trigger is simply "a read, when values

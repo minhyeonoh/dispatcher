@@ -23,6 +23,11 @@ Dockerfile    the ENVIRONMENT image: interpreter + dispatcher_sdk,
 submit.py     the submitter — freezes worker.py + readouts.py into
               one tar, registers the arena's readouts, and POSTs
               one job per arm with per-task payloads.
+arena-inheritance.sh
+              the readouts-accumulate / columns-is-replaced pattern,
+              runnable: a comparison root defines the metric once and
+              one arm adds an extra number WITHOUT taking its own
+              column function.
 ```
 
 ## Run it

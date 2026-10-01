@@ -239,6 +239,15 @@ class ReadoutJobSummary(BaseModel):
   columns_error: str = ""
   """Why the last attempt failed, if it did."""
 
+  columns_source_sha256: str = ""
+  """Hash of the `columns` function this job resolved to.
+
+  The table's comparability test: rows sharing this share a column
+  set AND the code behind it, so their columns can be one sortable
+  column each. Rows that differ cannot be put under one header —
+  that is the same "one name, two computations" hazard a readout
+  registration refuses outright, and on a table it would be silent."""
+
 
 def aggregate(values: dict[str, ReadoutValue]) -> ReadoutAggregate:
   numbers: list[float] = []

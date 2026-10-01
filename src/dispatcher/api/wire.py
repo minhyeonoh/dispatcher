@@ -70,6 +70,10 @@ class ReadoutCellOut(BaseModel):
   columns: dict[str, Any] = Field(default_factory=dict)
   columns_stale: bool = False
   columns_error: str = ""
+  # Which `columns` function produced them. Rows sharing this are
+  # comparable column-by-column; rows that differ are not, and the
+  # table has to say so rather than line them up under one header.
+  columns_source_sha256: str = ""
 
   @classmethod
   def of(cls, cell: ReadoutJobSummary) -> ReadoutCellOut:
@@ -79,6 +83,7 @@ class ReadoutCellOut(BaseModel):
       columns=cell.columns,
       columns_stale=cell.columns_stale,
       columns_error=cell.columns_error,
+      columns_source_sha256=cell.columns_source_sha256,
     )
 
 

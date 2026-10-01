@@ -814,8 +814,9 @@ class ReadoutService:
     except KeyError:
       return ReadoutJobSummary()
     specs = self._registry.for_arena(state.arena)
+    columns_sha = _sha(self._registry.columns_source(state.arena))
     if not specs:
-      return ReadoutJobSummary(lag=0)
+      return ReadoutJobSummary(lag=0, columns_source_sha256=columns_sha)
     terminal = self._scheduler.terminal_count(job_id)
     index = self._values.get(job_id, {})
     aggregates: dict[str, ReadoutAggregate] = {}
@@ -844,10 +845,11 @@ class ReadoutService:
       # stale is the second case, which is what stops a blank cell
       # from reading as "this arena defines no columns".
       columns_stale=(
-        bool(self._registry.columns_source(state.arena))
+        bool(columns_sha)
         and (job_id in self._dirty or job_id not in self._columns)
       ),
       columns_error=self._column_error.get(job_id, ""),
+      columns_source_sha256=columns_sha,
     )
 
   def jobs_with_lag(self, job_ids: list[str]) -> list[str]:
