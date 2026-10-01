@@ -8,14 +8,20 @@ takes the home read-only. So the bulk of a job is exactly what a
 read-only archive wants, while the part that keeps growing stays an
 ordinary directory.
 
-Measured on a real 41,892-file job tree, from a node that had touched
-neither path: whole-file reads ran 320 files/s over NFS and 2,857
-files/s through a squashfs mount, and random `stat` 64k/s against
-167k/s. The win is not compression — an uncompressed archive scored
-the same on metadata — it is that the tree's index arrives in a few
-sequential reads and then answers from RAM, with no close-to-open
-revalidation forcing it to ask again. Compression (9.2x on that tree)
-only buys the wire, which matters because the cluster is on 1 GbE.
+Measured on real v7 job trees from nodes that had touched neither path.
+A 2,000-file sample: whole-file reads 320 files/s over NFS against
+2,857 through a squashfs mount, and random `stat` 64k/s against 167k/s.
+At a whole job's scale the gap is far wider — 418 instances / 19,814
+files / 1.6GB took 182.80s over NFS (108 files/s, 8.8 MB/s) and 5.12s
+staged out of archives, **35.7x** (`examples/packbench.py`). 8.8 MB/s
+is a twelfth of the 1 GbE wire, which is the point: the cost is
+per-file latency, not bandwidth.
+
+The win is not compression — an uncompressed archive scored the same on
+metadata — it is that the tree's index arrives in a few sequential
+reads and then answers from RAM, with no close-to-open revalidation
+forcing it to ask again. Compression (4.8–9.2x depending on the tree)
+only buys the wire, which is why the staged read can beat it.
 
 One archive per (job, host), not per job and not per instance:
 
@@ -402,12 +408,17 @@ def stage_instances(
   daemon resolving the path, so `--user` does not help either
   (measured: "error while creating mount source path").
 
-  Extraction keeps the win anyway. Reading a job's homes as 41,892
-  small files over NFS measured 320 files/s, about 131s; the archive
-  is one 415MB sequential read (~4s) and unpacks in 4.76s. The caller
-  decides what to do about the ids that are missing — there is no
-  partial answer here, because a container pointed at a tree with
-  holes in it would report those instances as unscorable."""
+  Extraction keeps the win, and by more than the first estimate: on a
+  real v7 job's 418 instances (19,814 files, 1.6GB) read from a node
+  that had not touched the tree, NFS managed 182.80s at 108 files/s
+  while staging out of eight archives took 5.12s — **35.7x** on the
+  I/O term, 26.11s against 0.73s per batch of 64. Earlier guesses of
+  ~14x came from a 2,000-file sample and were low; `examples/
+  packbench.py` is the measurement.
+
+  The caller decides what to do about the ids that are missing — there
+  is no partial answer here, because a container pointed at a tree
+  with holes in it would report those instances as unscorable."""
   dest.mkdir(parents=True, exist_ok=True)
   wanted = set(instance_ids)
   for host in packed_hosts(home_root):
