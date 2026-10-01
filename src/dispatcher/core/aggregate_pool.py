@@ -127,10 +127,15 @@ class AggregatePool:
     *,
     source: str,
     frame: dict[str, Any],
-  ) -> dict[str, Any]:
+  ) -> tuple[dict[str, Any], dict[str, str]]:
     """Hand one job's frame to the operator's function and return
-    the column dict it produced. Raises AggregateError on any
-    failure — a stale number is the caller's decision, not ours."""
+    `(values, descriptions)`. Raises AggregateError on any failure —
+    a stale number is the caller's decision, not ours.
+
+    The descriptions come back on every call because the reply shape
+    is one line and splitting them into a second round trip would buy
+    nothing; the caller keys them by source, so the repetition stops
+    at this boundary."""
     # Keyed by IMAGE alone: the function arrives with the request, so
     # two jobs with different frozen archives can share one process.
     # (It is still the archive that `import myrepo…` resolves against,
@@ -175,7 +180,12 @@ class AggregatePool:
           f"columns returned {type(values).__name__}, expected a "
           f"dict of column name → value"
         )
-      return values
+      described = reply.get("descriptions")
+      return values, (
+        {str(k): str(v) for k, v in described.items()}
+        if isinstance(described, dict)
+        else {}
+      )
     raise AggregateError("unreachable")  # pragma: no cover
 
   async def _roundtrip(

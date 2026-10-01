@@ -84,3 +84,24 @@ def columns(job):
       df.groupby("host").duration_s.mean().idxmax() if len(df) else None
     ),
   }
+
+
+def column_descriptions():
+  """What each column means, shown in the UI's column picker.
+
+  Required alongside `columns` and checked at registration — a key
+  with a value and no explanation is the one state a picker cannot
+  render, and leaving it until later means never."""
+  return {
+    "reward_median": (
+      "middle reward over successful instances; a median so one slow "
+      "or lucky instance cannot move the arm"
+    ),
+    "solved": "share of instances that finished with a clean envelope",
+    "overhead_s": (
+      "median of (dispatcher-observed duration − the worker's own "
+      "reported wall time): what the harness cost on top of the work"
+    ),
+    "p90_duration": "90th percentile instance duration, in seconds",
+    "slowest_host": "host with the highest mean instance duration",
+  }

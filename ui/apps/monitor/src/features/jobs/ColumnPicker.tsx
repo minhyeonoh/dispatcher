@@ -1,13 +1,17 @@
-import { Button, Checkbox, cn, Dropdown } from "@lab/kit";
+import { Button, Checkbox, cn, Sheet } from "@lab/kit";
+import { useQuery } from "@tanstack/react-query";
 import type { Column, Table } from "@tanstack/react-table";
+import { useMemo, useState } from "react";
+import { api } from "../../api/client";
 import type { JobRow } from "../../live/fold";
 import {
+  columnDescription,
   columnTitle,
   defaultVisibility,
   type ColumnMeta,
   type JobColumn,
 } from "./columns";
-import type { OperatorSpec } from "./operatorColumns";
+import { operatorColumnId, type OperatorSpec } from "./operatorColumns";
 
 const BUILT_IN = "built in";
 
@@ -44,12 +48,50 @@ export function ColumnPicker({
    * feed the visible rows. */
   operator: OperatorSpec;
 }) {
+  const [query, setQuery] = useState("");
   const all = table.getAllLeafColumns();
   const shown = all.filter((c) => c.getIsVisible()).length;
-  const byId = new Map(columns.map((c) => [String(c.id), c]));
+  const byId = useMemo(
+    () => new Map(columns.map((c) => [String(c.id), c])),
+    [columns],
+  );
   const groups = sections(all, byId);
+
+  // Operator descriptions come from the registration, not from every
+  // job row: the text is identical for every job resolving to one
+  // function. Cached — it changes only when someone re-registers.
+  const registrations = useQuery({
+    queryKey: ["readouts"],
+    queryFn: () => api.readouts(),
+    staleTime: 60_000,
+  });
+  const described = registrations.data?.column_descriptions ?? {};
+
+  function describe(column: Column<JobRow, unknown>): string {
+    const def = byId.get(column.id);
+    const meta = def?.meta as ColumnMeta | undefined;
+    if (meta?.group) {
+      const own = operator.columns.find(
+        (c) => operatorColumnId(c.source, c.key) === column.id,
+      );
+      return own ? (described[own.source]?.[own.key] ?? "") : "";
+    }
+    return def ? columnDescription(def) : "";
+  }
+
+  const hit = (column: Column<JobRow, unknown>) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    const def = byId.get(column.id);
+    const title = def ? columnTitle(def) : column.id;
+    return (
+      title.toLowerCase().includes(q) ||
+      describe(column).toLowerCase().includes(q)
+    );
+  };
   return (
-    <Dropdown
+    <Sheet
+      title="columns"
       trigger={
         <>
           <span>columns</span>
@@ -58,42 +100,12 @@ export function ColumnPicker({
           </span>
         </>
       }
-      panelClassName="max-h-[70vh] overflow-y-auto"
-    >
-      <div className="flex flex-col">
-        {groups.map(([group, members], i) => (
-          <div key={group}>
-            {/* A heading only earns its space once there is more than
-                one section — with nothing operator-defined the list
-                looks exactly as it did. */}
-            {groups.length > 1 && (
-              <div
-                className={cn(
-                  "px-2 pb-0.5 text-xs font-medium tracking-wide",
-                  "text-fg-faint uppercase",
-                  i > 0 && "mt-2 border-t border-line pt-2",
-                )}
-              >
-                {group}
-              </div>
-            )}
-            {members.map((column) => {
-              const def = byId.get(column.id);
-              return (
-                <Checkbox
-                  key={column.id}
-                  checked={column.getIsVisible()}
-                  disabled={!column.getCanHide()}
-                  onChange={column.getToggleVisibilityHandler()}
-                >
-                  {def ? columnTitle(def) : column.id}
-                </Checkbox>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-      <div className="mt-1 border-t border-line pt-1">
+      headerAside={
+        <span className="text-xs text-fg-faint">
+          {shown} of {all.length} shown
+        </span>
+      }
+      footer={
         <Button
           variant="ghost"
           size="sm"
@@ -106,7 +118,76 @@ export function ColumnPicker({
         >
           reset to defaults
         </Button>
+      }
+    >
+      <div className="px-1 pb-2">
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="name or meaning…"
+          className={cn(
+            "h-8 w-full rounded-control border border-strong",
+            "bg-surface px-2 text-sm text-fg outline-none",
+            "placeholder:text-fg-faint",
+            "focus-visible:ring-2 focus-visible:ring-focus/60",
+          )}
+        />
       </div>
-    </Dropdown>
+      {groups.map(([group, members], i) => {
+        const visible = members.filter(hit);
+        if (visible.length === 0) return null;
+        return (
+          <div key={group}>
+            {/* A heading only earns its space once there is more than
+                one section — with nothing operator-defined the list
+                reads as one flat set, which is what it is. */}
+            {groups.length > 1 && (
+              <div
+                className={cn(
+                  "px-2 pb-1 text-xs font-medium tracking-wide",
+                  "text-fg-faint uppercase",
+                  i > 0 && "mt-3 border-t border-line pt-3",
+                )}
+              >
+                {group}
+              </div>
+            )}
+            {visible.map((column) => {
+              const def = byId.get(column.id);
+              const meta = def?.meta as ColumnMeta | undefined;
+              const description = describe(column);
+              return (
+                <div key={column.id} className="py-0.5">
+                  <Checkbox
+                    checked={column.getIsVisible()}
+                    disabled={!column.getCanHide()}
+                    onChange={column.getToggleVisibilityHandler()}
+                  >
+                    <span className="font-medium">
+                      {def ? columnTitle(def) : column.id}
+                    </span>
+                  </Checkbox>
+                  {/* Indented to the label rather than the box: the
+                      description belongs to the name, and the room to
+                      say it in full is why this is a sheet and not a
+                      dropdown. */}
+                  <div className="pl-7 text-xs leading-snug text-fg-muted">
+                    {description || (
+                      <span className="text-warn">
+                        {meta?.group
+                          ? "no description — column_descriptions() " +
+                            "does not mention this key"
+                          : "no description"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </Sheet>
   );
 }

@@ -78,7 +78,15 @@ RESULT_PREFIX = "\x1fdispatcher-readout\x1f"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SOURCES_DIRNAME = "sources"
 COLUMNS_NAME = "columns"
-"""The function a `columns` registration must define."""
+DESCRIPTIONS_NAME = "column_descriptions"
+"""The two functions a `columns` registration must define.
+
+Descriptions live beside the function that names the keys, not in the
+registration request: a request-side dict is a second place to keep
+the same key list, and the first thing to drift. Here they are inside
+the registered text, so the hash covers them and the copy kept beside
+the values (`.readouts/sources/`) explains its own columns years
+later."""
 
 
 class BadReadout(ValueError):
@@ -86,7 +94,9 @@ class BadReadout(ValueError):
   parse or does not define the function it was registered as."""
 
 
-def check_source(source: str, want: str) -> str:
+def check_source(
+  source: str, want: str, *, also: tuple[str, ...] = ()
+) -> str:
   """Validate registered code and return its sha256.
 
   Checked at registration rather than at first use: a typo that only
@@ -103,12 +113,13 @@ def check_source(source: str, want: str) -> str:
     for node in tree.body
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
   ]
-  if want not in names:
-    raise BadReadout(
-      f"source must define `def {want}(...)` at the top level; "
-      f"found {names or 'no functions'}. Helpers alongside it are "
-      f"fine, and so is importing from your own frozen source"
-    )
+  for required in (want, *also):
+    if required not in names:
+      raise BadReadout(
+        f"source must define `def {required}(...)` at the top level; "
+        f"found {names or 'no functions'}. Helpers alongside it are "
+        f"fine, and so is importing from your own frozen source"
+      )
   return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 

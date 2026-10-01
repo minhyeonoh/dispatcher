@@ -51,6 +51,13 @@ export const api = {
       `/jobs/${encodeURIComponent(jobId)}/instances/` +
         `${encodeURIComponent(instanceId)}/outcome`,
     ),
+  /** What is registered where, and what each operator column means.
+   * Changes only when someone re-registers, so callers cache it. */
+  readouts: () =>
+    request<{
+      by_arena: Record<string, unknown>;
+      column_descriptions: Record<string, Record<string, string>>;
+    }>("/readouts"),
   arenas: () => request<ArenaSummary[]>("/arenas"),
   arena: (path: string) => request<ArenaDetail>(`/arenas/${path}`),
 };

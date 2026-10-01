@@ -36,6 +36,16 @@ def columns(job):
   if probes:
     out["v7_probe_max"] = max(probes)
   return out
+
+
+def column_descriptions():
+  """Required beside `columns` and checked at registration: a column
+  with a value and no explanation is the one state the picker cannot
+  render, and "later" means never."""
+  return {
+    "tgc": "mean reward over successful instances; nulls excluded",
+    "v7_probe_max": "longest v7_probe reading in this job, in seconds",
+  }
 PY
 
 cat > "$WORK/v7.py" <<'PY'

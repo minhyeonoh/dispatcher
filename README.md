@@ -263,9 +263,27 @@ def columns(job):
   }
 ```
 
+A `columns` registration must also say what its columns MEAN, in the
+same file:
+
+```python
+def column_descriptions():
+  return {"reward_median": "median reward over successful instances"}
+```
+
 ```
 dispatcher readout myrepo/my-sweep --columns --file myrepo/readouts.py
 ```
+
+Both functions are required and checked at registration — a 400, not a
+column nobody can explain. Descriptions live beside the function that
+names the keys rather than in the request, which would be a second copy
+of the same key list and the first thing to drift; being in the
+registered text they also land in the copy kept next to the values, so
+a column explains itself years later. The UI shows them in its column
+picker. A key with a value but no description still renders its number
+— the numbers are the valuable half — with `columns_error` naming it
+and the picker marking it undocumented.
 
 Its keys are the columns; nothing is declared in advance. So the
 dispatcher never learns what a median is, and the number in the

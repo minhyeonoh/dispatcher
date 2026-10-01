@@ -31,7 +31,48 @@ export interface ColumnMeta {
    * function is registered on, so the picker can say where each one
    * came from instead of leaving it to the header suffix. */
   group?: string;
+  /** What the column means, shown in the picker. Built-ins say it
+   * here; an operator column's comes from its own
+   * `column_descriptions()`, which is why that function is required
+   * at registration. */
+  description?: string;
 }
+
+/** One line per built-in column. Separate from the definitions so the
+ * set reads as prose — writing these next to their accessors buried
+ * them, and a column whose meaning is only obvious to whoever added it
+ * is the kind that gets misread in a screenshot. */
+const BUILT_IN_DESCRIPTION: Record<string, string> = {
+  job: "the job's label, with its alias underneath",
+  arena: "the comparison group it belongs to; a path, and a path owns its subtree",
+  state: "active, paused, archived or cancelled",
+  ok: "instances that finished with a clean envelope",
+  err: "instances whose envelope reported a failure of the work",
+  unresolved:
+    "instances that ended with no readable envelope — unknown plus ghosted. These block drain and archive, and the resolver is what clears them",
+  run: "instances executing right now",
+  pnd: "tasks not yet dispatched",
+  tot: "tasks in the job, which is what the other counts are out of",
+  done_pct: "finished share of the task list, ok and err together",
+  err_rate:
+    "failures as a share of SCORED instances — not of the whole task list, so it does not drift down as pending work dispatches",
+  progress: "the same counts as a bar, in task order",
+  blocked:
+    "why pending work is not dispatching right now, straight from the scheduler's own decision rather than a guess",
+  submitted: "when the job was accepted",
+  pool: "capacity axis — a pool cap limits every job in it at once",
+  weight: "round-robin share against other jobs; higher dispatches more often",
+  max_concurrent: "this job's own ceiling on simultaneous instances",
+  pause_on_error:
+    "pause the job on the first failed instance. Unset means auto: on when max concurrent is 1",
+  image_id: "the immutable image id resolved at submit; every instance ran this",
+  source_sha256:
+    "sha256 of the frozen source archive — the record of what code ran",
+  home_root: "shared directory holding one subdir per instance",
+  job_id: "the stable key; aliases are renameable, this is not",
+  columns:
+    "every operator-defined column for this row in one cell. Not sortable, and the one that works when the rows do not share a columns function",
+};
 
 export type JobColumn = ColumnDef<JobRow> & { meta?: ColumnMeta };
 
@@ -466,4 +507,10 @@ export function defaultVisibility(
 
 export function columnTitle(column: JobColumn): string {
   return column.meta?.title ?? String(column.header ?? column.id);
+}
+
+export function columnDescription(column: JobColumn): string {
+  return (
+    column.meta?.description ?? BUILT_IN_DESCRIPTION[String(column.id)] ?? ""
+  );
 }

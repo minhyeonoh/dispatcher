@@ -1173,6 +1173,15 @@ def columns(job):
     "ok_rate": job.done_ok / max(1, job.done_ok + job.done_err),
     "label": "arbitrary strings are fine",
   }
+
+
+def column_descriptions():
+  return {
+    "reward_median": "middle reward over the instances that have one",
+    "n_hosts": "distinct hosts this job ran on",
+    "ok_rate": "share of finished instances that succeeded",
+    "label": "a non-numeric column, on purpose",
+  }
 """
 
 
@@ -1284,7 +1293,9 @@ async def test_a_raising_columns_function_keeps_the_last_good_numbers(
     assert good
     # Point at a function that raises; values unchanged.
     service.registry.set_columns(
-      "bench/v7", "def columns(job):\n  raise KeyError('tgc')\n"
+      "bench/v7",
+      "def columns(job):\n  raise KeyError('tgc')\n"
+      "def column_descriptions():\n  return {}\n",
     )
     service.invalidate([job.job_id])
     await service.refresh([job.job_id])
@@ -1303,7 +1314,9 @@ async def test_a_wedged_columns_function_times_out(tmp_path: Path):
   pool = AggregatePool(spawn=fake_spawn(), request_timeout_sec=0.4)
   service._pool = pool
   service.registry.set_columns(
-    "bench/v7", "import time\ndef columns(job):\n  time.sleep(30)\n"
+    "bench/v7",
+    "import time\ndef columns(job):\n  time.sleep(30)\n"
+    "def column_descriptions():\n  return {}\n",
   )
   instance_id = finish(scheduler, job.job_id, "t1")
   await service.record(
@@ -1422,7 +1435,11 @@ def test_registry_round_trips_columns_through_disk(tmp_path: Path):
   reg = ReadoutRegistry.load(tmp_path)
   assert [s.name for s in reg.for_arena("bench")] == ["reward"]
   assert reg.columns_source("bench") == ""
-  reg.set_columns("bench", "def columns(job):\n  return {}\n")
+  reg.set_columns(
+    "bench",
+    "def columns(job):\n  return {}\n"
+    "def column_descriptions():\n  return {}\n",
+  )
   assert "def columns" in ReadoutRegistry.load(tmp_path).columns_source(
     "bench/v7"
   )
@@ -1430,13 +1447,25 @@ def test_registry_round_trips_columns_through_disk(tmp_path: Path):
 
 def test_columns_source_takes_the_nearest_node(tmp_path: Path):
   reg = mk_registry(tmp_path)
-  reg.set_columns("bench", "def columns(job):\n  return {'a': 1}\n")
-  reg.set_columns("bench/v7", "def columns(job):\n  return {'b': 2}\n")
+  reg.set_columns(
+    "bench",
+    "def columns(job):\n  return {'a': 1}\n"
+    "def column_descriptions():\n  return {'a': 'from bench'}\n",
+  )
+  reg.set_columns(
+    "bench/v7",
+    "def columns(job):\n  return {'b': 2}\n"
+    "def column_descriptions():\n  return {'b': 'from v7'}\n",
+  )
   assert "'b'" in reg.columns_source("bench/v7/front5")
   assert "'a'" in reg.columns_source("bench/v8")
   assert reg.columns_source("other") == ""
   with pytest.raises(BadReadout):
     reg.set_columns("bench", "def not_columns(job): return {}")
+  with pytest.raises(BadReadout, match="column_descriptions"):
+    # A columns registration must say what its columns MEAN. "I will
+    # document it later" is the one state a picker cannot render.
+    reg.set_columns("bench", "def columns(job):\n  return {}\n")
 
 
 async def test_columns_recompute_after_a_restart(tmp_path: Path):
@@ -1495,7 +1524,9 @@ async def test_an_archived_job_reports_todays_columns(tmp_path: Path):
     service.registry.set_columns(
       "bench/v7",
       "def columns(job):\n"
-      "  return {'only_this': len(job.columns['reward'])}\n",
+      "  return {'only_this': len(job.columns['reward'])}\n"
+      "def column_descriptions():\n"
+      "  return {'only_this': 'how many values there are'}\n",
     )
     service.invalidate([job.job_id])
     await service.refresh([job.job_id])
@@ -1525,3 +1556,41 @@ def test_the_frozen_blob_carries_no_readout_cell(tmp_path: Path):
     archive_payload_bytes(full_job_view(scheduler, job.job_id))
   )
   assert READOUT_FIELDS and not (READOUT_FIELDS & set(frozen))
+
+
+async def test_descriptions_come_back_with_the_values(tmp_path: Path):
+  """What a column MEANS comes from the same source that names it, so
+  there is no second copy to drift. Kept per source rather than per
+  job: the text is identical for every job resolving to it."""
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    await service.refresh([job.job_id])
+    described = service.descriptions()
+    assert set(described) == {"bench/v7"}
+    assert described["bench/v7"]["reward_median"].startswith("middle")
+    assert service.summary(job.job_id).columns_error == ""
+  finally:
+    await pool.close()
+
+
+async def test_an_undescribed_column_is_reported_not_dropped(
+  tmp_path: Path,
+):
+  """The numbers are the valuable half. Hiding real data to punish
+  missing documentation is the wrong trade — but it has to be
+  impossible to ignore."""
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    service.registry.set_columns(
+      "bench/v7",
+      "def columns(job):\n  return {'documented': 1, 'orphan': 2}\n"
+      "def column_descriptions():\n"
+      "  return {'documented': 'this one is explained'}\n",
+    )
+    service.invalidate([job.job_id])
+    await service.refresh([job.job_id])
+    cell = service.summary(job.job_id)
+    assert cell.columns == {"documented": 1, "orphan": 2}
+    assert "no description for: orphan" in cell.columns_error
+  finally:
+    await pool.close()

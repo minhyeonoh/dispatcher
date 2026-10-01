@@ -929,10 +929,18 @@ def _require_readouts(st: ServerState) -> ReadoutService:
 
 
 def list_readouts(st: ServerState) -> dict[str, Any]:
-  """Per arena: the per-instance readouts, and the `columns`
-  function that turns their values into the job's columns."""
+  """Per arena: the per-instance readouts, the `columns` function that
+  turns their values into the job's columns, and what that function
+  says each column means.
+
+  Descriptions ride here rather than on every job row: the text is the
+  same for every job resolving to one function, and the column picker
+  needs it once."""
   service = _require_readouts(st)
-  return {"by_arena": service.registry.snapshot()}
+  return {
+    "by_arena": service.registry.snapshot(),
+    "column_descriptions": service.descriptions(),
+  }
 
 
 async def set_columns(

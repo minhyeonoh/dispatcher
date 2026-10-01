@@ -9,7 +9,7 @@ request per line on stdin, writes one JSON reply per line on
 stdout, forever. Each request carries a whole job as a columnar
 frame; the reply is whatever dict the operator's function returned.
 
-The operator writes one function:
+The operator writes two functions:
 
     def columns(job):
       df = job.df                              # pandas, if you want it
@@ -21,9 +21,21 @@ The operator writes one function:
         "worst_host":    df.groupby("host").solved.mean().idxmin(),
       }
 
+…and one that says what they mean:
+
+    def column_descriptions():
+      return {
+        "reward": "median reward over successful instances",
+        "p90_latency": "90th percentile of per-instance latency",
+      }
+
 Its keys become the job's columns. Nothing is declared in advance —
 the operator owns the whole column set from one place, and the
-dispatcher learns no statistics.
+dispatcher learns no statistics. The descriptions sit beside the
+function that names the keys rather than in the registration request,
+which would be a second copy of the same key list and the first thing
+to drift; being in the registered text they are also in the copy kept
+beside the values, so a column explains itself years later.
 
 The dispatcher registers that TEXT and sends it with every request,
 so changing what a column means is one call and works on arenas that
@@ -148,6 +160,32 @@ def _jsonable(value: Any) -> Any:
   return str(value)
 
 
+def _describe(source: str, cache: dict[str, Any]) -> dict[str, str]:
+  """`column_descriptions()` from the same source, compiled once.
+
+  Absent or raising yields nothing rather than failing the request:
+  the dispatcher notices undescribed keys itself and says so, and
+  losing the numbers over missing documentation would be the wrong
+  trade."""
+  key = f"desc:{hashlib.sha256(source.encode('utf-8')).hexdigest()}"
+  if key not in cache:
+    try:
+      out = compile_source(source, "column_descriptions")()
+      cache[key] = (
+        {str(k): str(v) for k, v in out.items()}
+        if isinstance(out, dict)
+        else {}
+      )
+    except BaseException as exc:
+      print(
+        f"dispatcher_sdk.aggregate: column_descriptions failed: {exc}",
+        file=sys.stderr,
+        flush=True,
+      )
+      cache[key] = {}
+  return cache[key]  # type: ignore[no-any-return]
+
+
 def handle(
   payload: dict[str, Any], cache: dict[str, Any]
 ) -> dict[str, Any]:
@@ -175,6 +213,7 @@ def handle(
     return {
       "ok": True,
       "values": {str(k): _jsonable(v) for k, v in out.items()},
+      "descriptions": _describe(source, cache),
     }
   except BaseException as exc:
     message = "".join(traceback.format_exception_only(exc)).strip()

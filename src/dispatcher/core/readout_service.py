@@ -43,6 +43,7 @@ from dispatcher.core.dispatch import (
 )
 from dispatcher.core.readout import (
   COLUMNS_NAME,
+  DESCRIPTIONS_NAME,
   READOUT_DIRNAME,
   REQUEST_FILENAME,
   SDK_MOUNT,
@@ -201,6 +202,14 @@ class ReadoutRegistry:
           for s in node.get("readouts") or []
         ]
         if node.get("columns"):
+          # Validated on the way in as well as at registration: a
+          # stored function that no longer meets the contract would
+          # otherwise serve columns nobody can explain, and "it was
+          # registered before the rule" is the grandfather path this
+          # repo does not keep.
+          check_source(
+            str(node["columns"]), COLUMNS_NAME, also=(DESCRIPTIONS_NAME,)
+          )
           columns[arena] = str(node["columns"])
     except Exception as exc:
       raise RuntimeError(
@@ -268,7 +277,9 @@ class ReadoutRegistry:
 
   def set_columns(self, arena: str, source: str) -> None:
     if source:
-      check_source(source, COLUMNS_NAME)
+      # Both functions, checked here: "I will document it later" is
+      # exactly the state a column picker cannot render.
+      check_source(source, COLUMNS_NAME, also=(DESCRIPTIONS_NAME,))
       self._columns[arena] = source
     else:
       self._columns.pop(arena, None)
@@ -396,6 +407,11 @@ class ReadoutService:
     self._columns: dict[str, dict[str, Any]] = {}
     self._dirty: set[str] = set()
     self._column_error: dict[str, str] = {}
+    # What each `columns` function says its keys mean, keyed by the
+    # source hash. Per SOURCE, not per job — the text is the same for
+    # every job that resolves to it, and repeating it on each row
+    # would put the same paragraph in a table cell N times.
+    self._descriptions: dict[str, dict[str, str]] = {}
 
   @property
   def registry(self) -> ReadoutRegistry:
@@ -711,10 +727,21 @@ class ReadoutService:
       specs = self._registry.for_arena(state.arena)
       frame = self._frame(job_id, specs)
       try:
-        self._columns[job_id] = await self._pool.compute(
+        values, described = await self._pool.compute(
           state, source=source, frame=frame
         )
-        self._column_error.pop(job_id, None)
+        self._columns[job_id] = values
+        self._descriptions[_sha(source)] = described
+        missing = [k for k in values if k not in described]
+        if missing:
+          # The numbers are kept — they are the valuable half, and
+          # hiding real data to punish missing documentation is the
+          # wrong trade. But it has to be impossible to ignore.
+          self._column_error[job_id] = (
+            f"no description for: {', '.join(sorted(missing))}"
+          )
+        else:
+          self._column_error.pop(job_id, None)
         # Cleared only on success: a failed refresh leaves the job
         # dirty so the next read tries again, and the last good
         # numbers stay visible marked stale.
@@ -868,6 +895,16 @@ class ReadoutService:
       columns_source_sha256=columns_sha,
       columns_source_arena=columns_node,
     )
+
+  def descriptions(self) -> dict[str, dict[str, str]]:
+    """`{source arena: {key: text}}` — what the column picker shows
+    beside each checkbox."""
+    out: dict[str, dict[str, str]] = {}
+    for node, source in self._registry.snapshot().items():
+      described = self._descriptions.get(_sha(source.get("columns") or ""))
+      if described:
+        out[node] = dict(described)
+    return out
 
   def jobs_with_lag(self, job_ids: list[str]) -> list[str]:
     return [j for j in job_ids if (self.summary(j).lag or 0) > 0]
