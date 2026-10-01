@@ -364,3 +364,64 @@ def umount_cmd(mountpoint: Path) -> list[str]:
   """`fusermount3 -u`, not `umount`: the mount belongs to this user
   and unmounting it must not need root."""
   return ["fusermount3", "-u", str(mountpoint)]
+
+
+# ── staging for a container ───────────────────────────────────────
+
+
+def extract_cmd(
+  archive: Path, dest: Path, instance_ids: list[str]
+) -> list[str]:
+  """Unpack just these instance homes, nothing else in the archive.
+
+  Named extraction rather than the whole archive: a caller wanting one
+  batch of 64 pays for 64 homes, measured 0.02s to select them out of
+  41,892. `-f` because several archives land in one destination."""
+  return [
+    "unsquashfs",
+    "-q",
+    "-no-progress",
+    "-f",
+    "-d",
+    str(dest),
+    str(archive),
+    *[f"/{i}" for i in instance_ids],
+  ]
+
+
+def stage_instances(
+  home_root: Path, instance_ids: list[str], dest: Path
+) -> list[str]:
+  """Extract these instance homes out of the job's packs into `dest`,
+  returning the ids that did NOT land.
+
+  Why extract at all, rather than hand a container the squashfuse
+  mount: docker cannot read one. The daemon runs as root, FUSE grants
+  access only to the mounting user unless `/etc/fuse.conf` enables
+  `user_allow_other` — which needs root — and the failure is in the
+  daemon resolving the path, so `--user` does not help either
+  (measured: "error while creating mount source path").
+
+  Extraction keeps the win anyway. Reading a job's homes as 41,892
+  small files over NFS measured 320 files/s, about 131s; the archive
+  is one 415MB sequential read (~4s) and unpacks in 4.76s. The caller
+  decides what to do about the ids that are missing — there is no
+  partial answer here, because a container pointed at a tree with
+  holes in it would report those instances as unscorable."""
+  dest.mkdir(parents=True, exist_ok=True)
+  wanted = set(instance_ids)
+  for host in packed_hosts(home_root):
+    archive = pack_path(home_root, host)
+    here = sorted(wanted & packed_instances(archive))
+    if not here:
+      continue
+    try:
+      subprocess.run(
+        extract_cmd(archive, dest, here),
+        capture_output=True,
+        timeout=1800,
+        check=False,
+      )
+    except (OSError, subprocess.SubprocessError):
+      continue
+  return [i for i in instance_ids if not (dest / i).is_dir()]

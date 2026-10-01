@@ -28,7 +28,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, PositiveInt
@@ -41,6 +44,7 @@ from dispatcher.core.dispatch import (
   SOURCE_MOUNT,
   SOURCE_TAR_FILENAME,
 )
+from dispatcher.core.pack import packed_hosts, stage_instances
 from dispatcher.core.readout import (
   COLUMNS_NAME,
   DESCRIPTIONS_NAME,
@@ -64,16 +68,29 @@ from dispatcher.core.readout import (
 )
 
 if TYPE_CHECKING:
-  from collections.abc import AsyncIterator, Awaitable, Callable
+  from collections.abc import AsyncIterator, Callable
   from datetime import datetime
-  from pathlib import Path
+  from typing import Protocol
 
   from dispatcher.core.models import JobState
   from dispatcher.core.scheduler import Scheduler
 
-  ReadoutRunner = Callable[["JobState", float], Awaitable[str]]
-  """(job, timeout) → the container's stdout. Injected so tests
-  never touch docker."""
+  class ReadoutRunner(Protocol):
+    """(job, timeout) → the container's stdout. Injected so tests
+    never touch docker.
+
+    `pack_root`, when given, is a locally-staged copy of the batch's
+    instance homes to mount beside the job home; the runner decides
+    how to expose it."""
+
+    async def __call__(
+      self,
+      state: JobState,
+      timeout: float,
+      *,
+      pack_root: Path | None = None,
+    ) -> str: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +101,34 @@ def _sha(text: str) -> str:
   return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
 
 
+def _stage_batch(home_root: Path, instance_ids: list[str]) -> Path | None:
+  """A local copy of this batch's instance homes, or None to read them
+  over NFS as before.
+
+  All-or-nothing by design. A tree with holes would make the container
+  report those instances unscorable, and they would then stop showing
+  up in `lag` — a silent gap in the column index is far worse than a
+  slow pass, so anything short of every home present falls back.
+
+  Cheap enough to do per pass rather than per job: a 64-instance batch
+  is ~123MB and named extraction picks it out of a 41,892-entry archive
+  in 0.02s. Per pass means the staging cannot outlive the thing that
+  made it, so a crash leaks nothing but a tmpdir."""
+  if not packed_hosts(home_root):
+    return None
+  dest = Path(tempfile.mkdtemp(prefix="dispatcher-readout-"))
+  missing = stage_instances(home_root, instance_ids, dest)
+  if not missing:
+    return dest
+  logger.info(
+    "readout: %d/%d of the batch is unpacked, reading over NFS",
+    len(missing),
+    len(instance_ids),
+  )
+  shutil.rmtree(dest, ignore_errors=True)
+  return None
+
+
 # Container-side paths for the retroactive pass. The job home is
 # mounted READ-ONLY: the dispatcher is the only writer of the column
 # index, which is what makes those append-only files single-writer
@@ -91,6 +136,17 @@ def _sha(text: str) -> str:
 JOB_MOUNT = "/dispatcher/job"
 ENV_JOB_DIR = "DISPATCHER_JOB_DIR"
 ENV_REQUEST = "DISPATCHER_READOUT_REQUEST"
+
+PACK_MOUNT = "/dispatcher/pack"
+"""Where a staged copy of the batch's instance homes is mounted.
+
+A SECOND mount rather than a replacement for `JOB_MOUNT`: the request
+file the runner reads lives at `<JOB_MOUNT>/.readouts/request.json`,
+and `.readouts/` is deliberately never packed (the retroactive pass
+appends there forever, which is the one thing a read-only archive
+cannot host). The SDK already takes `job_dir` from the request body
+and the request path from the environment independently, so pointing
+the first here needs no change on the container side."""
 
 
 class ReadoutSettings(BaseModel):
@@ -555,38 +611,47 @@ class ReadoutService:
         asked.setdefault(name, set()).add(target.instance_id)
     total_asked = sum(len(ids) for ids in asked.values())
 
-    await asyncio.to_thread(
-      write_request,
-      state.home_root,
-      {
-        "job_id": job_id,
-        "job_dir": JOB_MOUNT,
-        "readouts": [s.model_dump(mode="json") for s in specs],
-        "instances": [
-          {
-            "instance_id": t.instance_id,
-            "task_id": t.task_id,
-            "state": t.state,
-            "readouts": t.names,
-          }
-          for t in batch
-        ],
-      },
+    stage = await asyncio.to_thread(
+      _stage_batch, state.home_root, [t.instance_id for t in batch]
     )
     try:
-      stdout = await self._runner(
-        state, self._settings.container_timeout_sec
+      await asyncio.to_thread(
+        write_request,
+        state.home_root,
+        {
+          "job_id": job_id,
+          "job_dir": JOB_MOUNT if stage is None else PACK_MOUNT,
+          "readouts": [s.model_dump(mode="json") for s in specs],
+          "instances": [
+            {
+              "instance_id": t.instance_id,
+              "task_id": t.task_id,
+              "state": t.state,
+              "readouts": t.names,
+            }
+            for t in batch
+          ],
+        },
       )
-    except Exception as exc:
-      logger.exception("readout pass failed job=%s", job_id)
-      return PassReport(
-        job_id=job_id,
-        instances=len(batch),
-        written=0,
-        unreported=total_asked,
-        remaining=remaining + len(batch),
-        error=f"{type(exc).__name__}: {exc}",
-      )
+      try:
+        stdout = await self._runner(
+          state,
+          self._settings.container_timeout_sec,
+          pack_root=stage,
+        )
+      except Exception as exc:
+        logger.exception("readout pass failed job=%s", job_id)
+        return PassReport(
+          job_id=job_id,
+          instances=len(batch),
+          written=0,
+          unreported=total_asked,
+          remaining=remaining + len(batch),
+          error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+      if stage is not None:
+        await asyncio.to_thread(shutil.rmtree, stage, True)
 
     now = self._clock()
     by_name: dict[str, list[ReadoutValue]] = {}
@@ -917,7 +982,9 @@ class ReadoutRunError(RuntimeError):
   """The readout container could not be run at all."""
 
 
-def build_readout_argv(state: JobState) -> list[str]:
+def build_readout_argv(
+  state: JobState, *, pack_root: Path | None = None
+) -> list[str]:
   """`docker run` for one retroactive pass.
 
   Deliberately unlike an instance's container in three ways: the job
@@ -928,7 +995,12 @@ def build_readout_argv(state: JobState) -> list[str]:
 
   It runs on the launcher. That host resolved the image at submit,
   the job home is on shared storage anyway, and host selection is
-  complexity an operator-invoked command does not need."""
+  complexity an operator-invoked command does not need.
+
+  `pack_root` adds a second read-only mount holding this batch's
+  instance homes, unpacked locally from the job's archives, and points
+  the runner's `job_dir` at it. The job home stays mounted because the
+  request file lives there — see `PACK_MOUNT`."""
   spec = state.container
   argv = [
     "docker",
@@ -941,6 +1013,8 @@ def build_readout_argv(state: JobState) -> list[str]:
     "-v",
     f"{sdk_dir()}:{SDK_MOUNT}:ro",
   ]
+  if pack_root is not None:
+    argv += ["-v", f"{pack_root}:{PACK_MOUNT}:ro"]
   if state.source_sha256:
     argv += [
       "-v",
@@ -950,7 +1024,7 @@ def build_readout_argv(state: JobState) -> list[str]:
     **spec.env,
     **state.env,
     ENV_JOB: state.job_id,
-    ENV_JOB_DIR: JOB_MOUNT,
+    ENV_JOB_DIR: PACK_MOUNT if pack_root is not None else JOB_MOUNT,
     ENV_REQUEST: f"{JOB_MOUNT}/{READOUT_DIRNAME}/{REQUEST_FILENAME}",
     **({ENV_SOURCE: SOURCE_MOUNT} if state.source_sha256 else {}),
   }
@@ -961,7 +1035,12 @@ def build_readout_argv(state: JobState) -> list[str]:
   return argv
 
 
-async def docker_readout_run(state: JobState, timeout_sec: float) -> str:
+async def docker_readout_run(
+  state: JobState,
+  timeout_sec: float,
+  *,
+  pack_root: Path | None = None,
+) -> str:
   """Run one pass on the launcher and return its stdout.
 
   Stdout is returned even on a non-zero exit: the runner emits one
@@ -972,7 +1051,7 @@ async def docker_readout_run(state: JobState, timeout_sec: float) -> str:
 
   `start_new_session=True` — without it a tmux C-c on the dispatcher
   pane forwards SIGINT into an in-flight docker client."""
-  argv = build_readout_argv(state)
+  argv = build_readout_argv(state, pack_root=pack_root)
   proc = await asyncio.create_subprocess_exec(
     *argv,
     stdout=asyncio.subprocess.PIPE,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,11 @@ import pytest
 from dispatcher.api.wire import archive_payload_bytes, snapshot_job
 from dispatcher.core.models import HostSettings
 from dispatcher.core.outcome import read_completion
+from dispatcher.core.pack import (
+  pack_path,
+  pack_shell_cmd,
+  packed_instances,
+)
 from dispatcher.core.readout import (
   BadReadout,
   ReadoutSpec,
@@ -28,6 +34,9 @@ from dispatcher.core.readout import (
   values_path,
 )
 from dispatcher.core.readout_service import (
+  ENV_JOB_DIR,
+  JOB_MOUNT,
+  PACK_MOUNT,
   ReadoutConflict,
   ReadoutRegistry,
   ReadoutService,
@@ -597,14 +606,22 @@ class FakeRunner:
 
   def __init__(self, *, value: Any = 1.0, fail: bool = False) -> None:
     self.requests: list[dict[str, Any]] = []
+    self.pack_roots: list[Path | None] = []
     self._value = value
     self._fail = fail
 
-  async def __call__(self, state: JobState, timeout: float) -> str:
+  async def __call__(
+    self,
+    state: JobState,
+    timeout: float,
+    *,
+    pack_root: Path | None = None,
+  ) -> str:
     request = json.loads(
       request_path(state.home_root).read_text(encoding="utf-8")
     )
     self.requests.append(request)
+    self.pack_roots.append(pack_root)
     if self._fail:
       raise RuntimeError("container would not start")
     lines = [
@@ -659,6 +676,36 @@ def mk_world(
     runner=runner,
   )
   return scheduler, service, runner, job
+
+
+def lay_down(home_root: Path, instance_id: str) -> Path:
+  """A minimal instance home on disk, carrying its own id so a staged
+  copy can be told apart from the original.
+
+  `finish` below only moves scheduler state, so a test that reads real
+  files has to put them there itself."""
+  home = home_root / instance_id
+  (home / "agent").mkdir(parents=True, exist_ok=True)
+  (home / "agent" / "events.jsonl").write_text(
+    f"from {instance_id}\n", encoding="utf-8"
+  )
+  return home
+
+
+def pack_for(home_root: Path, host: str, instance_ids: list[str]) -> None:
+  """Build a real archive for `host` holding these instance homes.
+
+  A real `mksquashfs`, not a stub: the thing being tested is whether
+  the staged tree the container sees matches what the archive holds,
+  and a fake archive would test the test."""
+  for instance_id in instance_ids:
+    lay_down(home_root, instance_id)
+  cmd = pack_shell_cmd(home_root, host, instance_ids, processors=1)
+  done = subprocess.run(
+    ["bash", "-c", cmd], capture_output=True, text=True, check=False
+  )
+  assert done.returncode == 0, done.stderr
+  assert set(instance_ids) <= packed_instances(pack_path(home_root, host))
 
 
 def finish(scheduler: Scheduler, job_id: str, task_id: str) -> str:
@@ -834,12 +881,107 @@ async def test_a_failed_pass_reports_and_stops(tmp_path: Path):
   assert service.summary(job.job_id).lag == 1
 
 
+async def test_an_unpacked_job_reads_over_nfs(tmp_path: Path):
+  # No archives: the pass behaves exactly as it did before packs
+  # existed, with the job home as job_dir.
+  scheduler, service, runner, job = mk_world(tmp_path, tasks=["t1"])
+  finish(scheduler, job.job_id, "t1")
+  await drain(service, [job.job_id])
+  assert runner.pack_roots == [None]
+  assert runner.requests[0]["job_dir"] == JOB_MOUNT
+
+
+async def test_a_packed_batch_is_staged_and_pointed_at(tmp_path: Path):
+  seen: list[str] = []
+
+  class Peek(FakeRunner):
+    async def __call__(
+      self,
+      state: JobState,
+      timeout: float,
+      *,
+      pack_root: Path | None = None,
+    ) -> str:
+      # Read the staged tree while it exists — this is the thing the
+      # container would do, and the only proof the files arrive.
+      if pack_root is not None:
+        seen.extend(
+          sorted(
+            p.read_text(encoding="utf-8").strip()
+            for p in pack_root.glob("*/agent/events.jsonl")
+          )
+        )
+      return await super().__call__(state, timeout, pack_root=pack_root)
+
+  scheduler, service, runner, job = mk_world(
+    tmp_path, tasks=["t1", "t2"], runner=Peek()
+  )
+  instances = [finish(scheduler, job.job_id, t) for t in ("t1", "t2")]
+  pack_for(job.home_root, "ml10", instances)
+  await drain(service, [job.job_id])
+  staged = runner.pack_roots[0]
+  assert staged is not None
+  # job_dir points at the staged copy, not the NFS home.
+  assert runner.requests[0]["job_dir"] == PACK_MOUNT
+  assert seen == sorted(f"from {i}" for i in instances)
+  # And the staging is gone once the pass is over — it lives inside
+  # one pass so a crash cannot leak it.
+  assert not staged.exists()
+
+
+async def test_a_partly_packed_batch_falls_back_whole(tmp_path: Path):
+  # All-or-nothing: a staged tree missing one home would make the
+  # container call that instance unscorable, and it would then drop
+  # out of `lag` — a silent hole in the column index.
+  scheduler, service, runner, job = mk_world(tmp_path, tasks=["t1", "t2"])
+  instances = [finish(scheduler, job.job_id, t) for t in ("t1", "t2")]
+  pack_for(job.home_root, "ml10", instances[:1])
+  await drain(service, [job.job_id])
+  assert runner.pack_roots == [None]
+  assert runner.requests[0]["job_dir"] == JOB_MOUNT
+  # The values still land, over NFS.
+  assert len(read_values(job.home_root, "reward")) == 2
+
+
+async def test_staging_spans_hosts(tmp_path: Path):
+  # One instance per host archive: the batch is only staged if the
+  # pieces from every archive come together.
+  scheduler, service, runner, job = mk_world(tmp_path, tasks=["t1", "t2"])
+  instances = [finish(scheduler, job.job_id, t) for t in ("t1", "t2")]
+  pack_for(job.home_root, "ml9", instances[:1])
+  pack_for(job.home_root, "ml10", instances[1:])
+  await drain(service, [job.job_id])
+  assert runner.pack_roots[0] is not None
+  assert len(read_values(job.home_root, "reward")) == 2
+
+
+def test_readout_argv_mounts_the_pack_and_moves_job_dir(tmp_path: Path):
+  job = mk_job(tmp_path / "home", ["t1"])
+  job.image_id = "sha256:abc"
+  plain = build_readout_argv(job)
+  staged = build_readout_argv(job, pack_root=tmp_path / "stage")
+  assert f"{JOB_MOUNT}:ro" in " ".join(plain)
+  assert PACK_MOUNT not in " ".join(plain)
+  # The job home STAYS mounted when staging: the request file lives
+  # there and `.readouts/` is never packed.
+  assert f"{job.home_root}:{JOB_MOUNT}:ro" in staged
+  assert f"{tmp_path / 'stage'}:{PACK_MOUNT}:ro" in staged
+  assert f"{ENV_JOB_DIR}={PACK_MOUNT}" in staged
+  assert f"{ENV_JOB_DIR}={JOB_MOUNT}" in plain
+
+
 async def test_a_pass_that_reports_nothing_does_not_spin(
   tmp_path: Path,
 ):
   class Silent(FakeRunner):
-    async def __call__(self, state: JobState, timeout: float) -> str:
-      await super().__call__(state, timeout)
+    async def __call__(
+      self,
+      state: JobState,
+      timeout: float,
+      *,
+      pack_root: Path | None = None,
+    ) -> str:
+      await super().__call__(state, timeout, pack_root=pack_root)
       return "no result lines here\n"
 
   scheduler, service, runner, job = mk_world(
@@ -860,8 +1002,14 @@ async def test_values_a_pass_did_not_ask_for_are_refused(
   tmp_path: Path,
 ):
   class Liar(FakeRunner):
-    async def __call__(self, state: JobState, timeout: float) -> str:
-      await super().__call__(state, timeout)
+    async def __call__(
+      self,
+      state: JobState,
+      timeout: float,
+      *,
+      pack_root: Path | None = None,
+    ) -> str:
+      await super().__call__(state, timeout, pack_root=pack_root)
       return (
         sdk_readout.RESULT_PREFIX
         + json.dumps(
