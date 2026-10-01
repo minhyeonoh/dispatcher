@@ -25,6 +25,11 @@ Its keys become the job's columns. Nothing is declared in advance —
 the operator owns the whole column set from one place, and the
 dispatcher learns no statistics.
 
+The dispatcher registers that TEXT and sends it with every request,
+so changing what a column means is one call and works on arenas that
+finished weeks ago. Your repo is still importable, so heavy logic can
+stay there.
+
 `job.df` imports pandas lazily, so this module stays stdlib-only
 unless you ask for a DataFrame. `job.columns` (dict of lists) and
 `job.records` (list of dicts) are always there, which is also how
@@ -40,13 +45,11 @@ as a column.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import traceback
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-  from collections.abc import Callable
+from typing import Any
 
 
 class JobFrame:
@@ -111,15 +114,16 @@ class JobFrame:
     return self._df
 
 
-def _resolve(entrypoint: str) -> Callable[[JobFrame], Any]:
-  from importlib import import_module
-
-  module_name, _, attr = entrypoint.partition(":")
-  module = import_module(module_name)
-  func = getattr(module, attr)
+def compile_source(source: str, name: str = "columns") -> Any:
+  """Turn registered code into a callable. See
+  `dispatcher_sdk.readout.compile_source` — same contract, so a
+  column function and a readout are written the same way."""
+  namespace: dict[str, Any] = {"__name__": f"dispatcher_{name}"}
+  exec(compile(source, f"<{name}>", "exec"), namespace)
+  func = namespace.get(name)
   if not callable(func):
-    raise TypeError(f"{entrypoint} is not callable")
-  return func  # type: ignore[no-any-return]
+    raise TypeError(f"source does not define a callable named {name!r}")
+  return func
 
 
 def _jsonable(value: Any) -> Any:
@@ -149,12 +153,16 @@ def handle(
 ) -> dict[str, Any]:
   """One request → one reply. Never raises: this process outlives
   every request it serves, so a bad column must not end it."""
-  entrypoint = str(payload.get("entrypoint") or "")
+  source = str(payload.get("source") or "")
+  digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+  entrypoint = f"columns@{digest[:12]}"
   try:
-    func = cache.get(entrypoint)
+    # Keyed by hash: the same function arrives with every request and
+    # is compiled once, while a redefinition recompiles immediately.
+    func = cache.get(digest)
     if func is None:
-      func = _resolve(entrypoint)
-      cache[entrypoint] = func
+      func = compile_source(source)
+      cache[digest] = func
     out = func(JobFrame(payload))
     if not isinstance(out, dict):
       return {

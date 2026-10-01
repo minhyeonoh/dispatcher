@@ -139,14 +139,24 @@ def reward(instance):
 Register it on an arena, and it becomes a column:
 
 ```
-POST /api/readouts
-{"arena": "myrepo/my-sweep", "name": "reward",
- "entrypoint": "myrepo.readouts:reward", "timeout_sec": 60}
+dispatcher readout myrepo/my-sweep --add reward --file myrepo/readouts.py
 ```
+
+**What is registered is the CODE, not a path to it.** The file stays
+in your repo under version control; the CLI ships its text. That is
+what makes a readout written today computable against a run from two
+months ago — an entrypoint string would have to resolve inside each
+job's frozen archive, which for a finished sweep it never will. Heavy
+logic can still live in your repo: the source executes with the job's
+archive importable, so `from myrepo.grade import tgc` works and only
+the glue is registered.
 
 - **Registration is per arena**, and a path covers its subtree —
   the jobs you compare are the jobs scored the same way.
   Jobs with no arena get none.
+- **Registration validates the source**: it must parse and must
+  define `def <name>(…)`. A typo is a 400 now rather than an error
+  record on every instance hours later.
 - **The name is the identity.** A changed computation is a
   different readout (`reward-v1` / `reward-v2`), never a new
   version of the same one: a column that silently changes meaning
@@ -206,6 +216,14 @@ behave differently depending on which path ran it.
 
 It is a command and not a background loop on purpose: it starts
 containers, and that is an operator's decision to make and watch.
+
+The containers the dispatcher starts for its OWN purposes (this one
+and the column process) get `dispatcher_sdk` **mounted from the
+launcher**, ahead of whatever the image baked. `image_id` is pinned
+so the work is reproducible, which is right — but these containers
+do not run the work, they run the dispatcher's side of a protocol it
+also implements. Without the mount, a job pinned to a months-old
+image could never be read by a newer dispatcher.
 Progress streams one line per pass; it is safe to interrupt and
 safe to re-run, because only missing pairs are ever computed.
 `readout_lag` on every job row is what tells you to run it — 0 in
@@ -213,9 +231,18 @@ steady state, so anything above 0 is actionable rather than
 transient.
 
 Values live in `<home_root>/.readouts/<name>.jsonl`, append-only,
-last line winning, written by the dispatcher alone. Both paths
-write the same format, and each line records the `source_sha256` +
-`image_id` that produced it.
+last line winning, written by the dispatcher alone. Both paths write
+the same format, and each line records what produced it: the
+registered function's own hash (`readout_sha256`) plus the archive
+and image. The functions themselves are kept beside the values in
+`<home_root>/.readouts/sources/<name>.<hash>.py` — the registry under
+`--data-dir` is the authority, this is the durable copy on shared
+storage, the same relationship `.source.tar` has with git.
+
+One subtlety worth knowing: a readout backfilled against an old job
+resolves its imports against **that job's** frozen archive, not
+today's code. Usually that is what you want (you grade the old run
+with the code it ran) and occasionally it is a surprise.
 
 ### Columns are yours too
 
@@ -237,7 +264,7 @@ def columns(job):
 ```
 
 ```
-PUT /api/readouts/columns  {"arena": "...", "columns": "readouts:columns"}
+dispatcher readout myrepo/my-sweep --columns --file myrepo/readouts.py
 ```
 
 Its keys are the columns; nothing is declared in advance. So the
@@ -276,6 +303,7 @@ POST   /api/readouts                    register (no containers; the
                                         retroactive command)
 DELETE /api/readouts?arena=..&name=..   stop computing (values stay)
 PUT    /api/readouts/columns            the arena's column function
+                                        (body: {arena, source})
 GET    /api/jobs/{id}/readouts          every value, per instance
 POST   /api/readouts/compute            the retroactive pass, as an
                                         ndjson stream (the CLI's

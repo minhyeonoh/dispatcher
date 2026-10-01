@@ -6,6 +6,11 @@ A readout is a plain function:
     def reward(instance):
       return instance.data["reward"]
 
+The dispatcher registers that TEXT, not a path to it, and ships it
+to whichever side is scoring. Your repo stays importable, so helpers
+and heavy logic can live there (`from myrepo.grade import tgc`) —
+only the function itself is registered.
+
 Return any JSON-serialisable value. `None` is a value ("not
 applicable here"), recorded as null; it is not a request to try
 again. Raising is recorded as an error against that one instance and
@@ -23,7 +28,9 @@ This module has ONE implementation (`run_readouts`) and two callers:
   asks for pairs the live path never produced (a readout registered
   after the run, a redefinition, an instance that died first). It
   reads a request file, scores many instances, and prints marked
-  lines the dispatcher parses back.
+  lines the dispatcher parses back. Because the code arrives with
+  the request rather than from the job's archive, this works on runs
+  that finished long before the readout existed.
 
 Both call the same functions on the same `ReadoutInstance`, so a
 readout cannot behave differently depending on which path ran it.
@@ -128,15 +135,20 @@ class _Deadline:
       signal.setitimer(signal.ITIMER_REAL, 0)
 
 
-def _resolve(entrypoint: str) -> Callable[[ReadoutInstance], Any]:
-  from importlib import import_module
+def compile_source(source: str, name: str) -> Callable[..., Any]:
+  """Turn registered code into a callable.
 
-  module_name, _, attr = entrypoint.partition(":")
-  module = import_module(module_name)
-  func = getattr(module, attr)
+  Executed in a fresh module-like namespace, so the operator can put
+  helpers beside the function and import from the job's own frozen
+  archive — which `dispatcher_sdk.bootstrap` already unpacked onto
+  PYTHONPATH. Heavy logic therefore stays in the repo while only the
+  glue is registered."""
+  namespace: dict[str, Any] = {"__name__": f"dispatcher_readout_{name}"}
+  exec(compile(source, f"<readout {name}>", "exec"), namespace)
+  func = namespace.get(name)
   if not callable(func):
-    raise TypeError(f"{entrypoint} is not callable")
-  return func  # type: ignore[no-any-return]
+    raise TypeError(f"source does not define a callable named {name!r}")
+  return func
 
 
 def run_readouts(
@@ -154,6 +166,10 @@ def run_readouts(
   successful instance into a failed one."""
   out: list[dict[str, Any]] = []
   wanted = None if only is None else set(only)
+  # Compiled once per pass, not once per instance: the retroactive
+  # runner scores a whole batch and recompiling each time would be
+  # pure waste.
+  cache: dict[str, Callable[..., Any]] = {}
   with _Deadline() as deadline:
     for spec in specs:
       name = str(spec.get("name") or "")
@@ -165,7 +181,10 @@ def run_readouts(
         "task_id": instance.task_id,
       }
       try:
-        func = _resolve(str(spec.get("entrypoint") or ""))
+        func = cache.get(name)
+        if func is None:
+          func = compile_source(str(spec.get("source") or ""), name)
+          cache[name] = func
         deadline.arm(float(spec.get("timeout_sec") or _DEFAULT_TIMEOUT_S))
         try:
           record["ok"] = True

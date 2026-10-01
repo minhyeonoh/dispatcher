@@ -25,6 +25,7 @@ above 0 names work for the retroactive command.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -41,8 +42,10 @@ from dispatcher.core.dispatch import (
   SOURCE_TAR_FILENAME,
 )
 from dispatcher.core.readout import (
+  COLUMNS_NAME,
   READOUT_DIRNAME,
   REQUEST_FILENAME,
+  SDK_MOUNT,
   BadReadout,
   ReadoutAggregate,
   ReadoutJobSummary,
@@ -50,8 +53,12 @@ from dispatcher.core.readout import (
   ReadoutValue,
   aggregate,
   append_values,
+  check_source,
   parse_result_lines,
+  protocol_command,
   read_values,
+  record_source,
+  sdk_dir,
   write_request,
 )
 
@@ -71,6 +78,11 @@ logger = logging.getLogger(__name__)
 
 READOUTS_FILENAME = "readouts.json"
 
+
+def _sha(text: str) -> str:
+  return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
 # Container-side paths for the retroactive pass. The job home is
 # mounted READ-ONLY: the dispatcher is the only writer of the column
 # index, which is what makes those append-only files single-writer
@@ -78,16 +90,6 @@ READOUTS_FILENAME = "readouts.json"
 JOB_MOUNT = "/dispatcher/job"
 ENV_JOB_DIR = "DISPATCHER_JOB_DIR"
 ENV_REQUEST = "DISPATCHER_READOUT_REQUEST"
-
-_RUNNER_COMMAND = (
-  "python",
-  "-m",
-  "dispatcher_sdk.bootstrap",
-  "--",
-  "python",
-  "-m",
-  "dispatcher_sdk.readout",
-)
 
 
 class ReadoutSettings(BaseModel):
@@ -175,10 +177,10 @@ class ReadoutRegistry:
   ) -> None:
     self._path = path
     self._by_arena: dict[str, list[ReadoutSpec]] = by_arena or {}
-    # arena → `module:callable` that turns a job's frame into its
-    # columns. Separate from the readout list because it is a
-    # different kind of thing: one per arena, job-level, and it runs
-    # in a resident process rather than in each instance.
+    # arena → the SOURCE of a `columns(job)` function. Separate from
+    # the readout list because it is a different kind of thing: one
+    # per arena, job-level, and it runs in a resident process rather
+    # than in each instance.
     self._columns: dict[str, str] = columns or {}
 
   @classmethod
@@ -187,10 +189,12 @@ class ReadoutRegistry:
     is operator intent that nothing else on disk can reconstruct, and
     silently dropping it would leave every new instance unscored.
 
-    A bare list per arena is the pre-`columns` format and still
-    loads — the registry on a running dispatcher predates this
-    field, and a migration that needed the operator to re-register
-    would lose exactly the intent this file exists to keep."""
+    A bare list per arena is the oldest format and still loads. An
+    entry that still carries `entrypoint` instead of `source` CANNOT
+    be migrated — the code it points at lives in each job's archive,
+    which is the limitation source registration exists to remove — so
+    it raises rather than silently serving a readout that will fail on
+    every instance."""
     path = data_dir / READOUTS_FILENAME
     if not path.is_file():
       return cls(path)
@@ -202,6 +206,15 @@ class ReadoutRegistry:
         specs = (
           node if isinstance(node, list) else (node.get("readouts") or [])
         )
+        for spec in specs:
+          if isinstance(spec, dict) and "entrypoint" in spec:
+            raise RuntimeError(
+              f"readout {spec.get('name')!r} at {arena!r} is registered "
+              f"as an entrypoint, which is no longer supported (the "
+              f"code must be registered, not a path into a job's "
+              f"archive). Re-register with `dispatcher readout add "
+              f"{arena} --file <py> --name {spec.get('name')}`"
+            )
         by_arena[arena] = [
           ReadoutSpec.model_validate(s).validated() for s in specs
         ]
@@ -239,11 +252,12 @@ class ReadoutRegistry:
           s.model_dump(mode="json") for s in self._by_arena.get(arena, [])
         ],
         "columns": self._columns.get(arena, ""),
+        "columns_sha256": _sha(self._columns.get(arena, "")),
       }
       for arena in sorted(set(self._by_arena) | set(self._columns))
     }
 
-  def columns_entrypoint(self, arena: str) -> str:
+  def columns_source(self, arena: str) -> str:
     """The nearest `columns` function on this arena's path, or empty.
 
     Nearest wins rather than erroring: unlike a readout name (which
@@ -259,9 +273,10 @@ class ReadoutRegistry:
         return found
     return ""
 
-  def set_columns(self, arena: str, entrypoint: str) -> None:
-    if entrypoint:
-      self._columns[arena] = entrypoint
+  def set_columns(self, arena: str, source: str) -> None:
+    if source:
+      check_source(source, COLUMNS_NAME)
+      self._columns[arena] = source
     else:
       self._columns.pop(arena, None)
     self.save()
@@ -431,7 +446,13 @@ class ReadoutService:
     # report a lag that the retroactive pass then found nothing to
     # fix. In steady state `load_live` already did this at boot.
     await self._ensure_loaded(job_id, state, specs)
-    registered = {s.name for s in specs}
+    # Keep a copy of the registered code beside the values it made.
+    # The registry under --data-dir is the authority; this is the
+    # durable record on shared storage, the same relationship
+    # `.source.tar` has with git.
+    await self._record_sources(state, specs)
+    by_sha = {s.name: s.source_sha256 for s in specs}
+    registered = set(by_sha)
     now = self._clock()
     by_name: dict[str, list[ReadoutValue]] = {}
     for value in values:
@@ -445,10 +466,27 @@ class ReadoutService:
             "at": now,
             "source_sha256": state.source_sha256,
             "image_id": state.image_id,
+            "readout_sha256": by_sha.get(value.name, ""),
           }
         )
       )
     await self._append(job_id, state, by_name)
+
+  async def _record_sources(
+    self, state: JobState, specs: list[ReadoutSpec]
+  ) -> None:
+    def _write() -> None:
+      for spec in specs:
+        record_source(state.home_root, spec.name, spec.source)
+
+    try:
+      await asyncio.to_thread(_write)
+    except OSError as exc:
+      # A record, not a dependency: losing it costs provenance, not
+      # a value, so it must not stop the value from being written.
+      logger.warning(
+        "readout source record failed job=%s: %s", state.job_id, exc
+      )
 
   # ── retroactive path ─────────────────────────────────────────
 
@@ -495,9 +533,11 @@ class ReadoutService:
     if not specs:
       return None
     await self._ensure_loaded(job_id, state, specs)
+    await self._record_sources(state, specs)
     targets = self._unscored(job_id, specs)
     if not targets:
       return None
+    by_sha = {s.name: s.source_sha256 for s in specs}
     cap = max(1, self._settings.batch)
     batch, remaining = targets[:cap], max(0, len(targets) - cap)
     asked: dict[str, set[str]] = {}
@@ -552,6 +592,7 @@ class ReadoutService:
             "at": now,
             "source_sha256": state.source_sha256,
             "image_id": state.image_id,
+            "readout_sha256": by_sha.get(row.name, ""),
           }
         )
       )
@@ -670,15 +711,15 @@ class ReadoutService:
       except KeyError:
         self._dirty.discard(job_id)
         continue
-      entrypoint = self._registry.columns_entrypoint(state.arena)
-      if not entrypoint:
+      source = self._registry.columns_source(state.arena)
+      if not source:
         self._dirty.discard(job_id)
         continue
       specs = self._registry.for_arena(state.arena)
       frame = self._frame(job_id, specs)
       try:
         self._columns[job_id] = await self._pool.compute(
-          state, entrypoint=entrypoint, frame=frame
+          state, source=source, frame=frame
         )
         self._column_error.pop(job_id, None)
         # Cleared only on success: a failed refresh leaves the job
@@ -846,6 +887,8 @@ def build_readout_argv(state: JobState) -> list[str]:
     f"{labels.READOUT}={state.job_id}",
     "-v",
     f"{state.home_root}:{JOB_MOUNT}:ro",
+    "-v",
+    f"{sdk_dir()}:{SDK_MOUNT}:ro",
   ]
   if state.source_sha256:
     argv += [
@@ -863,7 +906,7 @@ def build_readout_argv(state: JobState) -> list[str]:
   for key, value in env.items():
     argv += ["-e", f"{key}={value}"]
   argv.append(state.image_id or spec.image)
-  argv += _RUNNER_COMMAND
+  argv += protocol_command("dispatcher_sdk.readout")
   return argv
 
 

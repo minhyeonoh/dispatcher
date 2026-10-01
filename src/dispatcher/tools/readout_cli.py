@@ -1,5 +1,11 @@
-"""`dispatcher readout` — the retroactive readout pass, as a
-command.
+"""`dispatcher readout` — register readouts from a file, and run the
+retroactive pass.
+
+What gets registered is the CODE, not a path to it, which is what
+makes a readout written today computable against a run from two
+months ago. Writing Python inside a JSON body is miserable, so the
+registration subcommands take a FILE: your repo keeps the functions
+under version control and tested, and the CLI ships their text.
 
 A thin client over `POST /api/readouts/compute`: the server owns the
 containers (it runs on the launcher, which holds the pinned images),
@@ -13,6 +19,7 @@ computed, so Ctrl-C costs at most the pass in flight.
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 from typing import Any
 
@@ -101,3 +108,65 @@ def run_readout(
     file=out,
   )
   return 1 if totals["errors"] else 0
+
+
+def _read_file(path: str) -> str:
+  try:
+    return pathlib.Path(path).read_text(encoding="utf-8")
+  except OSError as exc:
+    print(f"cannot read {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+
+
+def _post(
+  server: str, path: str, body: dict[str, Any], *, method: str = "POST"
+) -> int:
+  url = server.rstrip("/") + path
+  try:
+    resp = httpx.request(method, url, json=body, timeout=120.0)
+  except httpx.HTTPError as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    return 1
+  if resp.status_code != 200:
+    detail = resp.text.strip()[:600]
+    print(f"{resp.status_code}: {detail}", file=sys.stderr)
+    return 1
+  out = resp.json()
+  needs = out.get("needs_backfill") or []
+  for job, err in (out.get("errors") or {}).items():
+    print(f"  {job}: {err}", file=sys.stderr)
+  if needs:
+    print(f"{len(needs)} job(s) need values: {out.get('hint') or ''}")
+  else:
+    print("registered")
+  return 0
+
+
+def add_readout(
+  *, server: str, arena: str, file: str, name: str, timeout_sec: float
+) -> int:
+  """Register one per-instance readout from a file.
+
+  The whole file is sent, not just the one function: helpers beside
+  it stay available, and the record keeps the context a reader of the
+  value would want."""
+  return _post(
+    server,
+    "/api/readouts",
+    {
+      "arena": arena,
+      "name": name,
+      "source": _read_file(file),
+      "timeout_sec": timeout_sec,
+    },
+  )
+
+
+def set_columns(*, server: str, arena: str, file: str) -> int:
+  """Register the arena's `columns(job)` function from a file."""
+  return _post(
+    server,
+    "/api/readouts/columns",
+    {"arena": arena, "source": _read_file(file)},
+    method="PUT",
+  )

@@ -15,8 +15,9 @@ research repo use this":
 worker.py     the work — reads its payload, does the thing,
               returns JSON. Nothing dispatcher-specific beyond
               `dispatcher_sdk.run(work)`.
-readouts.py   what the columns mean — one function per readout,
-              each a function of one finished instance.
+readouts.py   what the columns mean — one function per readout plus
+              a columns(job). Registered as TEXT, so these work on
+              runs whose archive predates them.
 Dockerfile    the ENVIRONMENT image: interpreter + dispatcher_sdk,
               no experiment code.
 submit.py     the submitter — freezes worker.py + readouts.py into
@@ -91,12 +92,14 @@ then register and run the command:
 
 ```bash
 uv run python examples/sleepbench/submit.py … --no-readouts
-# … wait for the arena to drain; readout_lag is null (nothing
-# registered), then 4 per instance once you register:
-curl -s localhost:7200/api/readouts -XPOST -H 'content-type: application/json' \
-  -d '{"arena":"demo/sleepbench","name":"reward","entrypoint":"readouts:reward"}'
+# … wait for the arena to drain, then register and compute:
+dispatcher readout demo/sleepbench --add reward --file examples/sleepbench/readouts.py
 dispatcher readout demo/sleepbench
 ```
+
+It also works for a readout that did not exist when the sweep ran —
+write a new function, register it, compute. That is the whole reason
+the code is registered rather than a path into the archive.
 
 That is the retroactive path doing what it exists for — and the
 same `readouts.py`, imported in a container from the job's pinned

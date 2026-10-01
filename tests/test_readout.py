@@ -24,6 +24,7 @@ from dispatcher.core.readout import (
   read_instance_readouts,
   read_values,
   request_path,
+  sdk_dir,
   values_path,
 )
 from dispatcher.core.readout_service import (
@@ -146,16 +147,16 @@ def mk_registry(tmp_path: Path) -> ReadoutRegistry:
   return ReadoutRegistry(tmp_path / "readouts.json")
 
 
-def spec(
-  name: str, entrypoint: str = "myrepo.readouts:reward"
-) -> ReadoutSpec:
-  return ReadoutSpec(name=name, entrypoint=entrypoint)
+def spec(name: str, body: str = "return 1") -> ReadoutSpec:
+  return ReadoutSpec(
+    name=name, source=f"def {name}(instance):\n  {body}\n"
+  )
 
 
 def test_registry_applies_to_the_whole_subtree(tmp_path: Path):
   reg = mk_registry(tmp_path)
   reg.register("bench", spec("reward"))
-  reg.register("bench/v7", spec("tgc", "myrepo.readouts:tgc"))
+  reg.register("bench/v7", spec("tgc"))
   assert [s.name for s in reg.for_arena("bench/v7/front5")] == [
     "reward",
     "tgc",
@@ -175,29 +176,29 @@ def test_registry_refuses_the_same_name_on_one_path(tmp_path: Path):
   reg = mk_registry(tmp_path)
   reg.register("bench", spec("reward"))
   with pytest.raises(ReadoutConflict):
-    reg.register("bench/v7", spec("reward", "other:reward"))
+    reg.register("bench/v7", spec("reward"))
   # The reverse direction too — registering an ancestor after a
   # descendant would shadow just as badly.
   reg2 = mk_registry(tmp_path / "b")
   reg2.register("bench/v7", spec("reward"))
   with pytest.raises(ReadoutConflict):
-    reg2.register("bench", spec("reward", "other:reward"))
+    reg2.register("bench", spec("reward"))
 
 
 def test_registry_allows_the_same_name_on_a_sibling_path(tmp_path: Path):
   reg = mk_registry(tmp_path)
   reg.register("a/one", spec("reward"))
-  reg.register("a/two", spec("reward", "other:reward"))
+  reg.register("a/two", spec("reward"))
   assert [s.name for s in reg.for_arena("a/one")] == ["reward"]
 
 
 def test_registry_replaces_by_name_at_the_same_node(tmp_path: Path):
   reg = mk_registry(tmp_path)
-  reg.register("bench", spec("reward", "a:one"))
-  reg.register("bench", spec("reward", "b:two"))
+  reg.register("bench", spec("reward", "return 1"))
+  reg.register("bench", spec("reward", "return 2"))
   specs = reg.for_arena("bench")
   assert len(specs) == 1
-  assert specs[0].entrypoint == "b:two"
+  assert "return 2" in specs[0].source
 
 
 def test_registry_round_trips_through_disk(tmp_path: Path):
@@ -224,12 +225,18 @@ def test_unregister_keeps_the_values(tmp_path: Path):
   assert read_values(tmp_path, "reward") != {}
 
 
-def test_bad_name_and_entrypoint_are_rejected(tmp_path: Path):
+def test_a_bad_name_or_source_is_rejected(tmp_path: Path):
   reg = mk_registry(tmp_path)
   with pytest.raises(BadReadout):
-    reg.register("bench", ReadoutSpec(name="../etc", entrypoint="a:b"))
+    reg.register(
+      "bench", ReadoutSpec(name="../etc", source="def x(i): pass")
+    )
   with pytest.raises(BadReadout):
-    reg.register("bench", ReadoutSpec(name="ok", entrypoint="no-colon"))
+    # The source must define the function it was registered as —
+    # caught here rather than on every instance, hours later.
+    reg.register("bench", ReadoutSpec(name="ok", source="def nope(i): 1"))
+  with pytest.raises(BadReadout):
+    reg.register("bench", ReadoutSpec(name="ok", source="def ok(:"))
 
 
 # ── container argv ───────────────────────────────────────────────
@@ -246,7 +253,12 @@ def test_argv_mounts_the_job_home_read_only(tmp_path: Path):
   assert "dispatcher.readout=" in joined
   assert "dispatcher.managed" not in joined
   assert "dispatcher.set" not in joined
-  assert argv[-1] == "dispatcher_sdk.readout"
+  # The dispatcher's own protocol code comes from the launcher, not
+  # from whatever the pinned image baked — otherwise a job pinned to
+  # an old image could never be read by a newer dispatcher.
+  assert f"{sdk_dir()}:/dispatcher/sdk:ro" in argv
+  assert "dispatcher_sdk.readout" in argv[-1]
+  assert "/dispatcher/sdk" in argv[-1]
 
 
 def test_argv_skips_extra_args_and_mounts_the_source(tmp_path: Path):
@@ -280,7 +292,7 @@ def run_sdk(
   capsys,
   tmp_path: Path,
   *,
-  entrypoint: str,
+  source: str,
   timeout_sec: float = 60.0,
 ) -> list[dict[str, Any]]:
   job_dir = tmp_path / "job"
@@ -294,7 +306,7 @@ def run_sdk(
         "readouts": [
           {
             "name": "reward",
-            "entrypoint": entrypoint,
+            "source": source,
             "timeout_sec": timeout_sec,
           }
         ],
@@ -334,7 +346,15 @@ def test_sdk_runner_emits_a_value(monkeypatch, capsys, tmp_path: Path):
   module.__dict__["reward"] = reward
   monkeypatch.setitem(sys.modules, "fakerepo", module)
   rows = run_sdk(
-    monkeypatch, capsys, tmp_path, entrypoint="fakerepo:reward"
+    monkeypatch,
+    capsys,
+    tmp_path,
+    source=(
+      "def reward(instance):\n"
+      "  assert instance.state == 'done_ok'\n"
+      "  assert instance.payload == {'seed': 3}\n"
+      "  return instance.data['reward']\n"
+    ),
   )
   assert rows == [
     {
@@ -361,17 +381,23 @@ def test_sdk_runner_records_a_raise_as_an_error(
   module.__dict__["reward"] = reward
   monkeypatch.setitem(sys.modules, "fakerepo2", module)
   rows = run_sdk(
-    monkeypatch, capsys, tmp_path, entrypoint="fakerepo2:reward"
+    monkeypatch,
+    capsys,
+    tmp_path,
+    source="def reward(instance):\n  raise KeyError('tgc')\n",
   )
   assert rows[0]["ok"] is False
   assert "KeyError" in rows[0]["error"]
 
 
-def test_sdk_runner_records_an_unimportable_entrypoint(
+def test_sdk_runner_records_an_unimportable_source(
   monkeypatch, capsys, tmp_path: Path
 ):
   rows = run_sdk(
-    monkeypatch, capsys, tmp_path, entrypoint="nosuchmodule:reward"
+    monkeypatch,
+    capsys,
+    tmp_path,
+    source="import nosuchmodule\ndef reward(instance):\n  return 1\n",
   )
   assert rows[0]["ok"] is False
   assert "ModuleNotFoundError" in rows[0]["error"]
@@ -395,7 +421,7 @@ def test_sdk_runner_interrupts_a_hanging_readout(
     monkeypatch,
     capsys,
     tmp_path,
-    entrypoint="fakerepo3:reward",
+    source="import time\ndef reward(instance):\n  time.sleep(30)\n",
     timeout_sec=0.05,
   )
   assert rows[0]["ok"] is False
@@ -420,6 +446,12 @@ def _worker_env(home: Path) -> dict[str, str]:
   }
 
 
+def _r(name: str, body: str) -> dict:
+  """A readout spec as the dispatcher stamps it into instance.json:
+  the CODE, not a pointer to it."""
+  return {"name": name, "source": f"def {name}(instance):\n  {body}\n"}
+
+
 def _worker_spec(
   home: Path, *, readouts: list[dict], payload: Any = None
 ) -> None:
@@ -438,16 +470,6 @@ def _worker_spec(
   )
 
 
-def _fake_module(monkeypatch, name: str, **funcs) -> None:
-  import sys
-  import types
-
-  module = types.ModuleType(name)
-  for attr, func in funcs.items():
-    module.__dict__[attr] = func
-  monkeypatch.setitem(sys.modules, name, module)
-
-
 def _run_worker(work, home: Path) -> int:
   from dispatcher_sdk import run
 
@@ -456,19 +478,13 @@ def _run_worker(work, home: Path) -> int:
   return codes[0] if codes else -1
 
 
-def test_worker_scores_itself_in_process(monkeypatch, tmp_path: Path):
-  _fake_module(
-    monkeypatch,
-    "liverepo",
-    reward=lambda inst: inst.data["reward"],
-    solved=lambda inst: inst.state == "done_ok",
-  )
+def test_worker_scores_itself_in_process(tmp_path: Path):
   home = tmp_path / "t1__0000001"
   _worker_spec(
     home,
     readouts=[
-      {"name": "reward", "entrypoint": "liverepo:reward"},
-      {"name": "solved", "entrypoint": "liverepo:solved"},
+      _r("reward", "return instance.data['reward']"),
+      _r("solved", "return instance.state == 'done_ok'"),
     ],
   )
   code = _run_worker(lambda _i: {"reward": 0.5}, home)
@@ -496,25 +512,14 @@ def test_worker_writes_values_before_the_envelope(
     return real_replace(self, target)
 
   monkeypatch.setattr(Path, "replace", spy)
-  _fake_module(monkeypatch, "ordrepo", reward=lambda _i: 1)
-  _worker_spec(
-    home, readouts=[{"name": "reward", "entrypoint": "ordrepo:reward"}]
-  )
+  _worker_spec(home, readouts=[_r("reward", "return 1")])
   _run_worker(lambda _i: {}, home)
   assert order == ["readouts.json", "outcome.json"]
 
 
-def test_a_raising_readout_cannot_fail_the_work(
-  monkeypatch, tmp_path: Path
-):
-  def boom(_inst):
-    raise KeyError("tgc")
-
-  _fake_module(monkeypatch, "boomrepo", reward=boom)
+def test_a_raising_readout_cannot_fail_the_work(tmp_path: Path):
   home = tmp_path / "t1__0000001"
-  _worker_spec(
-    home, readouts=[{"name": "reward", "entrypoint": "boomrepo:reward"}]
-  )
+  _worker_spec(home, readouts=[_r("reward", "raise KeyError('tgc')")])
   code = _run_worker(lambda _i: {"fine": True}, home)
   assert code == 0  # the WORK succeeded
   envelope = json.loads((home / "outcome.json").read_text())
@@ -525,19 +530,13 @@ def test_a_raising_readout_cannot_fail_the_work(
   assert "KeyError" in value.error
 
 
-def test_a_failed_run_is_still_scored(monkeypatch, tmp_path: Path):
-  _fake_module(
-    monkeypatch,
-    "failrepo",
-    solved=lambda inst: inst.state == "done_ok",
-    kind=lambda inst: (inst.payload or {}).get("kind", "?"),
-  )
+def test_a_failed_run_is_still_scored(tmp_path: Path):
   home = tmp_path / "t1__0000001"
   _worker_spec(
     home,
     readouts=[
-      {"name": "solved", "entrypoint": "failrepo:solved"},
-      {"name": "kind", "entrypoint": "failrepo:kind"},
+      _r("solved", "return instance.state == 'done_ok'"),
+      _r("kind", "return (instance.payload or {}).get('kind', '?')"),
     ],
     payload={"kind": "error"},
   )
@@ -550,16 +549,13 @@ def test_a_failed_run_is_still_scored(monkeypatch, tmp_path: Path):
   assert values == {"solved": False, "kind": "error"}
 
 
-def test_an_infra_failure_is_not_scored(monkeypatch, tmp_path: Path):
+def test_an_infra_failure_is_not_scored(tmp_path: Path):
   """The task will be requeued, so scoring it would attach a value
   to an instance that never counted."""
   from dispatcher_sdk import InfraFailure
 
-  _fake_module(monkeypatch, "infrarepo", solved=lambda _i: False)
   home = tmp_path / "t1__0000001"
-  _worker_spec(
-    home, readouts=[{"name": "solved", "entrypoint": "infrarepo:solved"}]
-  )
+  _worker_spec(home, readouts=[_r("solved", "return False")])
 
   def work(_inst):
     raise InfraFailure("backend vanished")
@@ -817,7 +813,7 @@ async def test_compute_skips_values_already_present(tmp_path: Path):
 
 async def test_compute_restricted_to_one_name(tmp_path: Path):
   scheduler, service, runner, job = mk_world(tmp_path, tasks=["t1"])
-  service.registry.register("bench/v7", spec("tgc", "other:tgc"))
+  service.registry.register("bench/v7", spec("tgc"))
   finish(scheduler, job.job_id, "t1")
   await drain(service, [job.job_id], names=["tgc"])
   assert runner.requests[0]["instances"][0]["readouts"] == ["tgc"]
@@ -977,7 +973,7 @@ def register(client, arena: str, name: str = "reward"):
     json={
       "arena": arena,
       "name": name,
-      "entrypoint": f"myrepo.readouts:{name}",
+      "source": f"def {name}(instance):\n  return 1\n",
     },
   )
 
@@ -1021,6 +1017,7 @@ def test_http_register_list_unregister(tmp_path: Path):
     specs = listed["bench/v7"]["readouts"]
     assert [s["name"] for s in specs] == ["reward"]
     assert specs[0]["timeout_sec"] == 600.0
+    assert "def reward" in specs[0]["source"]
     assert listed["bench/v7"]["columns"] == ""
 
     clash = register(client, "bench")
@@ -1028,7 +1025,7 @@ def test_http_register_list_unregister(tmp_path: Path):
 
     bad = client.post(
       "/readouts",
-      json={"arena": "bench/v7", "name": "r", "entrypoint": "nocolon"},
+      json={"arena": "bench/v7", "name": "r", "source": "def nope(i): 1"},
     )
     assert bad.status_code == 400
 
@@ -1047,7 +1044,8 @@ def test_http_readout_requires_an_arena(tmp_path: Path):
   client, _runner = http_client(tmp_path)
   with client:
     resp = client.post(
-      "/readouts", json={"arena": "", "name": "r", "entrypoint": "a:b"}
+      "/readouts",
+      json={"arena": "", "name": "r", "source": "def r(i): return 1"},
     )
     assert resp.status_code == 400
     assert "arena" in resp.json()["detail"]
@@ -1142,22 +1140,17 @@ def test_http_an_unregistered_arena_carries_no_columns(tmp_path: Path):
 # ── operator columns: the resident process ───────────────────────
 
 
-def fake_spawn(script: str):
+def fake_spawn():
   """Spawn a real python process (not docker) running the SDK
-  aggregate loop against a module we write on the fly. Exercises the
-  actual protocol — pipes, ndjson, one line in one line out."""
+  aggregate loop. Exercises the actual protocol — pipes, ndjson, one
+  line in one line out — and the real compile-from-source path, since
+  the function now arrives with the request."""
   import os
   import sys
-  import tempfile
-
-  tmp = tempfile.mkdtemp()
-  pathlib.Path(tmp, "opcolumns.py").write_text(script, encoding="utf-8")
 
   async def spawn(state):
     env = dict(os.environ)
-    env["PYTHONPATH"] = (
-      tmp + os.pathsep + str(pathlib.Path("src").resolve())
-    )
+    env["PYTHONPATH"] = str(pathlib.Path("src").resolve())
     return await asyncio.create_subprocess_exec(
       sys.executable,
       "-m",
@@ -1191,9 +1184,9 @@ async def mk_columns_world(
   scheduler, service, runner, job = mk_world(
     tmp_path, tasks=[f"t{i}" for i in range(tasks)]
   )
-  pool = AggregatePool(spawn=fake_spawn(script), request_timeout_sec=10.0)
+  pool = AggregatePool(spawn=fake_spawn(), request_timeout_sec=10.0)
   service._pool = pool
-  service.registry.set_columns("bench/v7", "opcolumns:columns")
+  service.registry.set_columns("bench/v7", script)
   for i in range(tasks):
     instance_id = finish(scheduler, job.job_id, f"t{i}")
     await service.record(
@@ -1290,13 +1283,15 @@ async def test_a_raising_columns_function_keeps_the_last_good_numbers(
     good = dict(service.summary(job.job_id).columns)
     assert good
     # Point at a function that raises; values unchanged.
-    service.registry.set_columns("bench/v7", "opcolumns:boom")
+    service.registry.set_columns(
+      "bench/v7", "def columns(job):\n  raise KeyError('tgc')\n"
+    )
     service.invalidate([job.job_id])
     await service.refresh([job.job_id])
     cell = service.summary(job.job_id)
     assert cell.columns == good  # never invented, never blanked
     assert cell.columns_stale is True  # and said so
-    assert "AttributeError" in cell.columns_error or cell.columns_error
+    assert "KeyError" in cell.columns_error
   finally:
     await pool.close()
 
@@ -1305,12 +1300,11 @@ async def test_a_wedged_columns_function_times_out(tmp_path: Path):
   from dispatcher.core.aggregate_pool import AggregatePool
 
   scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
-  pool = AggregatePool(
-    spawn=fake_spawn("import time\ndef columns(job):\n  time.sleep(30)\n"),
-    request_timeout_sec=0.4,
-  )
+  pool = AggregatePool(spawn=fake_spawn(), request_timeout_sec=0.4)
   service._pool = pool
-  service.registry.set_columns("bench/v7", "opcolumns:columns")
+  service.registry.set_columns(
+    "bench/v7", "import time\ndef columns(job):\n  time.sleep(30)\n"
+  )
   instance_id = finish(scheduler, job.job_id, "t1")
   await service.record(
     job.job_id,
@@ -1335,9 +1329,7 @@ async def test_the_pool_is_capped_and_evicts_lru(tmp_path: Path):
   from dispatcher.core.aggregate_pool import AggregatePool
 
   pool = AggregatePool(
-    spawn=fake_spawn(MEDIAN_COLUMNS),
-    max_processes=2,
-    request_timeout_sec=10.0,
+    spawn=fake_spawn(), max_processes=2, request_timeout_sec=10.0
   )
   scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
   finish(scheduler, job.job_id, "t1")
@@ -1345,7 +1337,7 @@ async def test_the_pool_is_capped_and_evicts_lru(tmp_path: Path):
   try:
     for i in range(4):
       job.image_id = f"sha256:image{i}"
-      await pool.compute(job, entrypoint="opcolumns:columns", frame=frame)
+      await pool.compute(job, source=MEDIAN_COLUMNS, frame=frame)
     held = pool.snapshot()
     assert len(held) == 2  # the cap is a real ceiling
     assert {h["image_id"] for h in held} == {
@@ -1402,7 +1394,7 @@ async def test_no_pool_means_no_columns(tmp_path: Path):
   """A dispatcher without the pool (tests, fake dispatch) simply
   serves no operator columns — never an error."""
   scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
-  service.registry.set_columns("bench/v7", "opcolumns:columns")
+  service.registry.set_columns("bench/v7", MEDIAN_COLUMNS)
   instance_id = finish(scheduler, job.job_id, "t1")
   await service.record(
     job.job_id,
@@ -1414,28 +1406,47 @@ async def test_no_pool_means_no_columns(tmp_path: Path):
   assert service.summary(job.job_id).columns == {}
 
 
-def test_registry_keeps_the_pre_columns_file_format(tmp_path: Path):
-  """The registry on the running dispatcher predates `columns`; a
-  migration that lost it would lose the only copy of that intent."""
+def test_registry_refuses_an_entrypoint_registration(tmp_path: Path):
+  """An entrypoint cannot be migrated: the code it names lives in
+  each job's archive, which is the limitation source registration
+  exists to remove. Refusing loudly beats serving a readout that
+  fails on every instance."""
   (tmp_path / "readouts.json").write_text(
     json.dumps(
       {"bench": [{"name": "reward", "entrypoint": "readouts:reward"}]}
     ),
     encoding="utf-8",
   )
+  with pytest.raises(RuntimeError, match="no longer supported"):
+    ReadoutRegistry.load(tmp_path)
+
+
+def test_registry_keeps_the_bare_list_file_format(tmp_path: Path):
+  (tmp_path / "readouts.json").write_text(
+    json.dumps(
+      {
+        "bench": [
+          {"name": "reward", "source": "def reward(i):\n  return 1\n"}
+        ]
+      }
+    ),
+    encoding="utf-8",
+  )
   reg = ReadoutRegistry.load(tmp_path)
   assert [s.name for s in reg.for_arena("bench")] == ["reward"]
-  assert reg.columns_entrypoint("bench") == ""
-  reg.set_columns("bench", "readouts:columns")
-  assert ReadoutRegistry.load(tmp_path).columns_entrypoint("bench/v7") == (
-    "readouts:columns"
+  assert reg.columns_source("bench") == ""
+  reg.set_columns("bench", "def columns(job):\n  return {}\n")
+  assert "def columns" in ReadoutRegistry.load(tmp_path).columns_source(
+    "bench/v7"
   )
 
 
-def test_columns_entrypoint_takes_the_nearest_node(tmp_path: Path):
+def test_columns_source_takes_the_nearest_node(tmp_path: Path):
   reg = mk_registry(tmp_path)
-  reg.set_columns("bench", "a:columns")
-  reg.set_columns("bench/v7", "b:columns")
-  assert reg.columns_entrypoint("bench/v7/front5") == "b:columns"
-  assert reg.columns_entrypoint("bench/v8") == "a:columns"
-  assert reg.columns_entrypoint("other") == ""
+  reg.set_columns("bench", "def columns(job):\n  return {'a': 1}\n")
+  reg.set_columns("bench/v7", "def columns(job):\n  return {'b': 2}\n")
+  assert "'b'" in reg.columns_source("bench/v7/front5")
+  assert "'a'" in reg.columns_source("bench/v8")
+  assert reg.columns_source("other") == ""
+  with pytest.raises(BadReadout):
+    reg.set_columns("bench", "def not_columns(job): return {}")

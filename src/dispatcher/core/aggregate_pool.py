@@ -46,6 +46,11 @@ from dispatcher.core.dispatch import (
   SOURCE_MOUNT,
   SOURCE_TAR_FILENAME,
 )
+from dispatcher.core.readout import (
+  SDK_MOUNT,
+  protocol_command,
+  sdk_dir,
+)
 
 if TYPE_CHECKING:
   from dispatcher.core.models import JobState
@@ -53,16 +58,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AGGREGATE_LABEL_VALUE = "aggregate"
-
-_RUNNER_COMMAND = (
-  "python",
-  "-m",
-  "dispatcher_sdk.bootstrap",
-  "--",
-  "python",
-  "-m",
-  "dispatcher_sdk.aggregate",
-)
 
 
 class AggregateError(RuntimeError):
@@ -130,19 +125,19 @@ class AggregatePool:
     self,
     state: JobState,
     *,
-    entrypoint: str,
+    source: str,
     frame: dict[str, Any],
   ) -> dict[str, Any]:
     """Hand one job's frame to the operator's function and return
     the column dict it produced. Raises AggregateError on any
     failure — a stale number is the caller's decision, not ours."""
+    # Keyed by IMAGE alone: the function arrives with the request, so
+    # two jobs with different frozen archives can share one process.
+    # (It is still the archive that `import myrepo…` resolves against,
+    # which the mount provides per spawn.)
     key = (state.image_id or state.container.image, state.source_sha256)
     request = json.dumps(
-      {
-        "job_id": state.job_id,
-        "entrypoint": entrypoint,
-        "frame": frame,
-      },
+      {"job_id": state.job_id, "source": source, "frame": frame},
       default=str,
     )
     # Serialising a 1344-row frame is ~1.7ms and grows with the job,
@@ -167,8 +162,7 @@ class AggregatePool:
         # late answer and desynchronise the stream.
         await self._drop(key)
         raise AggregateError(
-          f"aggregate for {state.job_id} exceeded "
-          f"{self._timeout}s (entrypoint {entrypoint})"
+          f"aggregate for {state.job_id} exceeded {self._timeout}s"
         ) from exc
       process.last_used = self._now()
       process.requests += 1
@@ -178,8 +172,8 @@ class AggregatePool:
       values = reply.get("values")
       if not isinstance(values, dict):
         raise AggregateError(
-          f"{entrypoint} returned {type(values).__name__}, "
-          f"expected a dict of column name → value"
+          f"columns returned {type(values).__name__}, expected a "
+          f"dict of column name → value"
         )
       return values
     raise AggregateError("unreachable")  # pragma: no cover
@@ -293,6 +287,8 @@ def build_aggregate_argv(state: JobState) -> list[str]:
     "-i",
     "--label",
     f"{labels.READOUT}={AGGREGATE_LABEL_VALUE}",
+    "-v",
+    f"{sdk_dir()}:{SDK_MOUNT}:ro",
   ]
   if state.source_sha256:
     argv += [
@@ -308,7 +304,7 @@ def build_aggregate_argv(state: JobState) -> list[str]:
   for key, value in env.items():
     argv += ["-e", f"{key}={value}"]
   argv.append(state.image_id or spec.image)
-  argv += _RUNNER_COMMAND
+  argv += protocol_command("dispatcher_sdk.aggregate")
   return argv
 
 

@@ -21,12 +21,21 @@ a run finished, a redefined one, or an instance that died before it
 could score itself. That path starts a container from the job's
 pinned image and computes the missing pairs.
 
+**What is registered is the CODE, not a pointer to it.** An
+entrypoint string would have to resolve inside each job's frozen
+archive, which makes a readout registered today uncomputable against
+a run from two months ago — the exact thing a post-hoc metric is
+for. The source travels into the instance (`instance.json`) and into
+the aggregate process (with each request) instead, with the job's
+archive still importable so heavy logic can stay in the repo.
+
 Identity is the NAME, alone. A changed computation is a different
 readout (`reward-v1` / `reward-v2`), never a new version of the
 same one: a column that silently changes meaning invalidates every
-figure already drawn from it. Each value also records the
-`source_sha256` + `image_id` that produced it, so "which code made
-this number" is answerable without trusting the name.
+figure already drawn from it. Each value records the exact function
+that produced it (`readout_sha256`) plus the archive and image, so
+"which code made this number" is answerable without trusting the
+name.
 
 Files, per job:
   <home_root>/.readouts/<name>.jsonl   append-only column index,
@@ -34,6 +43,9 @@ Files, per job:
                                        last line wins
   <home_root>/.readouts/request.json   what the retroactive pass
                                        was asked to do
+  <home_root>/.readouts/sources/       the registered functions, by
+                                       hash — the durable record of
+                                       what computed these values
 and per instance:
   <home>/readouts.json                 what the worker scored
                                        itself, written BEFORE the
@@ -42,15 +54,15 @@ and per instance:
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
-
-if TYPE_CHECKING:
-  from pathlib import Path
 
 READOUT_DIRNAME = ".readouts"
 REQUEST_FILENAME = "request.json"
@@ -64,27 +76,61 @@ RESULT_PREFIX = "\x1fdispatcher-readout\x1f"
 
 # The name becomes a filename and a wire key, so keep it boring.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-# `module.path:callable` — resolved where the code lives, never here.
-_ENTRYPOINT_RE = re.compile(
-  r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
-)
+SOURCES_DIRNAME = "sources"
+COLUMNS_NAME = "columns"
+"""The function a `columns` registration must define."""
 
 
 class BadReadout(ValueError):
-  """Malformed registration (name or entrypoint)."""
+  """Malformed registration — bad name, or source that does not
+  parse or does not define the function it was registered as."""
+
+
+def check_source(source: str, want: str) -> str:
+  """Validate registered code and return its sha256.
+
+  Checked at registration rather than at first use: a typo that only
+  surfaces when an instance finishes would be found by the operator
+  hours later, with a column of error records to clean up."""
+  if not source.strip():
+    raise BadReadout("source is empty")
+  try:
+    tree = ast.parse(source)
+  except SyntaxError as exc:
+    raise BadReadout(f"source does not parse: {exc}") from exc
+  names = [
+    node.name
+    for node in tree.body
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+  ]
+  if want not in names:
+    raise BadReadout(
+      f"source must define `def {want}(...)` at the top level; "
+      f"found {names or 'no functions'}. Helpers alongside it are "
+      f"fine, and so is importing from your own frozen source"
+    )
+  return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 class ReadoutSpec(BaseModel):
-  """One registration. Travels into the instance via
-  `instance.json`, so the worker knows what to score itself on."""
+  """One registration: the CODE, not a pointer to it.
+
+  Travels into the instance via `instance.json` and into the
+  aggregate process with each request, so nothing has to be
+  importable at a particular path and nothing has to have been in a
+  job's frozen archive. That is what makes a readout registered
+  today computable against a run from two months ago — the whole
+  point of a post-hoc metric, and something an entrypoint string
+  could not do."""
 
   model_config = ConfigDict(extra="forbid")
 
   name: str
-  entrypoint: str
-  """`module:callable`, imported inside the research repo's own
-  container — never by the dispatcher, which has no idea what that
-  repo's modules are."""
+  source: str
+  """Python defining `def <name>(instance)`. Executed where the
+  research code already lives (the worker's process, or the
+  aggregate container), with the job's frozen archive importable —
+  so heavy logic stays in your repo and only the glue is here."""
 
   timeout_sec: PositiveFloat = 600.0
   """Per-instance wall clock. Deliberately generous: the readout
@@ -92,16 +138,17 @@ class ReadoutSpec(BaseModel):
   work rather than fenced off. A readout that parses a large trace
   is a legitimate readout; one that hangs forever is not."""
 
+  @property
+  def source_sha256(self) -> str:
+    return hashlib.sha256(self.source.encode("utf-8")).hexdigest()
+
   def validated(self) -> ReadoutSpec:
     if not _NAME_RE.match(self.name):
       raise BadReadout(
         f"readout name {self.name!r} must match "
         f"[A-Za-z0-9][A-Za-z0-9._-]{{0,63}} — it is also a filename"
       )
-    if not _ENTRYPOINT_RE.match(self.entrypoint):
-      raise BadReadout(
-        f"entrypoint {self.entrypoint!r} must be 'module.path:callable'"
-      )
+    check_source(self.source, self.name)
     return self
 
 
@@ -132,9 +179,12 @@ class ReadoutValue(BaseModel):
 
   source_sha256: str = ""
   image_id: str = ""
-  """What computed it. The name is the column's identity, but these
-  two pin the exact code — so a number can be traced back without
-  trusting that the name never got reused."""
+  readout_sha256: str = ""
+  """What computed it. The name is the column's identity; these pin
+  the exact code, so a number can be traced back without trusting
+  that the name was never reused. `readout_sha256` is the registered
+  function itself — finer than the archive hash, which moves with any
+  unrelated commit."""
 
 
 class ReadoutAggregate(BaseModel):
@@ -261,6 +311,30 @@ def request_path(home_root: Path) -> Path:
   return readout_dir(home_root) / REQUEST_FILENAME
 
 
+def source_path(home_root: Path, name: str, sha256: str) -> Path:
+  """Where a registered function is kept as a RECORD, beside the
+  values it produced.
+
+  The registry under `--data-dir` is the authority; this is the
+  durable copy on shared storage, the same relationship `.source.tar`
+  has with git. The hash is in the filename, so a redefinition adds
+  a file instead of overwriting one — the code that made an old
+  number stays readable."""
+  return (
+    readout_dir(home_root) / SOURCES_DIRNAME / f"{name}.{sha256[:12]}.py"
+  )
+
+
+def record_source(home_root: Path, name: str, source: str) -> Path:
+  path = source_path(
+    home_root, name, hashlib.sha256(source.encode("utf-8")).hexdigest()
+  )
+  if not path.exists():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+  return path
+
+
 def read_values(home_root: Path, name: str) -> dict[str, ReadoutValue]:
   """`{instance_id: value}`, last line winning.
 
@@ -312,6 +386,45 @@ def write_request(home_root: Path, request: dict[str, Any]) -> Path:
   tmp.write_text(json.dumps(request, indent=2, default=str), "utf-8")
   tmp.replace(path)
   return path
+
+
+# The dispatcher's OWN protocol code, mounted from the launcher.
+#
+# `image_id` is pinned so the WORK is reproducible, and that is
+# right — but these containers do not run the work. They run
+# `dispatcher_sdk.readout` / `.aggregate`, which are the dispatcher's
+# side of a protocol it also implements. Taking those from whatever
+# the research image happened to bake means a job pinned to a
+# months-old image can never be read by a newer dispatcher — which
+# would undo the one capability source registration exists for.
+# Measured the hard way: a stale baked SDK recorded six errors for a
+# readout that was perfectly fine.
+#
+# The worker's container keeps the baked copy: that one IS the work,
+# and pinning it with the image is the point.
+SDK_MOUNT = "/dispatcher/sdk"
+
+
+def sdk_dir() -> Path:
+  import dispatcher_sdk
+
+  return Path(dispatcher_sdk.__file__).resolve().parent.parent
+
+
+def protocol_command(module: str) -> list[str]:
+  """Run `module` with the mounted SDK ahead of the image's own.
+
+  A shell wrapper because `docker run -e PYTHONPATH=…` REPLACES the
+  image's value rather than prepending to it, and the image's own
+  entry has to survive. `bootstrap` then prepends the job's unpacked
+  source, so resolution ends up: job code, live SDK, image."""
+  return [
+    "sh",
+    "-c",
+    f"PYTHONPATH={SDK_MOUNT}${{PYTHONPATH:+:$PYTHONPATH}} "
+    f"exec python -m dispatcher_sdk.bootstrap "
+    f"-- python -m {module}",
+  ]
 
 
 def parse_result_lines(stdout: str) -> list[ReadoutValue]:

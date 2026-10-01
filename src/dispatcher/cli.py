@@ -4,6 +4,11 @@ Example:
   dispatcher serve --self-host ml10 --data-dir ~/dispatcher-data \\
     --host ml10=8 --host ml9=8 --max-concurrent 12 --port 7200
 
+`dispatcher readout <arena> --add reward --file readouts.py`
+registers a readout's CODE (not a path to it), so it is computable
+against runs that finished before it existed. `--columns --file …`
+registers the arena's column function the same way.
+
 `dispatcher readout <arena|job_id>` fills in readout values the
 live path never produced — a readout registered after a run
 finished, a redefinition, an instance that died before scoring
@@ -65,8 +70,26 @@ def main(argv: list[str] | None = None) -> int:
   monitor.add_argument("--refresh-per-second", type=int, default=4)
   readout = sub.add_parser(
     "readout",
-    help="compute readout values the live path did not produce",
+    help="register readouts from a file, or compute missing values",
   )
+  readout.add_argument(
+    "--add",
+    metavar="NAME",
+    default=None,
+    help="register a per-instance readout named NAME (needs --file)",
+  )
+  readout.add_argument(
+    "--columns",
+    action="store_true",
+    help="register the arena's columns(job) function (needs --file)",
+  )
+  readout.add_argument(
+    "--file",
+    default=None,
+    metavar="PY",
+    help="the python file whose text is registered",
+  )
+  readout.add_argument("--timeout-sec", type=float, default=600.0)
   readout.add_argument(
     "target",
     metavar="ARENA|JOB_ID",
@@ -88,8 +111,26 @@ def main(argv: list[str] | None = None) -> int:
   args = ap.parse_args(argv)
 
   if args.cmd == "readout":
-    from dispatcher.tools.readout_cli import run_readout
+    from dispatcher.tools.readout_cli import (
+      add_readout,
+      run_readout,
+      set_columns,
+    )
 
+    if args.add or args.columns:
+      if not args.file:
+        ap.error("--add/--columns need --file")
+      if args.add:
+        return add_readout(
+          server=args.server,
+          arena=args.target,
+          file=args.file,
+          name=args.add,
+          timeout_sec=args.timeout_sec,
+        )
+      return set_columns(
+        server=args.server, arena=args.target, file=args.file
+      )
     return run_readout(
       server=args.server,
       target=args.target,

@@ -937,8 +937,8 @@ def list_readouts(st: ServerState) -> dict[str, Any]:
 async def set_columns(
   st: ServerState, payload: dict[str, Any]
 ) -> dict[str, Any]:
-  """Point an arena at its `columns` function (empty entrypoint
-  removes it).
+  """Register an arena's `columns` function (empty source removes
+  it).
 
   Unlike a readout, this takes effect on the next READ — the
   function runs in a resident process over values already on disk,
@@ -949,13 +949,11 @@ async def set_columns(
   arena = normalize_arena(payload.get("arena", ""))
   if not arena:
     raise Invalid("arena is required")
-  entrypoint = str(payload.get("columns") or "").strip()
-  if entrypoint and ":" not in entrypoint:
-    raise Invalid(
-      f"columns entrypoint {entrypoint!r} must be 'module.path:callable'"
-    )
+  source = str(payload.get("source") or payload.get("columns") or "")
   try:
-    service.registry.set_columns(arena, entrypoint)
+    service.registry.set_columns(arena, source)
+  except BadReadout as exc:
+    raise Invalid(str(exc)) from exc
   except OSError as exc:
     raise Internal(f"readout registry write failed: {exc}") from exc
   members = arena_members(st.scheduler, arena)
@@ -963,7 +961,9 @@ async def set_columns(
   await service.refresh(members)
   return {
     "arena": arena,
-    "columns": entrypoint,
+    "columns_sha256": service.registry.snapshot()
+    .get(arena, {})
+    .get("columns_sha256", ""),
     "members": members,
     "errors": {
       aid: err
@@ -998,6 +998,8 @@ async def register_readout(
     spec = ReadoutSpec.model_validate(
       {k: v for k, v in payload.items() if k != "arena"}
     )
+  except BadReadout as exc:
+    raise Invalid(str(exc)) from exc
   except Exception as exc:
     raise Invalid(f"bad readout spec: {exc}") from exc
   try:
