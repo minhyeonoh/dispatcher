@@ -22,6 +22,7 @@ from dispatcher.api.settings import (
 )
 from dispatcher.api.wire import (
   RetryDoneErrRequest,
+  archive_payload_bytes,
   arena_members,
   full_job_view,
   job_counts,
@@ -760,7 +761,7 @@ async def archive_job(
     view = full_job_view(st.scheduler, job_id, st.readout_fn)
   except KeyError as exc:
     raise NotFound(f"job {job_id!r} not found") from exc
-  payload_bytes = view.model_dump_json().encode("utf-8")
+  payload_bytes = archive_payload_bytes(view)
   now = clock_fn()
   try:
     st.scheduler.archive_job(

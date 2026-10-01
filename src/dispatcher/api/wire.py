@@ -47,7 +47,45 @@ class JobCountsOut(BaseModel):
   total: int
 
 
-class JobSummaryOut(BaseModel):
+class ReadoutCellOut(BaseModel):
+  """The readout half of a job row — the ONLY part that can change
+  after a job is archived.
+
+  Split out so both sides of the archive cache derive from one
+  definition: the frozen blob excludes exactly these fields, and the
+  serve path splices exactly these back on. A hand-kept list on each
+  side would eventually disagree, and the symptom is a row whose
+  numbers change when you click it."""
+
+  # Derived columns: `{readout name: roll-up}` over this job's
+  # finished instances. Empty when the job's arena registers none.
+  readouts: dict[str, ReadoutAggregate] = Field(default_factory=dict)
+  # Finished (instance, readout) pairs with no value yet. 0 = caught
+  # up; null = this job's values aren't loaded, so the honest answer
+  # is unknown.
+  readout_lag: int | None = None
+  # Operator-defined columns (an arena's `columns` function). The
+  # table shows these when present; `readouts` above stays as the
+  # facts (n / errors / nulls) either way.
+  columns: dict[str, Any] = Field(default_factory=dict)
+  columns_stale: bool = False
+  columns_error: str = ""
+
+  @classmethod
+  def of(cls, cell: ReadoutJobSummary) -> ReadoutCellOut:
+    return cls(
+      readouts=cell.aggregates,
+      readout_lag=cell.lag,
+      columns=cell.columns,
+      columns_stale=cell.columns_stale,
+      columns_error=cell.columns_error,
+    )
+
+
+READOUT_FIELDS: set[str] = set(ReadoutCellOut.model_fields)
+
+
+class JobSummaryOut(ReadoutCellOut):
   job_id: str
   label: str
   weight: int
@@ -68,20 +106,6 @@ class JobSummaryOut(BaseModel):
   source_sha256: str = ""
   archived_at: datetime | None = None
   archive_kind: str = ""
-  # Derived columns: `{readout name: roll-up}` over this job's
-  # finished instances. Empty when the job's arena registers none.
-  readouts: dict[str, ReadoutAggregate] = Field(default_factory=dict)
-  # Finished (instance, readout) pairs with no value yet. 0 = caught
-  # up; null = this job's values aren't loaded, so the honest answer
-  # is unknown. A growing number means computation is losing the
-  # race against completion.
-  readout_lag: int | None = None
-  # Operator-defined columns (an arena's `columns` function). The
-  # table shows these when present; `readouts` above stays as the
-  # facts (n / errors / nulls) either way.
-  columns: dict[str, Any] = Field(default_factory=dict)
-  columns_stale: bool = False
-  columns_error: str = ""
 
 
 class InstanceViewOut(BaseModel):
@@ -179,11 +203,7 @@ def snapshot_job(
     source_sha256=state.source_sha256,
     archived_at=state.archived_at,
     archive_kind=state.archive_kind or "",
-    readouts=cell.aggregates,
-    readout_lag=cell.lag,
-    columns=cell.columns,
-    columns_stale=cell.columns_stale,
-    columns_error=cell.columns_error,
+    **ReadoutCellOut.of(cell).model_dump(),
   )
 
 
@@ -306,13 +326,42 @@ def full_job_view(
   )
 
 
+def archive_payload_bytes(view: FullJobOut) -> bytes:
+  """What `archive_job` freezes: everything EXCEPT the readout cell.
+
+  Those fields are the only part of a job row that still moves after
+  archiving — the retroactive pass can add values, and a `columns`
+  function can be registered or rewritten at any time. Freezing them
+  made the jobs list (projected live) and the detail endpoint (served
+  from the blob) show different numbers for the same job."""
+  return view.model_dump_json(exclude=READOUT_FIELDS).encode("utf-8")
+
+
+def splice_readout_cell(blob: bytes, cell: ReadoutJobSummary) -> bytes:
+  """Put today's readout cell onto a frozen blob.
+
+  Surgery rather than parse-and-redump: the blob exists so the hot
+  path never re-serialises a job's instances, and doing that to
+  attach five small fields would undo the whole point. Both ends are
+  ours, so the shape is known — a JSON object, so there is one
+  closing brace to insert before."""
+  stripped = blob.rstrip()
+  if not stripped.endswith(b"}") or stripped == b"{}":
+    return blob  # pragma: no cover — a FullJobOut is never empty
+  tail = ReadoutCellOut.of(cell).model_dump_json().encode("utf-8")
+  return stripped[:-1] + b"," + tail[1:]
+
+
 def full_job_bytes(
   scheduler: Scheduler,
   job_id: str,
   readouts: ReadoutSummaryFn | None = None,
 ) -> bytes:
   if scheduler.is_archived(job_id):
-    return scheduler.archived_bytes(job_id)
+    cell = (
+      readouts(job_id) if readouts is not None else ReadoutJobSummary()
+    )
+    return splice_readout_cell(scheduler.archived_bytes(job_id), cell)
   return (
     full_job_view(scheduler, job_id, readouts)
     .model_dump_json()

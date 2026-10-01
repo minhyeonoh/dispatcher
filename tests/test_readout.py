@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from dispatcher.api.wire import snapshot_job
+from dispatcher.api.wire import archive_payload_bytes, snapshot_job
 from dispatcher.core.models import HostSettings
 from dispatcher.core.outcome import read_completion
 from dispatcher.core.readout import (
@@ -732,7 +732,7 @@ async def test_lag_is_unknown_until_values_are_loaded(tmp_path: Path):
   scheduler, service, _runner, job = mk_world(tmp_path, tasks=["t1"])
   finish(scheduler, job.job_id, "t1")
   assert service.summary(job.job_id).lag is None
-  await service.load_live()
+  await service.load_all()
   assert service.summary(job.job_id).lag == 1
 
 
@@ -1457,10 +1457,71 @@ async def test_columns_recompute_after_a_restart(tmp_path: Path):
       pool=pool,
     )
     assert reborn.summary(job.job_id).columns == {}
-    await reborn.load_live()
+    await reborn.load_all()
     await reborn.refresh([job.job_id])
     assert reborn.summary(job.job_id).columns["reward_median"] == (
       pytest.approx(0.3)
     )
   finally:
     await pool.close()
+
+
+async def test_an_archived_job_reports_todays_columns(tmp_path: Path):
+  """The archive blob caches a job's dispatch record, which never
+  changes. Its readout cell DOES — a `columns` function can be
+  rewritten long after archiving. Freezing the cell made the jobs
+  list (projected live) and the detail endpoint (served from the
+  blob) show different numbers for the same job, which is a row whose
+  values change when you click it."""
+  from dispatcher.api.wire import full_job_bytes, full_job_view
+
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    await service.refresh([job.job_id])
+    scheduler.archive_job(
+      job.job_id,
+      at=job.submitted_at,
+      kind="manual",
+      payload_bytes=archive_payload_bytes(
+        full_job_view(scheduler, job.job_id, service.summary)
+      ),
+    )
+    first = json.loads(
+      full_job_bytes(scheduler, job.job_id, service.summary)
+    )
+    assert "reward_median" in first["columns"]
+
+    # Rewrite what the columns mean, with the job already archived.
+    service.registry.set_columns(
+      "bench/v7",
+      "def columns(job):\n"
+      "  return {'only_this': len(job.columns['reward'])}\n",
+    )
+    service.invalidate([job.job_id])
+    await service.refresh([job.job_id])
+
+    again = json.loads(
+      full_job_bytes(scheduler, job.job_id, service.summary)
+    )
+    assert sorted(again["columns"]) == ["only_this"]
+    # And the frozen half came through the splice untouched.
+    assert again["job_id"] == first["job_id"]
+    assert again["done_ok"] == first["done_ok"]
+    assert again["counts"] == first["counts"]
+  finally:
+    await pool.close()
+
+
+def test_the_frozen_blob_carries_no_readout_cell(tmp_path: Path):
+  """If it did, the two halves could disagree again."""
+  from dispatcher.api.wire import (
+    READOUT_FIELDS,
+    full_job_view,
+  )
+
+  scheduler, _service, _runner, job = mk_world(tmp_path, tasks=["t1"])
+  finish(scheduler, job.job_id, "t1")
+  frozen = json.loads(
+    archive_payload_bytes(full_job_view(scheduler, job.job_id))
+  )
+  assert READOUT_FIELDS and not (READOUT_FIELDS & set(frozen))

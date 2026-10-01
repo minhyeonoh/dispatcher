@@ -426,7 +426,7 @@ class ReadoutService:
     # them. Marking them loaded without reading would hide values an
     # earlier dispatcher generation wrote, and the job row would
     # report a lag that the retroactive pass then found nothing to
-    # fix. In steady state `load_live` already did this at boot.
+    # fix. In steady state `load_all` already did this at boot.
     await self._ensure_loaded(job_id, state, specs)
     # Keep a copy of the registered code beside the values it made.
     # The registry under --data-dir is the authority; this is the
@@ -797,16 +797,14 @@ class ReadoutService:
       # would stay blank forever.
       self._dirty.add(job_id)
 
-  async def load_live(self) -> None:
-    """Boot: pull values for live jobs that have readouts, so the
-    first jobs table carries columns and a truthful lag."""
-    await self.load_many(
-      [
-        job_id
-        for job_id in self._scheduler.iter_job_ids()
-        if not self._scheduler.is_archived(job_id)
-      ]
-    )
+  async def load_all(self) -> None:
+    """Boot: pull values for every job that has readouts, archived
+    included.
+
+    Archived is where a finished experiment's numbers are, and an
+    unloaded job reports empty columns — which on a table reads as
+    "this arena defines none" rather than "not read yet"."""
+    await self.load_many(list(self._scheduler.iter_job_ids()))
 
   def summary(self, job_id: str) -> ReadoutJobSummary:
     """The job row's readout cell. Pure projection over what is
@@ -841,7 +839,14 @@ class ReadoutService:
       # errors / nulls / lag are facts the operator should not have
       # to reproduce, and a column function is free to ignore them.
       columns=dict(self._columns.get(job_id, {})),
-      columns_stale=job_id in self._dirty,
+      # Stale covers both "the input moved" and "never computed":
+      # either way what is on screen is not the answer. Empty AND
+      # stale is the second case, which is what stops a blank cell
+      # from reading as "this arena defines no columns".
+      columns_stale=(
+        bool(self._registry.columns_source(state.arena))
+        and (job_id in self._dirty or job_id not in self._columns)
+      ),
       columns_error=self._column_error.get(job_id, ""),
     )
 

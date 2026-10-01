@@ -48,9 +48,11 @@ from dispatcher.api.wire import (
   JobSummaryOut,
   RetryDoneErrRequest,
   StateOut,
+  archive_payload_bytes,
   arena_members,
   build_full_jobs_body,
   cluster_snapshot,
+  full_job_bytes,
   full_job_view,
   snapshot_arena,
   snapshot_arenas,
@@ -178,7 +180,7 @@ def create_app(
           job_id,
           at=state.archived_at,
           kind=state.archive_kind or "manual",
-          payload_bytes=view.model_dump_json().encode("utf-8"),
+          payload_bytes=archive_payload_bytes(view),
         )
       except Exception:
         logger.exception("readout: archive refresh failed job=%s", job_id)
@@ -268,7 +270,7 @@ def create_app(
       )
     # Values for live jobs, so the first jobs table already carries
     # readout columns and a truthful lag instead of nulls.
-    await readouts.load_live()
+    await readouts.load_all()
     metrics_file = config.data_dir / HOST_METRICS_FILENAME
     initial_ring = load_ring(
       metrics_file, settings.host_autotune.ring_buffer_size
@@ -503,12 +505,16 @@ def create_app(
       raise HTTPException(
         status_code=404, detail=f"job {job_id!r} not found"
       )
+    await _refresh_columns(st, [job_id])
     if st.scheduler.is_archived(job_id):
+      # Through full_job_bytes, not archived_bytes directly: that is
+      # where the readout cell is spliced onto the frozen record, and
+      # reaching past it is how the list and this page came to show
+      # different numbers for the same job.
       return Response(
-        content=st.scheduler.archived_bytes(job_id),
+        content=full_job_bytes(st.scheduler, job_id, st.readout_fn),
         media_type="application/json",
       )
-    await _refresh_columns(st, [job_id])
     return full_job_view(st.scheduler, job_id, st.readout_fn)
 
   @api.post("/jobs")

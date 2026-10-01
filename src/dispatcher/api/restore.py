@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from dispatcher.api.wire import full_job_view
+from dispatcher.api.wire import archive_payload_bytes, full_job_view
 from dispatcher.core.event_log import (
   ReplayError,
   find_event_logs,
@@ -146,7 +146,7 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
           job.job_id,
           at=job.archived_at,
           kind=job.archive_kind or "manual",
-          payload_bytes=view.model_dump_json().encode("utf-8"),
+          payload_bytes=archive_payload_bytes(view),
         )
       except NotArchivableError as exc:
         logger.warning(
