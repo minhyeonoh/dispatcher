@@ -14,6 +14,14 @@ live path never produced — a readout registered after a run
 finished, a redefinition, an instance that died before scoring
 itself. A command and not a background loop on purpose: it starts
 containers, and that is an operator's decision to make and watch.
+
+`dispatcher readouts <job_id>` dumps those values as JSON, and
+`dispatcher path <job_id> <instance_id>` prints where to read one
+instance's files. Both exist so an analysis script never spells out
+a job's layout: the same two commands keep answering correctly once
+instance homes are packed, and `core.pack` is the only place that
+knows whether a pack is mounted. Note the split — values come from
+the consolidated column index, files come from the instance home.
 """
 
 from __future__ import annotations
@@ -108,6 +116,49 @@ def main(argv: list[str] | None = None) -> int:
   )
   readout.add_argument("--server", default="http://127.0.0.1:7200")
 
+  readouts = sub.add_parser(
+    "readouts",
+    help="dump a job's readout values as JSON",
+  )
+  readouts.add_argument("job_id", metavar="JOB_ID")
+  readouts.add_argument(
+    "--name",
+    action="append",
+    default=[],
+    metavar="READOUT",
+    help="only this readout; repeatable (default: all)",
+  )
+  readouts.add_argument(
+    "--full",
+    action="store_true",
+    help=(
+      "whole records (ok, error, at, and the hashes that say which "
+      "code produced the number) instead of bare values"
+    ),
+  )
+  readouts.add_argument("--server", default="http://127.0.0.1:7200")
+
+  path_cmd = sub.add_parser(
+    "path",
+    help="print where to read one instance home",
+  )
+  path_cmd.add_argument("job_id", metavar="JOB_ID")
+  path_cmd.add_argument(
+    "ident",
+    metavar="TASK_ID|INSTANCE_ID",
+    help=(
+      "a task id (what the sweep lists, kept across retries) or an "
+      "instance id (the directory name); both resolve"
+    ),
+  )
+  path_cmd.add_argument(
+    "--mount-base",
+    type=Path,
+    default=None,
+    help="override where this node mounts packs",
+  )
+  path_cmd.add_argument("--server", default="http://127.0.0.1:7200")
+
   args = ap.parse_args(argv)
 
   if args.cmd == "readout":
@@ -135,6 +186,26 @@ def main(argv: list[str] | None = None) -> int:
       server=args.server,
       target=args.target,
       names=list(args.name),
+    )
+
+  if args.cmd == "readouts":
+    from dispatcher.tools.pack_cli import dump_readouts
+
+    return dump_readouts(
+      server=args.server,
+      job_id=args.job_id,
+      names=list(args.name),
+      full=args.full,
+    )
+
+  if args.cmd == "path":
+    from dispatcher.tools.pack_cli import print_path
+
+    return print_path(
+      server=args.server,
+      job_id=args.job_id,
+      ident=args.ident,
+      mount_base=args.mount_base,
     )
 
   if args.cmd == "monitor":
