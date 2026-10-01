@@ -92,6 +92,7 @@ from dispatcher.services.notify import (
   telegram_bot_token_from_env,
 )
 from dispatcher.services.orphan_gc import OrphanGC, gc_loop
+from dispatcher.services.packer import Packer
 
 if TYPE_CHECKING:
   from collections.abc import Awaitable, Callable
@@ -207,6 +208,11 @@ def create_app(
       pool=aggregate_pool,
     )
     docker_events: DockerEventStreamManager | None = None
+    packer = Packer(
+      scheduler=scheduler,
+      settings=settings.pack,
+      self_host=config.self_host,
+    )
     runtime = DispatcherRuntime(
       scheduler,
       self_host=config.self_host,
@@ -218,6 +224,7 @@ def create_app(
         s.model_dump(mode="json") for s in readouts.specs_for_job(aid)
       ],
       record_readouts=readouts.record,
+      offer_pack=packer.offer,
     )
     if config.use_docker_events:
       docker_events = DockerEventStreamManager(
@@ -341,6 +348,11 @@ def create_app(
         ),
       ),
       ("notify", notify_manager.run),
+      # Queue-driven, not periodic: it blocks on completions the
+      # terminal pipeline hands it and batches whatever arrived while
+      # the last append ran. Supervised like the rest because it is a
+      # task for the server's lifetime, which is all this list means.
+      ("packer", packer.run),
       # No readout loop. The live path is the worker scoring itself,
       # and the retroactive path is driven by its own request — so
       # nothing about readouts runs in the background.

@@ -86,6 +86,10 @@ if TYPE_CHECKING:
   RecordReadouts = Callable[
     [str, str, str, list["ReadoutValue"]], Awaitable[None]
   ]
+  OfferPack = Callable[[str, str, str], None]
+  """(job_id, instance_id, host) → nothing, synchronously. Not an
+  awaitable on purpose: this fires on the terminal path, so it may
+  only enqueue."""
 
 
 logger = logging.getLogger(__name__)
@@ -148,6 +152,7 @@ class DispatcherRuntime:
     on_instance_completed: JobHook | None = None,
     readout_specs: ReadoutSpecs | None = None,
     record_readouts: RecordReadouts | None = None,
+    offer_pack: OfferPack | None = None,
     docker_event_manager: DockerEventStreamManager | None = None,
   ) -> None:
     self._sched = scheduler
@@ -165,6 +170,10 @@ class DispatcherRuntime:
     # tells the instance what to run and files the answer.
     self._readout_specs = readout_specs
     self._record_readouts = record_readouts
+    # Packing. Sync and fire-and-forget: the instance's files stop
+    # changing at exactly this transition, and noting that must not
+    # add a wait to the pipeline that noticed it.
+    self._offer_pack = offer_pack
     self._docker_events = docker_event_manager
     # (image_id, host) pairs verified present. Restart clears it;
     # re-verification is one cheap inspect per pair.
@@ -682,6 +691,17 @@ class DispatcherRuntime:
           aid,
           task_id,
         )
+    if self._offer_pack is not None and to_state in (
+      "done_ok",
+      "done_err",
+    ):
+      # The one moment this instance's files are known to be final and
+      # known to be hot in its host's page cache. Enqueue only — the
+      # append happens in the packer's own task, so nothing here waits
+      # on ssh, and `offer` is documented never to raise.
+      moved = self._sched.instance_view_in(aid, to_state, task_id)
+      if moved is not None and moved.host:
+        self._offer_pack(aid, instance_id, moved.host)
 
   # ── resolver ───────────────────────────────────────────────
 

@@ -66,6 +66,10 @@ from dispatcher.services.orphan_gc import (
 from dispatcher.services.orphan_gc import (
   apply_patch as _apply_gc,
 )
+from dispatcher.services.packer import PackPatch, PackSettings
+from dispatcher.services.packer import (
+  apply_patch as _apply_pack,
+)
 
 if TYPE_CHECKING:
   from pathlib import Path
@@ -93,6 +97,7 @@ class Settings(BaseModel):
   notify: NotifySettings = Field(default_factory=NotifySettings)
   archive: ArchiveSettings = Field(default_factory=ArchiveSettings)
   readouts: ReadoutSettings = Field(default_factory=ReadoutSettings)
+  pack: PackSettings = Field(default_factory=PackSettings)
 
 
 class HostSettingsPatch(BaseModel):
@@ -119,6 +124,7 @@ class SettingsPatch(BaseModel):
   notify: NotifyPatch | None = None
   archive: ArchivePatch | None = None
   readouts: ReadoutPatch | None = None
+  pack: PackPatch | None = None
 
 
 def apply_patch_pure(settings: Settings, patch: SettingsPatch) -> None:
@@ -141,6 +147,8 @@ def apply_patch_pure(settings: Settings, patch: SettingsPatch) -> None:
     _apply_archive(settings.archive, patch.archive)
   if patch.readouts is not None:
     _apply_readouts(settings.readouts, patch.readouts)
+  if patch.pack is not None:
+    _apply_pack(settings.pack, patch.pack)
 
 
 # ── persistence ──────────────────────────────────────────────────
