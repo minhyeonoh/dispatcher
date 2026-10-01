@@ -44,6 +44,7 @@ from dispatcher.core.pack import (
   job_mount_dir,
   mount_cmd,
   mount_dir,
+  mounted_hosts,
   pack_dir,
   pack_path,
   pack_shell_cmd,
@@ -217,6 +218,8 @@ def print_path(
       job_id=job_id,
       host="",
       mount_base=mount_base,
+      unpacked=unpacked_from_tree(home_root),
+      exact=False,
       out=out,
     )
   job = _get(server, f"/api/jobs/{job_id}")
@@ -227,14 +230,77 @@ def print_path(
     print(f"job {job_id!r} has no home_root", file=sys.stderr)
     return 1
   instance_id, host = resolve_instance(job, ident)
+  lag = job.get("pack_lag")
   return _emit_path(
     home_root,
     instance_id,
     job_id=job_id,
     host=host,
     mount_base=mount_base,
+    unpacked=lag if isinstance(lag, int) else None,
+    exact=isinstance(lag, int),
     out=out,
   )
+
+
+def unpacked_from_tree(home_root: Path) -> int:
+  """Instance homes on disk that no archive holds, counted locally.
+
+  The server's `pack_lag` is the better answer — it knows which
+  instances are terminal, and an unfinished one is not owed a pack. This
+  is the offline stand-in: every directory that looks like an instance
+  home, minus everything the archives hold. It can overcount by however
+  many instances are still running, which is why the prose says "look
+  like"."""
+  try:
+    on_disk = {
+      p.name
+      for p in home_root.iterdir()
+      if p.is_dir() and not p.name.startswith(".")
+    }
+  except OSError:
+    return 0
+  held: set[str] = set()
+  for host in packed_hosts(home_root):
+    held |= packed_instances(pack_path(home_root, host))
+  return len(on_disk - held)
+
+
+def pack_advice(
+  job_id: str,
+  *,
+  home_root: Path,
+  mount_base: Path | None,
+  unpacked: int | None,
+  exact: bool,
+) -> list[str]:
+  """Prose for the bottom of a read command's output.
+
+  Two different things are worth saying and they are independent: that
+  reads here are going over NFS because nothing is mounted, and that
+  some of this job is not in an archive at all. Saying only the first
+  would send someone to `mount` for instances no archive contains."""
+  lines: list[str] = []
+  if packed_hosts(home_root) and not mounted_hosts(
+    job_id, base=mount_base
+  ):
+    lines.append(
+      f"This job has archives, but none are mounted here, so reads "
+      f"are going over NFS. `dispatcher mount {job_id}` attaches "
+      f"them."
+    )
+  if unpacked:
+    what = (
+      f"{unpacked} finished instance(s)"
+      if exact
+      else f"{unpacked} director(y/ies) that look like instance homes"
+    )
+    lines.append(
+      f"{what} of this job are not in any archive, so they will be "
+      f"read over NFS however this is mounted. "
+      f"`dispatcher pack {job_id}` adds them."
+    )
+  return lines
 
 
 def _emit_path(
@@ -244,9 +310,11 @@ def _emit_path(
   job_id: str,
   host: str,
   mount_base: Path | None,
+  unpacked: int | None,
+  exact: bool,
   out: Any,
 ) -> int:
-  path, packed = read_home_for(
+  path, _packed = read_home_for(
     home_root,
     instance_id,
     job_id=job_id,
@@ -254,13 +322,16 @@ def _emit_path(
     mount_base=mount_base,
   )
   print(path, file=out)
-  if not packed and packed_hosts(home_root):
-    where = job_mount_dir(job_id, base=mount_base)
-    print(
-      f"note: this job has packs but none are mounted under {where} — "
-      f"`dispatcher mount {job_id}` reads them instead",
-      file=sys.stderr,
-    )
+  # Stdout stays a bare path so `$(dispatcher path …)` works; the
+  # advice goes to stderr, where it cannot corrupt the substitution.
+  for line in pack_advice(
+    job_id,
+    home_root=home_root,
+    mount_base=mount_base,
+    unpacked=unpacked,
+    exact=exact,
+  ):
+    print(line, file=sys.stderr)
   return 0
 
 
@@ -438,11 +509,16 @@ def do_mount(
   if binary is None:
     print(_INSTALL_HINT, file=sys.stderr)
     return 1
+  lag: int | None = None
+  exact = False
   if home_root is None:
     job = _get(server, f"/api/jobs/{job_id}")
     if job is None:
       return 1
     home_root = Path(str(job.get("home_root") or ""))
+    raw = job.get("pack_lag")
+    if isinstance(raw, int):
+      lag, exact = raw, True
   if not home_root.is_absolute():
     print(f"job {job_id!r} has no home_root", file=sys.stderr)
     return 1
@@ -453,8 +529,11 @@ def do_mount(
   chosen = (
     [h for h in available if h in set(hosts)] if hosts else available
   )
+  if lag is None:
+    lag = unpacked_from_tree(home_root)
   if not chosen:
     print(f"no packs under {home_root / '.packs'}", file=out)
+    _advise(job_id, home_root, mount_base, lag, exact, out)
     return 0
   failures = 0
   for host in chosen:
@@ -471,7 +550,32 @@ def do_mount(
       print(f"{host:6s} FAILED {tail}", file=out)
     else:
       print(f"{host:6s} {point}", file=out)
+  # After the report, not before: what the mounts do NOT cover is the
+  # thing that decides whether a bulk read is about to be slow, and it
+  # is only worth reading once the mounts themselves are listed.
+  _advise(job_id, home_root, mount_base, lag, exact, out)
   return 1 if failures else 0
+
+
+def _advise(
+  job_id: str,
+  home_root: Path,
+  mount_base: Path | None,
+  unpacked: int | None,
+  exact: bool,
+  out: Any,
+) -> None:
+  lines = pack_advice(
+    job_id,
+    home_root=home_root,
+    mount_base=mount_base,
+    unpacked=unpacked,
+    exact=exact,
+  )
+  if lines:
+    print(file=out)
+  for line in lines:
+    print(line, file=out)
 
 
 def do_umount(

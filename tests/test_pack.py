@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 
 from dispatcher.core.pack import (
   MKSQUASHFS_OPTS,
@@ -31,9 +32,11 @@ from dispatcher.core.pack import (
   umount_cmd,
 )
 from dispatcher.tools.pack_cli import (
+  pack_advice,
   packable_by_host,
   resolve_instance,
   shape_values,
+  unpacked_from_tree,
 )
 
 
@@ -395,3 +398,108 @@ def test_instance_from_tree_ignores_files_and_misses(tmp_path):
   (tmp_path / "task-001__notadir").write_text("x")
   assert instance_from_tree(tmp_path, "task-001") == []
   assert instance_from_tree(tmp_path, "nope") == []
+
+
+# ── the prose a read command adds ────────────────────────────────
+
+
+def _tree(tmp_path, instances, packed=()):
+  """A home root with these instance dirs, and an archive naming
+  `packed` — a stub archive is enough: the advice only asks the
+  archives what they HOLD, which `packed_instances` answers."""
+  for name in instances:
+    (tmp_path / name).mkdir(parents=True, exist_ok=True)
+  if packed:
+    (tmp_path / PACK_DIRNAME).mkdir(exist_ok=True)
+    cmd = pack_shell_cmd(tmp_path, "ml9", list(packed), processors=1)
+    subprocess.run(["bash", "-c", cmd], check=True, capture_output=True)
+  return tmp_path
+
+
+def test_unpacked_from_tree_counts_what_no_archive_holds(tmp_path):
+  _tree(tmp_path, ["i-1", "i-2", "i-3"], packed=["i-1"])
+  assert unpacked_from_tree(tmp_path) == 2
+
+
+def test_unpacked_from_tree_skips_the_sidecar_dirs(tmp_path):
+  # `.packs` and `.readouts` are not instances.
+  _tree(tmp_path, ["i-1"], packed=["i-1"])
+  (tmp_path / ".readouts").mkdir(exist_ok=True)
+  assert unpacked_from_tree(tmp_path) == 0
+
+
+def test_advice_is_silent_when_there_is_nothing_to_say(tmp_path):
+  _tree(tmp_path, ["i-1"], packed=["i-1"])
+  (mount_dir("job-a", "ml9", base=tmp_path / "m") / "i-1").mkdir(
+    parents=True
+  )
+  assert (
+    pack_advice(
+      "job-a",
+      home_root=tmp_path,
+      mount_base=tmp_path / "m",
+      unpacked=0,
+      exact=True,
+    )
+    == []
+  )
+
+
+def test_advice_names_mount_when_archives_are_not_attached(tmp_path):
+  _tree(tmp_path, ["i-1"], packed=["i-1"])
+  lines = pack_advice(
+    "job-a",
+    home_root=tmp_path,
+    mount_base=tmp_path / "m",
+    unpacked=0,
+    exact=True,
+  )
+  assert len(lines) == 1
+  assert "dispatcher mount job-a" in lines[0]
+
+
+def test_advice_names_pack_for_what_no_archive_holds(tmp_path):
+  # Independent of mounting: `mount` cannot help an instance that is
+  # in no archive, so saying only "mount" would send someone the wrong
+  # way.
+  _tree(tmp_path, ["i-1", "i-2"], packed=["i-1"])
+  (mount_dir("job-a", "ml9", base=tmp_path / "m") / "i-1").mkdir(
+    parents=True
+  )
+  lines = pack_advice(
+    "job-a",
+    home_root=tmp_path,
+    mount_base=tmp_path / "m",
+    unpacked=1,
+    exact=True,
+  )
+  assert len(lines) == 1
+  assert "dispatcher pack job-a" in lines[0]
+  assert "1 finished instance(s)" in lines[0]
+
+
+def test_advice_says_both_when_both_are_true(tmp_path):
+  _tree(tmp_path, ["i-1", "i-2"], packed=["i-1"])
+  lines = pack_advice(
+    "job-a",
+    home_root=tmp_path,
+    mount_base=tmp_path / "m",
+    unpacked=1,
+    exact=True,
+  )
+  assert len(lines) == 2
+
+
+def test_advice_hedges_when_the_count_came_from_the_tree(tmp_path):
+  # Offline there is no way to know which instances are terminal, so an
+  # unfinished one would be counted — the wording has to admit that.
+  _tree(tmp_path, ["i-1", "i-2"], packed=["i-1"])
+  lines = pack_advice(
+    "job-a",
+    home_root=tmp_path,
+    mount_base=tmp_path / "m",
+    unpacked=1,
+    exact=False,
+  )
+  assert "look like instance homes" in " ".join(lines)
+  assert "finished instance(s)" not in " ".join(lines)
