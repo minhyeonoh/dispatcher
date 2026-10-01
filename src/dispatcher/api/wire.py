@@ -70,9 +70,11 @@ class ReadoutCellOut(BaseModel):
   columns: dict[str, Any] = Field(default_factory=dict)
   columns_stale: bool = False
   columns_error: str = ""
-  # Which `columns` function produced them. Rows sharing this are
-  # comparable column-by-column; rows that differ are not, and the
-  # table has to say so rather than line them up under one header.
+  # Which `columns` function produced them, and where it is
+  # registered. Rows sharing these are comparable column-by-column;
+  # rows that differ are not, and a shared name gets prefixed with the
+  # arena (`appworld:solved`) rather than lined up under one header.
+  columns_source_arena: str = ""
   columns_source_sha256: str = ""
 
   @classmethod
@@ -83,6 +85,7 @@ class ReadoutCellOut(BaseModel):
       columns=cell.columns,
       columns_stale=cell.columns_stale,
       columns_error=cell.columns_error,
+      columns_source_arena=cell.columns_source_arena,
       columns_source_sha256=cell.columns_source_sha256,
     )
 

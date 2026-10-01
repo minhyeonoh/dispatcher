@@ -239,6 +239,15 @@ class ReadoutJobSummary(BaseModel):
   columns_error: str = ""
   """Why the last attempt failed, if it did."""
 
+  columns_source_arena: str = ""
+  """WHERE that function is registered — `appworld` for a job in
+  `appworld/v7` when only the root defines one.
+
+  This is what a table keys a column on, and what disambiguates a
+  colliding name (`appworld:solved` vs `bench:solved`). The node
+  rather than the hash, so editing a function in place does not look
+  like a new column and reset the operator's choices."""
+
   columns_source_sha256: str = ""
   """Hash of the `columns` function this job resolved to.
 

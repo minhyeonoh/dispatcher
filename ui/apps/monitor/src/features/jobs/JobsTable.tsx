@@ -20,7 +20,8 @@ import {
 } from "./columns";
 import { filterJobs, type JobFilter } from "./filter";
 import { JobsToolbar } from "./JobsToolbar";
-import { loadPrefs, savePrefs } from "./tablePrefs";
+import { collectOperatorColumns } from "./operatorColumns";
+import { loadPrefs, mergeVisibility, savePrefs } from "./tablePrefs";
 
 /** Nineteen columns means horizontal scrolling, and scrolling away
  * from the job name leaves rows unidentifiable — so the name column
@@ -48,9 +49,31 @@ export function JobsTable({
   tableId?: string;
 }) {
   const cluster = useLive((s) => s.cluster);
-  const columns = useMemo(() => jobColumns(cluster), [cluster]);
-  const defaults = useMemo(() => defaultVisibility(columns), [columns]);
   const rows = useMemo(() => filterJobs(jobs, filter), [jobs, filter]);
+
+  // Operator columns come from the rows, so they appear and vanish as
+  // the filter moves. Memoised on a digest of the (source, key) pairs
+  // rather than on `rows`: the data changes on every SSE frame and
+  // rebuilding the column defs each time would churn the table for
+  // nothing.
+  const operator = useMemo(() => collectOperatorColumns(rows), [rows]);
+  const operatorKey = operator.columns
+    .map((c) => `${c.source}/${c.key}/${c.label}/${c.numeric}`)
+    .join("|");
+  const stableOperator = useMemo(
+    () => operator,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [operatorKey, operator.multiSource],
+  );
+
+  const columns = useMemo(
+    () => jobColumns(cluster, stableOperator),
+    [cluster, stableOperator],
+  );
+  const defaults = useMemo(
+    () => defaultVisibility(columns, stableOperator),
+    [columns, stableOperator],
+  );
 
   // Read once — later renders must not clobber the operator's edits.
   const [initial] = useState(() => loadPrefs(tableId, defaults));
@@ -58,6 +81,21 @@ export function JobsTable({
     initial.visibility,
   );
   const [sorting, setSorting] = useState<SortingState>(initial.sorting);
+
+  // Operator columns can appear after the first render (a readout
+  // lands, or the filter widens). TanStack treats an id missing from
+  // the visibility record as VISIBLE, so a new column would show up
+  // regardless of its default — the same merge that runs once at load
+  // has to run again whenever the column set changes.
+  useEffect(() => {
+    setVisibility((prev) => {
+      const next = mergeVisibility(prev, defaults);
+      const same =
+        Object.keys(next).length === Object.keys(prev).length &&
+        Object.entries(next).every(([id, on]) => prev[id] === on);
+      return same ? prev : next;
+    });
+  }, [defaults]);
 
   useEffect(() => {
     savePrefs(tableId, { visibility, sorting });

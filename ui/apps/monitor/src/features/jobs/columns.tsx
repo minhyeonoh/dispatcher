@@ -5,13 +5,19 @@
 // including, later, operator-defined extractor columns, which is why
 // the accessor is a function of the row rather than a field name.
 
-import { Badge, SegmentBar } from "@lab/kit";
+import { Badge, cn, SegmentBar } from "@lab/kit";
 import { Link } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { JobRow } from "../../live/fold";
 import { formatAge, formatExact } from "../../lib/time";
 import { describeBlocked } from "./blocked";
 import { jobSubtitle, jobTitle } from "./naming";
+import {
+  formatColumnValue,
+  operatorColumnId,
+  summariseColumns,
+  type OperatorSpec,
+} from "./operatorColumns";
 
 /** Extra per-column knowledge the table header/cells need. */
 export interface ColumnMeta {
@@ -63,8 +69,60 @@ function countColumn(
   };
 }
 
+/** A value the operator's `columns` function produced — dimmed while
+ * stale, because a number known to be behind its input must not look
+ * like the current one. */
+function ColumnValue({
+  job,
+  value,
+}: {
+  job: JobRow;
+  value: unknown;
+}) {
+  return (
+    <span
+      className={job.columns_stale ? "text-fg-faint" : undefined}
+      title={
+        job.columns_stale
+          ? job.columns_error || "recomputing — values changed"
+          : undefined
+      }
+    >
+      {formatColumnValue(value)}
+    </span>
+  );
+}
+
+/** One column per (source arena, key) pair the rows carry.
+ *
+ * A row from a DIFFERENT source shows an em dash, not a blank: blank
+ * under a numeric header reads as zero or missing, and the truth here
+ * is "another function decides this row's columns". */
+function operatorColumns(spec: OperatorSpec): JobColumn[] {
+  return spec.columns.map(({ source, key, label, numeric }) => ({
+    id: operatorColumnId(source, key),
+    header: label,
+    meta: {
+      title: `${label} — from the columns function on ${source || "?"}`,
+      ...(numeric ? { align: "right" as const, numeric: true } : {}),
+    },
+    accessorFn: (job: JobRow) =>
+      job.columns_source_arena === source
+        ? ((job.columns?.[key] ?? null) as never)
+        : (null as never),
+    cell: ({ row }: { row: { original: JobRow } }) => {
+      const job = row.original;
+      if (job.columns_source_arena !== source) {
+        return <span className="text-fg-faint">—</span>;
+      }
+      return <ColumnValue job={job} value={job.columns?.[key] ?? null} />;
+    },
+  }));
+}
+
 export function jobColumns(
   cluster: Parameters<typeof describeBlocked>[2],
+  operator: OperatorSpec = { columns: [], multiSource: false },
 ): JobColumn[] {
   return [
     {
@@ -324,7 +382,44 @@ export function jobColumns(
         </span>
       ),
     },
+    // Last, and in the operator's own order: these are the columns
+    // they defined, and the built-ins are the frame around them.
+    ...operatorColumns(operator),
+    compactColumn(),
   ];
+}
+
+/** The compact form: one cell holding whatever this row's own
+ * function returned.
+ *
+ * Not sortable, and that is the trade — it is the column that works
+ * when the rows do not share a function, where per-key columns would
+ * be a mostly-empty grid. The per-key columns stay available in the
+ * picker for when you want to sort one. */
+function compactColumn(): JobColumn {
+  return {
+    id: "columns",
+    header: "columns",
+    meta: { title: "operator columns (compact)" },
+    accessorFn: (job) => summariseColumns(job),
+    enableSorting: false,
+    cell: ({ row }) => {
+      const job = row.original;
+      const text = summariseColumns(job);
+      if (!text) return <span className="text-fg-faint">—</span>;
+      return (
+        <span
+          className={cn(
+            "font-mono text-xs",
+            job.columns_stale && "text-fg-faint",
+          )}
+          title={job.columns_error || undefined}
+        >
+          {text}
+        </span>
+      );
+    },
+  };
 }
 
 /** On by default: enough to answer "how is the sweep going" without
@@ -344,8 +439,20 @@ export const DEFAULT_VISIBLE = [
 
 export function defaultVisibility(
   columns: JobColumn[],
+  operator: OperatorSpec = { columns: [], multiSource: false },
 ): Record<string, boolean> {
   const on = new Set<string>(DEFAULT_VISIBLE);
+  // One function feeding every row means its keys ARE comparable, so
+  // they earn headers. Several means they are not, and the compact
+  // cell shows each row its own without a grid of em dashes. Same
+  // rendering either way — only which starts visible differs.
+  if (operator.multiSource) {
+    on.add("columns");
+  } else {
+    for (const c of operator.columns) {
+      on.add(operatorColumnId(c.source, c.key));
+    }
+  }
   return Object.fromEntries(
     columns.map((c) => [String(c.id), on.has(String(c.id))]),
   );

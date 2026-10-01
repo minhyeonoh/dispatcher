@@ -239,6 +239,24 @@ class ReadoutRegistry:
       for arena in sorted(set(self._by_arena) | set(self._columns))
     }
 
+  def columns_node(self, arena: str) -> str:
+    """WHERE the `columns` function serving this arena is registered,
+    or empty. `appworld/v7` resolves to `appworld` when only the root
+    defines one.
+
+    The node, not the source text, is what a table should key a
+    column on: a function edited in place is still the same column to
+    an operator, and keying on the text would reset their column
+    choices every time they tweaked it."""
+    if not arena:
+      return ""
+    segments = arena.split("/")
+    for i in range(len(segments), 0, -1):
+      node = "/".join(segments[:i])
+      if self._columns.get(node):
+        return node
+    return ""
+
   def columns_source(self, arena: str) -> str:
     """The nearest `columns` function on this arena's path, or empty.
 
@@ -246,14 +264,7 @@ class ReadoutRegistry:
     IS a column's identity), this is one function per arena deciding
     the whole column set, so a subtree overriding its parent is a
     coherent thing to want."""
-    if not arena:
-      return ""
-    segments = arena.split("/")
-    for i in range(len(segments), 0, -1):
-      found = self._columns.get("/".join(segments[:i]))
-      if found:
-        return found
-    return ""
+    return self._columns.get(self.columns_node(arena), "")
 
   def set_columns(self, arena: str, source: str) -> None:
     if source:
@@ -815,8 +826,13 @@ class ReadoutService:
       return ReadoutJobSummary()
     specs = self._registry.for_arena(state.arena)
     columns_sha = _sha(self._registry.columns_source(state.arena))
+    columns_node = self._registry.columns_node(state.arena)
     if not specs:
-      return ReadoutJobSummary(lag=0, columns_source_sha256=columns_sha)
+      return ReadoutJobSummary(
+        lag=0,
+        columns_source_sha256=columns_sha,
+        columns_source_arena=columns_node,
+      )
     terminal = self._scheduler.terminal_count(job_id)
     index = self._values.get(job_id, {})
     aggregates: dict[str, ReadoutAggregate] = {}
@@ -850,6 +866,7 @@ class ReadoutService:
       ),
       columns_error=self._column_error.get(job_id, ""),
       columns_source_sha256=columns_sha,
+      columns_source_arena=columns_node,
     )
 
   def jobs_with_lag(self, job_ids: list[str]) -> list[str]:

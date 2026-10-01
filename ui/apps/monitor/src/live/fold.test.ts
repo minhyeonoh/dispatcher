@@ -28,6 +28,10 @@ function job(id: string, extra: Partial<JobSummary> = {}): JobSummary {
     source_sha256: "",
     archived_at: null,
     archive_kind: "",
+    columns_stale: false,
+    columns_error: "",
+    columns_source_arena: "",
+    columns_source_sha256: "",
     ...extra,
   };
 }

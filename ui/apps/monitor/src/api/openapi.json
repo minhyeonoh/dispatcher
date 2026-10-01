@@ -554,6 +554,56 @@
         }
       }
     },
+    "/api/jobs/{job_id}/instances/{instance_id}/outcome": {
+      "get": {
+        "summary": "Get Instance Outcome",
+        "operationId": "get_instance_outcome_api_jobs__job_id__instances__instance_id__outcome_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "instance_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Instance Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Instance Outcome Api Jobs  Job Id  Instances  Instance Id  Outcome Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/instances/{instance_id}/reclaim": {
       "post": {
         "summary": "Reclaim Instance",
@@ -727,6 +777,242 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Unarchive Job Ep Api Jobs  Job Id  Unarchive Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/readouts": {
+      "get": {
+        "summary": "List Readouts",
+        "operationId": "list_readouts_api_readouts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Readouts Api Readouts Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Register Readout",
+        "operationId": "register_readout_api_readouts_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Register Readout Api Readouts Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unregister Readout",
+        "operationId": "unregister_readout_api_readouts_delete",
+        "parameters": [
+          {
+            "name": "arena",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Arena"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Unregister Readout Api Readouts Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/readouts/columns": {
+      "put": {
+        "summary": "Set Columns",
+        "operationId": "set_columns_api_readouts_columns_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Set Columns Api Readouts Columns Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/readouts/compute": {
+      "post": {
+        "summary": "Compute Readouts",
+        "description": "Retroactive pass. Streams one JSON line per container pass \u2014\na backfill can run for minutes and the operator who asked should\nwatch it, not wait on a silent request.",
+        "operationId": "compute_readouts_api_readouts_compute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/readouts": {
+      "get": {
+        "summary": "Get Job Readouts",
+        "operationId": "get_job_readouts_api_jobs__job_id__readouts_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Job Readouts Api Jobs  Job Id  Readouts Get"
                 }
               }
             }
@@ -1226,6 +1512,49 @@
       },
       "JobSummaryOut": {
         "properties": {
+          "readouts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ReadoutAggregate"
+            },
+            "type": "object",
+            "title": "Readouts"
+          },
+          "readout_lag": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readout Lag"
+          },
+          "columns": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Columns"
+          },
+          "columns_stale": {
+            "type": "boolean",
+            "title": "Columns Stale",
+            "default": false
+          },
+          "columns_error": {
+            "type": "string",
+            "title": "Columns Error",
+            "default": ""
+          },
+          "columns_source_arena": {
+            "type": "string",
+            "title": "Columns Source Arena",
+            "default": ""
+          },
+          "columns_source_sha256": {
+            "type": "string",
+            "title": "Columns Source Sha256",
+            "default": ""
+          },
           "job_id": {
             "type": "string",
             "title": "Job Id"
@@ -1485,6 +1814,137 @@
         "type": "object",
         "title": "OrphanGCSettings"
       },
+      "ReadoutAggregate": {
+        "properties": {
+          "n": {
+            "type": "integer",
+            "title": "N",
+            "default": 0
+          },
+          "errors": {
+            "type": "integer",
+            "title": "Errors",
+            "default": 0
+          },
+          "nulls": {
+            "type": "integer",
+            "title": "Nulls",
+            "default": 0
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
+          }
+        },
+        "type": "object",
+        "title": "ReadoutAggregate",
+        "description": "Job-level roll-up of one readout's values."
+      },
+      "ReadoutPatch": {
+        "properties": {
+          "batch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch"
+          },
+          "container_timeout_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container Timeout Sec"
+          },
+          "max_aggregate_processes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Aggregate Processes"
+          },
+          "aggregate_timeout_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate Timeout Sec"
+          },
+          "aggregate_idle_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate Idle Sec"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ReadoutPatch"
+      },
+      "ReadoutSettings": {
+        "properties": {
+          "batch": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Batch",
+            "default": 64
+          },
+          "container_timeout_sec": {
+            "type": "number",
+            "title": "Container Timeout Sec",
+            "default": 3600.0
+          },
+          "max_aggregate_processes": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Max Aggregate Processes",
+            "default": 4
+          },
+          "aggregate_timeout_sec": {
+            "type": "number",
+            "title": "Aggregate Timeout Sec",
+            "default": 5.0
+          },
+          "aggregate_idle_sec": {
+            "type": "number",
+            "title": "Aggregate Idle Sec",
+            "default": 900.0
+          }
+        },
+        "type": "object",
+        "title": "ReadoutSettings",
+        "description": "Only the retroactive pass has knobs; the live path has none to\nhave \u2014 it is the worker's own process doing its own work."
+      },
       "RetryDoneErrRequest": {
         "properties": {
           "host": {
@@ -1571,6 +2031,9 @@
           },
           "archive": {
             "$ref": "#/components/schemas/ArchiveSettings"
+          },
+          "readouts": {
+            "$ref": "#/components/schemas/ReadoutSettings"
           }
         },
         "type": "object",
@@ -1678,6 +2141,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ArchivePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readouts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadoutPatch"
               },
               {
                 "type": "null"

@@ -211,6 +211,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/instances/{instance_id}/outcome": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Instance Outcome */
+        get: operations["get_instance_outcome_api_jobs__job_id__instances__instance_id__outcome_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/instances/{instance_id}/reclaim": {
         parameters: {
             query?: never;
@@ -273,6 +290,81 @@ export interface paths {
         put?: never;
         /** Unarchive Job Ep */
         post: operations["unarchive_job_ep_api_jobs__job_id__unarchive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/readouts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Readouts */
+        get: operations["list_readouts_api_readouts_get"];
+        put?: never;
+        /** Register Readout */
+        post: operations["register_readout_api_readouts_post"];
+        /** Unregister Readout */
+        delete: operations["unregister_readout_api_readouts_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/readouts/columns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Columns */
+        put: operations["set_columns_api_readouts_columns_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/readouts/compute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compute Readouts
+         * @description Retroactive pass. Streams one JSON line per container pass —
+         *     a backfill can run for minutes and the operator who asked should
+         *     watch it, not wait on a silent request.
+         */
+        post: operations["compute_readouts_api_readouts_compute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/readouts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job Readouts */
+        get: operations["get_job_readouts_api_jobs__job_id__readouts_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -480,6 +572,36 @@ export interface components {
         };
         /** JobSummaryOut */
         JobSummaryOut: {
+            /** Readouts */
+            readouts?: {
+                [key: string]: components["schemas"]["ReadoutAggregate"];
+            };
+            /** Readout Lag */
+            readout_lag?: number | null;
+            /** Columns */
+            columns?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Columns Stale
+             * @default false
+             */
+            columns_stale: boolean;
+            /**
+             * Columns Error
+             * @default
+             */
+            columns_error: string;
+            /**
+             * Columns Source Arena
+             * @default
+             */
+            columns_source_arena: string;
+            /**
+             * Columns Source Sha256
+             * @default
+             */
+            columns_source_sha256: string;
             /** Job Id */
             job_id: string;
             /** Label */
@@ -587,6 +709,74 @@ export interface components {
             min_container_age_s: number;
         };
         /**
+         * ReadoutAggregate
+         * @description Job-level roll-up of one readout's values.
+         */
+        ReadoutAggregate: {
+            /**
+             * N
+             * @default 0
+             */
+            n: number;
+            /**
+             * Errors
+             * @default 0
+             */
+            errors: number;
+            /**
+             * Nulls
+             * @default 0
+             */
+            nulls: number;
+            /** Mean */
+            mean?: number | null;
+        };
+        /** ReadoutPatch */
+        ReadoutPatch: {
+            /** Batch */
+            batch?: number | null;
+            /** Container Timeout Sec */
+            container_timeout_sec?: number | null;
+            /** Max Aggregate Processes */
+            max_aggregate_processes?: number | null;
+            /** Aggregate Timeout Sec */
+            aggregate_timeout_sec?: number | null;
+            /** Aggregate Idle Sec */
+            aggregate_idle_sec?: number | null;
+        };
+        /**
+         * ReadoutSettings
+         * @description Only the retroactive pass has knobs; the live path has none to
+         *     have — it is the worker's own process doing its own work.
+         */
+        ReadoutSettings: {
+            /**
+             * Batch
+             * @default 64
+             */
+            batch: number;
+            /**
+             * Container Timeout Sec
+             * @default 3600
+             */
+            container_timeout_sec: number;
+            /**
+             * Max Aggregate Processes
+             * @default 4
+             */
+            max_aggregate_processes: number;
+            /**
+             * Aggregate Timeout Sec
+             * @default 5
+             */
+            aggregate_timeout_sec: number;
+            /**
+             * Aggregate Idle Sec
+             * @default 900
+             */
+            aggregate_idle_sec: number;
+        };
+        /**
          * RetryDoneErrRequest
          * @description Empty body = retry every done_err instance. `instance_ids`
          *     overrides the host/since filters.
@@ -621,6 +811,7 @@ export interface components {
             host_autotune?: components["schemas"]["HostAutotuneSettings"];
             notify?: components["schemas"]["NotifySettings"];
             archive?: components["schemas"]["ArchiveSettings"];
+            readouts?: components["schemas"]["ReadoutSettings"];
         };
         /**
          * SettingsPatch
@@ -645,6 +836,7 @@ export interface components {
             host_autotune?: components["schemas"]["HostAutotunePatch"] | null;
             notify?: components["schemas"]["NotifyPatch"] | null;
             archive?: components["schemas"]["ArchivePatch"] | null;
+            readouts?: components["schemas"]["ReadoutPatch"] | null;
         };
         /** StateOut */
         StateOut: {
@@ -1161,6 +1353,40 @@ export interface operations {
             };
         };
     };
+    get_instance_outcome_api_jobs__job_id__instances__instance_id__outcome_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                instance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reclaim_instance_api_jobs__job_id__instances__instance_id__reclaim_post: {
         parameters: {
             query?: never;
@@ -1266,6 +1492,204 @@ export interface operations {
         };
     };
     unarchive_job_ep_api_jobs__job_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_readouts_api_readouts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    register_readout_api_readouts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unregister_readout_api_readouts_delete: {
+        parameters: {
+            query: {
+                arena: string;
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_columns_api_readouts_columns_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    compute_readouts_api_readouts_compute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                } | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_readouts_api_jobs__job_id__readouts_get: {
         parameters: {
             query?: never;
             header?: never;
