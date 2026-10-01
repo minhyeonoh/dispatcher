@@ -16,10 +16,12 @@ import json
 from dispatcher.core.pack import (
   MKSQUASHFS_OPTS,
   PACK_DIRNAME,
+  instance_from_tree,
   job_mount_dir,
   list_top_level_cmd,
   lock_path,
   mount_dir,
+  mounted_hosts,
   pack_path,
   pack_shell_cmd,
   packed_hosts,
@@ -332,3 +334,64 @@ def test_job_mount_dir_is_the_parent_of_the_host_mounts(tmp_path):
   assert mount_dir("job-a", "ml9", base=tmp_path).parent == job_mount_dir(
     "job-a", base=tmp_path
   )
+
+
+# ── answering with no server ─────────────────────────────────────
+
+
+def test_mounted_hosts_reads_the_mount_dir(tmp_path):
+  assert mounted_hosts("job-a", base=tmp_path) == []
+  for host in ("ml9", "ml10"):
+    mount_dir("job-a", host, base=tmp_path).mkdir(parents=True)
+  assert mounted_hosts("job-a", base=tmp_path) == ["ml10", "ml9"]
+
+
+def test_read_home_finds_the_pack_without_being_told_the_host(tmp_path):
+  # This is what makes the read path answerable on a node that cannot
+  # reach the dispatcher: the host is a shortcut, not a requirement.
+  base = tmp_path / "mounts"
+  (mount_dir("job-a", "ml9", base=base) / "inst-1").mkdir(parents=True)
+  mount_dir("job-a", "ml10", base=base).mkdir(parents=True)
+  path, packed = read_home_for(
+    tmp_path, "inst-1", job_id="job-a", mount_base=base
+  )
+  assert packed is True
+  assert path.parent.name == "ml9"
+
+
+def test_read_home_scan_still_falls_back(tmp_path):
+  base = tmp_path / "mounts"
+  mount_dir("job-a", "ml9", base=base).mkdir(parents=True)
+  path, packed = read_home_for(
+    tmp_path, "inst-absent", job_id="job-a", mount_base=base
+  )
+  assert packed is False
+  assert path == tmp_path / "inst-absent"
+
+
+def test_instance_from_tree_prefers_an_exact_match(tmp_path):
+  (tmp_path / "task-001__0000288").mkdir()
+  (tmp_path / "task-001").mkdir()
+  assert instance_from_tree(tmp_path, "task-001") == ["task-001"]
+
+
+def test_instance_from_tree_expands_a_task_id(tmp_path):
+  (tmp_path / "task-001__0000288").mkdir()
+  assert instance_from_tree(tmp_path, "task-001") == ["task-001__0000288"]
+
+
+def test_instance_from_tree_returns_every_attempt(tmp_path):
+  # A retried task has more than one directory. Handing back both lets
+  # the caller refuse rather than pick an attempt nobody asked for.
+  for name in ("task-001__0000288", "task-001__0000312"):
+    (tmp_path / name).mkdir()
+  assert instance_from_tree(tmp_path, "task-001") == [
+    "task-001__0000288",
+    "task-001__0000312",
+  ]
+
+
+def test_instance_from_tree_ignores_files_and_misses(tmp_path):
+  (tmp_path / "task-001__notadir").write_text("x")
+  assert instance_from_tree(tmp_path, "task-001") == []
+  assert instance_from_tree(tmp_path, "nope") == []

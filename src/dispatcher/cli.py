@@ -157,6 +157,15 @@ def main(argv: list[str] | None = None) -> int:
     default=None,
     help="override where this node mounts packs",
   )
+  path_cmd.add_argument(
+    "--home-root",
+    type=Path,
+    default=None,
+    help=(
+      "answer from the filesystem with no server; needs an instance "
+      "id, or a task id that matches exactly one attempt"
+    ),
+  )
   path_cmd.add_argument("--server", default="http://127.0.0.1:7200")
 
   pack = sub.add_parser(
@@ -196,6 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     help="only this host's archive; repeatable (default: all)",
   )
   mount.add_argument("--mount-base", type=Path, default=None)
+  mount.add_argument(
+    "--home-root",
+    type=Path,
+    default=None,
+    help="the job's home root, to mount with no server",
+  )
   mount.add_argument("--server", default="http://127.0.0.1:7200")
 
   umount = sub.add_parser(
@@ -250,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
       server=args.server,
       job_id=args.job_id,
       ident=args.ident,
+      home_root=args.home_root,
       mount_base=args.mount_base,
     )
 
@@ -271,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
       server=args.server,
       job_id=args.job_id,
       hosts=list(args.host),
+      home_root=args.home_root,
       mount_base=args.mount_base,
     )
 

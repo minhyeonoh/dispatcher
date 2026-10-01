@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from dispatcher.core.models import OUTCOME_FILENAME, Outcome
+from dispatcher.core.pack import bust_dir_cache, instance_home_for
 from dispatcher.core.readout import read_instance_readouts
 
 if TYPE_CHECKING:
@@ -68,25 +69,9 @@ def read_completion(instance_home: Path) -> CompletionSnapshot | None:
   )
 
 
-def bust_dir_cache(instance_home: Path) -> None:
-  """Invalidate THIS client's NFS cache for an instance home we own.
-
-  The outcome is written by a container on another host; this
-  client's negative-dentry / directory-attribute cache keeps
-  answering "no such file" for up to acdirmax (default 60s) —
-  measured on the old router as 43% of all instances parking in
-  unknown while the file already existed. Writing into the
-  directory ourselves bumps its mtime locally, so the kernel
-  discards its own cache and the next lookup goes to the server.
-  Best-effort: any failure just leaves today's behaviour (miss →
-  resolver later)."""
-  probe = instance_home / ".nfs-probe"
-  try:
-    probe.touch()
-    probe.unlink(missing_ok=True)
-  except OSError:
-    pass
-
-
-def instance_home_for(home_root: Path, instance_id: str) -> Path:
-  return home_root / instance_id
+__all__ = [
+  "CompletionSnapshot",
+  "bust_dir_cache",
+  "instance_home_for",
+  "read_completion",
+]

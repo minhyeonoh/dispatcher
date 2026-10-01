@@ -38,11 +38,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from dispatcher.core.hosts import SSH_OPTS
-from dispatcher.core.outcome import bust_dir_cache
 from dispatcher.core.pack import (
+  bust_dir_cache,
+  instance_from_tree,
   job_mount_dir,
   mount_cmd,
   mount_dir,
@@ -142,6 +140,12 @@ def shape_values(
 
 
 def _get(server: str, path: str) -> dict[str, Any] | None:
+  # Imported here, not at module scope: `path --home-root`, `umount`
+  # and the whole offline half must run on a node where nothing is
+  # installed, and httpx is the one thing in this file that is not
+  # stdlib.
+  import httpx
+
   url = server.rstrip("/") + path
   try:
     resp = httpx.get(url, timeout=60.0)
@@ -157,11 +161,36 @@ def _get(server: str, path: str) -> dict[str, Any] | None:
   return body if isinstance(body, dict) else None
 
 
+def _offline_instance(home_root: Path, ident: str) -> str | None:
+  """Resolve an ident against the tree, with no server.
+
+  Refuses an ambiguous task id rather than guessing which attempt was
+  meant — the one case where picking for the operator would quietly
+  hand back the wrong trial's files."""
+  candidates = instance_from_tree(home_root, ident)
+  if len(candidates) == 1:
+    return candidates[0]
+  if not candidates:
+    print(
+      f"no instance under {home_root} matching {ident!r}",
+      file=sys.stderr,
+    )
+    return None
+  print(
+    f"{ident!r} matches {len(candidates)} attempts — name one:",
+    file=sys.stderr,
+  )
+  for name in candidates:
+    print(f"  {name}", file=sys.stderr)
+  return None
+
+
 def print_path(
   *,
   server: str,
   job_id: str,
   ident: str,
+  home_root: Path | None = None,
   mount_base: Path | None = None,
   out: Any = sys.stdout,
 ) -> int:
@@ -171,7 +200,25 @@ def print_path(
   pack exists but is not mounted here the note goes to stderr: the
   answer is still correct, it is just slower than it needs to be, and
   that is worth saying exactly once where it cannot corrupt the
-  substitution."""
+  substitution.
+
+  `home_root` skips the server entirely. The two things the server is
+  asked for are the home root and which host ran the instance; given
+  the first, the second is only a shortcut (`read_home_for` scans the
+  mounts instead). That matters on a node that cannot reach the
+  dispatcher, which is every node but the launcher today."""
+  if home_root is not None:
+    instance_id = _offline_instance(home_root, ident)
+    if instance_id is None:
+      return 1
+    return _emit_path(
+      home_root,
+      instance_id,
+      job_id=job_id,
+      host="",
+      mount_base=mount_base,
+      out=out,
+    )
   job = _get(server, f"/api/jobs/{job_id}")
   if job is None:
     return 1
@@ -180,6 +227,25 @@ def print_path(
     print(f"job {job_id!r} has no home_root", file=sys.stderr)
     return 1
   instance_id, host = resolve_instance(job, ident)
+  return _emit_path(
+    home_root,
+    instance_id,
+    job_id=job_id,
+    host=host,
+    mount_base=mount_base,
+    out=out,
+  )
+
+
+def _emit_path(
+  home_root: Path,
+  instance_id: str,
+  *,
+  job_id: str,
+  host: str,
+  mount_base: Path | None,
+  out: Any,
+) -> int:
   path, packed = read_home_for(
     home_root,
     instance_id,
@@ -188,11 +254,11 @@ def print_path(
     mount_base=mount_base,
   )
   print(path, file=out)
-  if not packed and host and pack_path(home_root, host).is_file():
-    where = mount_dir(job_id, host, base=mount_base)
+  if not packed and packed_hosts(home_root):
+    where = job_mount_dir(job_id, base=mount_base)
     print(
-      f"note: {host} has a pack but it is not mounted at {where} — "
-      f"`dispatcher mount {job_id}` reads it instead",
+      f"note: this job has packs but none are mounted under {where} — "
+      f"`dispatcher mount {job_id}` reads them instead",
       file=sys.stderr,
     )
   return 0
@@ -322,6 +388,10 @@ def do_pack(
     if dry_run:
       print(f"{host:6s} +{len(todo)} would run: {cmd}", file=out)
       continue
+    # Imported here so the offline half of this file stays free of
+    # the dispatcher's own dependencies (hosts.py reaches anyio).
+    from dispatcher.core.hosts import SSH_OPTS
+
     # Skip ssh when the host is the machine running this command —
     # whoever that is, which is not necessarily the launcher.
     local = this_node if this_node is not None else socket.gethostname()
@@ -356,18 +426,26 @@ def do_mount(
   server: str,
   job_id: str,
   hosts: list[str],
+  home_root: Path | None = None,
   mount_base: Path | None = None,
   out: Any = sys.stdout,
 ) -> int:
-  """Attach this job's archives on this node."""
+  """Attach this job's archives on this node.
+
+  `home_root` skips the server, which is the whole of what it is asked
+  for here."""
   binary = squashfuse_bin()
   if binary is None:
     print(_INSTALL_HINT, file=sys.stderr)
     return 1
-  job = _get(server, f"/api/jobs/{job_id}")
-  if job is None:
+  if home_root is None:
+    job = _get(server, f"/api/jobs/{job_id}")
+    if job is None:
+      return 1
+    home_root = Path(str(job.get("home_root") or ""))
+  if not home_root.is_absolute():
+    print(f"job {job_id!r} has no home_root", file=sys.stderr)
     return 1
-  home_root = Path(str(job.get("home_root") or ""))
   # The archives were written from other hosts, so this client may
   # still be caching a listing that predates them.
   _see_fresh(home_root)

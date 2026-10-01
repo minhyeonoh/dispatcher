@@ -33,6 +33,14 @@ it is what writers use, and it costs little to keep (the archive of
 that 3.8G tree was 415MB). A pack that is missing, stale, corrupt, or
 simply not mounted is therefore a slower read and never a wrong one,
 which is what lets the whole thing be a pure optimisation.
+
+Deliberately stdlib-only. This is the read path, and it has to work
+on a node that has nothing installed — the dispatcher's own
+dependencies have no business travelling with a command whose whole
+job is to compose a path and shell out to `squashfuse`.
+`instance_home_for` lives here for the same reason: it is the layout,
+and keeping it in a module that reaches pydantic made the lean half
+depend on the heavy one.
 """
 
 from __future__ import annotations
@@ -42,7 +50,36 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from dispatcher.core.outcome import instance_home_for
+
+def instance_home_for(home_root: Path, instance_id: str) -> Path:
+  """The authority for one instance's files, and where writers go.
+
+  The read path may answer with a pack instead — see
+  `read_home_for`."""
+  return home_root / instance_id
+
+
+def bust_dir_cache(directory: Path) -> None:
+  """Invalidate THIS client's NFS cache for a directory we own.
+
+  Whatever appeared in it was written from another host, and this
+  client's negative-dentry / directory-attribute cache keeps answering
+  "no such file" for up to acdirmax — 60s by default. Measured on the
+  old router as 43% of all instances parking in `unknown` while the
+  outcome file already existed, and hit again by `dispatcher pack`
+  reporting three archives missing that the writing host could see.
+
+  Writing into the directory ourselves bumps its mtime locally, so the
+  kernel discards its own cache and the next lookup goes to the
+  server. Best-effort: a failure just leaves the stale answer, which
+  every caller already has to tolerate."""
+  probe = directory / ".nfs-probe"
+  try:
+    probe.touch()
+    probe.unlink(missing_ok=True)
+  except OSError:
+    pass
+
 
 PACK_DIRNAME = ".packs"
 """Dot-prefixed and beside `.readouts/` for the same reason: the scan
@@ -130,6 +167,22 @@ def mount_dir(job_id: str, host: str, *, base: Path | None = None) -> Path:
   return job_mount_dir(job_id, base=base) / host
 
 
+def mounted_hosts(job_id: str, *, base: Path | None = None) -> list[str]:
+  """Whose archives this node currently has mounted for a job.
+
+  Read off the mount directory, so it needs no server. That is what
+  lets the read path work on a node that cannot reach the
+  dispatcher — the case a distributed binary is in."""
+  try:
+    return sorted(
+      p.name
+      for p in job_mount_dir(job_id, base=base).iterdir()
+      if p.is_dir()
+    )
+  except OSError:
+    return []
+
+
 def read_home_for(
   home_root: Path,
   instance_id: str,
@@ -149,12 +202,44 @@ def read_home_for(
   it is not — so this asks the filesystem instead of trusting a
   record. That way a mount that has gone away cannot leave a reader
   pointed at nothing, and an archive nobody mounted degrades to the
-  NFS path rather than to an error."""
-  if host:
-    candidate = mount_dir(job_id, host, base=mount_base) / instance_id
+  NFS path rather than to an error.
+
+  `host` is a shortcut, not a requirement: knowing which archive to
+  look in skips the scan and is unambiguous. Without it every mounted
+  archive is checked, which is at most one `stat` per host and is what
+  makes this answerable with no server. A retried instance could sit
+  in two archives; the scan then takes them in sorted order, and the
+  caller that knows the host does not have to care."""
+  for candidate_host in (
+    [host] if host else mounted_hosts(job_id, base=mount_base)
+  ):
+    candidate = (
+      mount_dir(job_id, candidate_host, base=mount_base) / instance_id
+    )
     if candidate.is_dir():
       return candidate, True
   return instance_home_for(home_root, instance_id), False
+
+
+def instance_from_tree(home_root: Path, ident: str) -> list[str]:
+  """Instance ids under `home_root` that `ident` could name.
+
+  For when there is no server to ask: an exact directory match wins,
+  and otherwise `<ident>__*`, which is how a task id relates to its
+  attempts (`task-001` → `task-001__0000288`).
+
+  Every candidate is returned rather than a best guess, so a caller
+  facing a retried task can refuse instead of silently picking an
+  attempt the operator did not mean."""
+  exact = home_root / ident
+  if exact.is_dir():
+    return [ident]
+  try:
+    return sorted(
+      p.name for p in home_root.glob(f"{ident}__*") if p.is_dir()
+    )
+  except OSError:
+    return []
 
 
 # ── what an archive already holds ─────────────────────────────────
