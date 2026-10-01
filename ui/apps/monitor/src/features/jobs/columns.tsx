@@ -72,6 +72,10 @@ const BUILT_IN_DESCRIPTION: Record<string, string> = {
     "sha256 of the frozen source archive — the record of what code ran",
   home_root: "home root: the shared directory holding one subdir per instance",
   job_id: "the stable key; aliases are renameable, this is not",
+  readout_lag:
+    "unscored: finished instances still missing a readout value. 0 means the live path kept up; a dash means no readout service is attached. `dispatcher readout <job>` fills them in",
+  pack_lag:
+    "unpacked: finished instances whose files are in no squashfs archive, so they read over NFS. 0 means every one is archived; a dash means nothing is packing. `dispatcher pack <job>` adds them",
   columns:
     "every operator-defined column for this row in one cell, compact. Not sortable, and the one that works when the rows do not share a columns function",
 };
@@ -110,6 +114,38 @@ function countColumn(
               : undefined
           }
         >
+          {n}
+        </span>
+      );
+    },
+  };
+}
+
+/** Work the dispatcher knows is outstanding for a job: finished
+ * instances with no readout value, or with no archive holding them.
+ *
+ * Null is not zero and must not render as one. Zero means "caught up";
+ * null means nothing is watching — no readout service, no packer — and
+ * showing that as 0 would be a reassurance nobody earned. A dash says
+ * "unknown", which is the honest answer. */
+function lagColumn(
+  id: string,
+  header: string,
+  pick: (job: JobRow) => number | null,
+): JobColumn {
+  return {
+    id,
+    header,
+    // Sort nulls below every real count rather than alongside 0 — a
+    // job nobody is watching is not a job that is caught up.
+    accessorFn: (job) => pick(job) ?? -1,
+    meta: { align: "right", numeric: true },
+    cell: ({ row }) => {
+      const n = pick(row.original);
+      if (n === null)
+        return <span className="text-fg-faint" title="not tracked">–</span>;
+      return (
+        <span className={n > 0 ? "font-medium text-warn" : undefined}>
           {n}
         </span>
       );
@@ -298,6 +334,12 @@ export function jobColumns(
         );
       },
     },
+    lagColumn(
+      "readout_lag",
+      "unscored",
+      (job) => job.readout_lag ?? null,
+    ),
+    lagColumn("pack_lag", "unpacked", (job) => job.pack_lag ?? null),
     {
       id: "blocked",
       header: "blocked",

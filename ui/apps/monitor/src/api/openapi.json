@@ -1555,6 +1555,17 @@
             "title": "Columns Source Sha256",
             "default": ""
           },
+          "pack_lag": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pack Lag"
+          },
           "job_id": {
             "type": "string",
             "title": "Job Id"
@@ -1814,6 +1825,69 @@
         "type": "object",
         "title": "OrphanGCSettings"
       },
+      "PackPatch": {
+        "properties": {
+          "auto": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto"
+          },
+          "processors": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processors"
+          },
+          "timeout_sec": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Sec"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PackPatch"
+      },
+      "PackSettings": {
+        "properties": {
+          "auto": {
+            "type": "boolean",
+            "title": "Auto",
+            "default": false
+          },
+          "processors": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Processors",
+            "default": 2
+          },
+          "timeout_sec": {
+            "type": "number",
+            "title": "Timeout Sec",
+            "default": 600.0
+          }
+        },
+        "type": "object",
+        "title": "PackSettings"
+      },
       "ReadoutAggregate": {
         "properties": {
           "n": {
@@ -2034,6 +2108,9 @@
           },
           "readouts": {
             "$ref": "#/components/schemas/ReadoutSettings"
+          },
+          "pack": {
+            "$ref": "#/components/schemas/PackSettings"
           }
         },
         "type": "object",
@@ -2151,6 +2228,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ReadoutPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackPatch"
               },
               {
                 "type": "null"

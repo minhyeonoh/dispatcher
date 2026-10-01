@@ -602,6 +602,8 @@ export interface components {
              * @default
              */
             columns_source_sha256: string;
+            /** Pack Lag */
+            pack_lag?: number | null;
             /** Job Id */
             job_id: string;
             /** Label */
@@ -708,6 +710,33 @@ export interface components {
              */
             min_container_age_s: number;
         };
+        /** PackPatch */
+        PackPatch: {
+            /** Auto */
+            auto?: boolean | null;
+            /** Processors */
+            processors?: number | null;
+            /** Timeout Sec */
+            timeout_sec?: number | null;
+        };
+        /** PackSettings */
+        PackSettings: {
+            /**
+             * Auto
+             * @default false
+             */
+            auto: boolean;
+            /**
+             * Processors
+             * @default 2
+             */
+            processors: number;
+            /**
+             * Timeout Sec
+             * @default 600
+             */
+            timeout_sec: number;
+        };
         /**
          * ReadoutAggregate
          * @description Job-level roll-up of one readout's values.
@@ -812,6 +841,7 @@ export interface components {
             notify?: components["schemas"]["NotifySettings"];
             archive?: components["schemas"]["ArchiveSettings"];
             readouts?: components["schemas"]["ReadoutSettings"];
+            pack?: components["schemas"]["PackSettings"];
         };
         /**
          * SettingsPatch
@@ -837,6 +867,7 @@ export interface components {
             notify?: components["schemas"]["NotifyPatch"] | null;
             archive?: components["schemas"]["ArchivePatch"] | null;
             readouts?: components["schemas"]["ReadoutPatch"] | null;
+            pack?: components["schemas"]["PackPatch"] | null;
         };
         /** StateOut */
         StateOut: {

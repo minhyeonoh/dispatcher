@@ -121,3 +121,33 @@ describe("derived columns", () => {
     expect(value("err_rate", row({ pending: 5, total: 5 }))).toBe(0);
   });
 });
+
+describe("outstanding work", () => {
+  // Null is "nothing is watching", 0 is "caught up". Sorting them
+  // together would put an untracked job among the healthy ones, which
+  // is the reading that matters least to be wrong about.
+  it("sorts an untracked job below every real count", () => {
+    expect(value("pack_lag", row({}))).toBe(-1);
+    expect(value("readout_lag", row({}))).toBe(-1);
+  });
+
+  it("keeps zero distinct from untracked", () => {
+    const caught = { ...row({}), pack_lag: 0, readout_lag: 0 } as JobRow;
+    expect(value("pack_lag", caught)).toBe(0);
+    expect(value("readout_lag", caught)).toBe(0);
+  });
+
+  it("passes a real count through", () => {
+    const behind = { ...row({}), pack_lag: 7, readout_lag: 3 } as JobRow;
+    expect(value("pack_lag", behind)).toBe(7);
+    expect(value("readout_lag", behind)).toBe(3);
+  });
+
+  it("leaves both off by default — usually 0, and noise when it is", () => {
+    expect(DEFAULT_VISIBLE).not.toContain("pack_lag");
+    expect(DEFAULT_VISIBLE).not.toContain("readout_lag");
+    const vis = defaultVisibility(columns);
+    expect(vis.pack_lag).toBe(false);
+    expect(vis.readout_lag).toBe(false);
+  });
+});
