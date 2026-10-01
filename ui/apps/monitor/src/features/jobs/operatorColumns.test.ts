@@ -52,8 +52,8 @@ describe("collectOperatorColumns", () => {
     expect(spec.multiSource).toBe(true);
     expect(spec.columns.map((c) => c.label)).toEqual([
       "tgc",
-      "appworld:solved",
-      "bench/v7:solved",
+      "solved:appworld",
+      "solved:bench/v7",
     ]);
     // …and they are two distinct columns.
     expect(new Set(spec.columns.map((c) => operatorColumnId(c.source, c.key))).size).toBe(3);

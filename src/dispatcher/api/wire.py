@@ -73,7 +73,7 @@ class ReadoutCellOut(BaseModel):
   # Which `columns` function produced them, and where it is
   # registered. Rows sharing these are comparable column-by-column;
   # rows that differ are not, and a shared name gets prefixed with the
-  # arena (`appworld:solved`) rather than lined up under one header.
+  # arena (`solved:appworld`) rather than lined up under one header.
   columns_source_arena: str = ""
   columns_source_sha256: str = ""
 

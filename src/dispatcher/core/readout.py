@@ -244,7 +244,7 @@ class ReadoutJobSummary(BaseModel):
   `appworld/v7` when only the root defines one.
 
   This is what a table keys a column on, and what disambiguates a
-  colliding name (`appworld:solved` vs `bench:solved`). The node
+  colliding name (`solved:appworld` vs `solved:bench`). The node
   rather than the hash, so editing a function in place does not look
   like a new column and reset the operator's choices."""
 

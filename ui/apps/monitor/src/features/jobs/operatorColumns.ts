@@ -6,7 +6,9 @@
 // things — one a pass rate, one a threshold — and putting those under
 // one header would be the same "one name, two computations" collision
 // a readout registration refuses outright, except silent. Keyed by the
-// pair they are two columns, and the label says which is which.
+// pair they are two columns, and the label says which is which:
+// `solved:appworld` and `solved:bench/v7`, key first so the metric is
+// what you scan for.
 //
 // The source is the ARENA NODE where the function is registered, not
 // its hash: an operator editing a function in place still means the
@@ -19,8 +21,10 @@ export interface OperatorColumn {
   /** The arena node whose `columns` function produced it. */
   source: string;
   key: string;
-  /** `key`, or `source:key` when that key exists under more than one
-   * source among the rows on screen. */
+  /** `key`, or `key:source` when that key exists under more than one
+   * source among the rows on screen. The key leads because the key is
+   * what you are looking for — a list of headers then groups by
+   * metric rather than by arena. */
   label: string;
   /** Every value seen is a number, so the column can be right-aligned
    * and sorted numerically. */
@@ -82,7 +86,7 @@ export function collectOperatorColumns(rows: JobRow[]): OperatorSpec {
         source,
         key,
         label:
-          (keyToSources.get(key)?.size ?? 0) > 1 ? `${source}:${key}` : key,
+          (keyToSources.get(key)?.size ?? 0) > 1 ? `${key}:${source}` : key,
         // Numeric until proven otherwise, so a column whose values
         // are all null so far does not jump sides once the first
         // number lands.
