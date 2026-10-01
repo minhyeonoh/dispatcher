@@ -7,13 +7,16 @@ error would score NFS lag as a failure."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from dispatcher.core.models import OUTCOME_FILENAME, Outcome
+from dispatcher.core.readout import read_instance_readouts
 
 if TYPE_CHECKING:
   from pathlib import Path
+
+  from dispatcher.core.readout import ReadoutValue
 
 
 @dataclass
@@ -29,6 +32,13 @@ class CompletionSnapshot:
   infra: bool = False
   outcome: Outcome | None = None
   exit_code: int | None = None
+  readouts: list[ReadoutValue] = field(default_factory=list)
+  """What the worker scored itself, picked up in the same look.
+
+  NOT evidence — nothing here changes how the instance is
+  classified. It rides along because this is the one moment the
+  instance home is being read anyway, and a second visit later is
+  exactly the delay the live path exists to avoid."""
 
 
 def read_completion(instance_home: Path) -> CompletionSnapshot | None:
@@ -52,6 +62,9 @@ def read_completion(instance_home: Path) -> CompletionSnapshot | None:
     error_present=error_present,
     infra=parsed.infra,
     outcome=parsed,
+    # The worker writes its values BEFORE the envelope, so an
+    # envelope we can read means they are already on disk.
+    readouts=read_instance_readouts(instance_home),
   )
 
 

@@ -96,7 +96,7 @@ The dispatcher starts the main container itself
   through verbatim).
 - the instance home bind-mounted at `container.home_mount`
   (default `/dispatcher/home`), containing `instance.json`
-  (`{job_id, task_id, instance_id, home, payload}`).
+  (`{job_id, task_id, instance_id, home, payload, readouts}`).
 - env: `DISPATCHER_INSTANCE`, `DISPATCHER_TASK`,
   `DISPATCHER_JOB`, `DISPATCHER_HOME`,
   `DISPATCHER_SET_LABEL`.
@@ -105,7 +105,8 @@ The worker may start sibling containers; **every sibling must
 carry the label in `$DISPATCHER_SET_LABEL`** or cleanup cannot
 see it and it leaks.
 
-Before exiting, the worker writes `<home>/outcome.json`:
+Before exiting, the worker writes `<home>/readouts.json` (see
+Readouts) and then `<home>/outcome.json`:
 
 ```json
 {
@@ -161,39 +162,72 @@ POST /api/readouts
   is the difference between reporting a broken run and reporting a
   worse method.
 
-Values land the moment an instance finishes — the completion
-handler asks for a pass with no timer in the path. A pass runs
-`python -m dispatcher_sdk.readout` in a container built from the
-job's **pinned image** (on the launcher, job home mounted
-read-only, `container.extra_args` deliberately not applied), which
-imports each entrypoint and prints one marked line per
-`(instance, readout)` pair; the dispatcher appends them to
-`<home_root>/.readouts/<name>.jsonl`, append-only, last line
-winning.
+### Where it runs
 
-Requests arriving while a pass is computing fold into exactly one
-more pass after it, so a burst of 500 completions costs two
-container runs, not 500 — the running container's own duration is
-the batching window rather than an invented delay. Each pass takes
-at most `readouts.batch_cap` instances and immediately runs
-another if more remain, so a readout too heavy to keep up
-accumulates backlog on the filesystem instead of inside one
-long-lived container. That backlog is the number to watch:
-`readout_lag` on every job row counts finished pairs with no value
-yet, and grows monotonically when computation is losing the race.
+**The instance's own worker process.** `dispatcher_sdk.run(work)`
+calls the registered readouts right after `work` returns, on the
+envelope it is about to write, and leaves them in
+`<home>/readouts.json` — **before** `outcome.json`, because the
+envelope is the dispatcher's completion signal and anything the
+instance wants read must already be on disk when it lands. The
+dispatcher picks the values up in the same look that detects
+completion and appends them to the job's column index.
 
-A readout that raises is recorded as an error against that one
-instance and never retried (the envelope is immutable, so it would
-raise forever). A pass that fails to run at all writes nothing, and
-a slow sweep (`readouts.sweep_interval_seconds`) retries it.
-Registering a readout immediately backfills every finished instance
-in the arena, archived jobs included.
+So the normal path has no second container, no trigger, no timer,
+and no delay — a finished instance arrives already scored. The
+dispatcher never runs readout code; it tells the instance what to
+run (via `instance.json`) and files the answer. That is the same
+shape Harbor's verifier and Braintrust's `Eval()` settled on: the
+thing doing the work scores itself.
+
+Two consequences worth stating. A readout's cost is part of the
+instance's wall clock and holds a dispatch slot — accepted
+deliberately, with a generous per-readout timeout (600s default)
+rather than a tight fence. And a readout **cannot** change the
+envelope: it runs after the outcome is decided, every exception is
+caught, and a scoring bug can never turn finished work into failed
+work. A raising readout is recorded as an error against that one
+instance and never retried, since the envelope is immutable and the
+same code would raise forever.
+
+### The retroactive path is a command
+
+```
+dispatcher readout <arena|job_id> [--name reward]
+```
+
+For the three cases the live path cannot cover: a readout
+registered after a run finished, a redefinition, an instance that
+died before scoring itself. It starts a container from the job's
+**pinned image** on the launcher (job home mounted read-only,
+`container.extra_args` deliberately not applied) running
+`python -m dispatcher_sdk.readout`, which calls the same functions
+on the same object the worker would have — so a readout cannot
+behave differently depending on which path ran it.
+
+It is a command and not a background loop on purpose: it starts
+containers, and that is an operator's decision to make and watch.
+Progress streams one line per pass; it is safe to interrupt and
+safe to re-run, because only missing pairs are ever computed.
+`readout_lag` on every job row is what tells you to run it — 0 in
+steady state, so anything above 0 is actionable rather than
+transient.
+
+Values live in `<home_root>/.readouts/<name>.jsonl`, append-only,
+last line winning, written by the dispatcher alone. Both paths
+write the same format, and each line records the `source_sha256` +
+`image_id` that produced it.
 
 ```
 GET    /api/readouts                    what is registered where
-POST   /api/readouts                    register + backfill
+POST   /api/readouts                    register (no containers; the
+                                        reply names jobs needing the
+                                        retroactive command)
 DELETE /api/readouts?arena=..&name=..   stop computing (values stay)
 GET    /api/jobs/{id}/readouts          every value, per instance
+POST   /api/readouts/compute            the retroactive pass, as an
+                                        ndjson stream (the CLI's
+                                        transport)
 ```
 
 ## Failure semantics

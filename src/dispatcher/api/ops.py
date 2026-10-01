@@ -48,7 +48,7 @@ from dispatcher.core.scheduler import (
 from dispatcher.services.readouts import ReadoutConflict
 
 if TYPE_CHECKING:
-  from collections.abc import Callable
+  from collections.abc import AsyncIterator, Callable
   from datetime import datetime
 
   from dispatcher.api.config import Config
@@ -937,16 +937,18 @@ def list_readouts(st: ServerState) -> dict[str, Any]:
   }
 
 
-def register_readout(
+async def register_readout(
   st: ServerState, payload: dict[str, Any]
 ) -> dict[str, Any]:
-  """Register a readout on an arena subtree and start filling it in.
+  """Register a readout on an arena subtree.
 
-  Existing finished instances are requested immediately — the
-  operator's next question after "register" is always "so what does
-  it say about what I already ran", and making them wait for a
-  sweep would answer it late for no reason. Live jobs first: they
-  are the ones someone is watching."""
+  Takes effect for every instance dispatched from now on — they
+  score themselves on the way out. Instances that already finished
+  are NOT computed here: that starts containers, which is an
+  operator's decision to make and watch, not a side effect of a
+  POST. What it does do is READ the arena's existing values, so the
+  response can say exactly which jobs need the retroactive command
+  rather than leaving the operator to guess."""
   service = _require_readouts(st)
   if not isinstance(payload, dict):
     raise Invalid("body must be an object")
@@ -971,13 +973,65 @@ def register_readout(
   except OSError as exc:
     raise Internal(f"readout registry write failed: {exc}") from exc
   members = arena_members(st.scheduler, arena)
-  for aid in sorted(members, key=st.scheduler.is_archived):
-    service.request(aid)
+  await service.load_many(members)
+  needs = service.jobs_with_lag(members)
   return {
     "arena": arena,
     "readout": spec.model_dump(mode="json"),
-    "backfilling": members,
+    "members": members,
+    "needs_backfill": needs,
+    "hint": (
+      f"dispatcher readout {arena} --name {spec.name}" if needs else ""
+    ),
   }
+
+
+def resolve_compute_targets(
+  st: ServerState, *, arena: str = "", job_id: str = ""
+) -> list[str]:
+  """Which jobs a retroactive request names.
+
+  Separate from the streaming body on purpose: once a streaming
+  response has started, an error can no longer become a status code —
+  it would arrive as a truncated body with a 200 already on the
+  wire. So every rejection happens here, before the first byte."""
+  _require_readouts(st)
+  if job_id:
+    if not st.scheduler.has_job(job_id):
+      raise NotFound(f"job {job_id!r} not found")
+    return [job_id]
+  node = normalize_arena(arena)
+  if not node:
+    raise Invalid("name an arena or a job_id")
+  members = arena_members(st.scheduler, node)
+  if not members:
+    raise NotFound(f"arena {node!r} has no jobs")
+  return members
+
+
+async def compute_readouts(
+  st: ServerState,
+  job_ids: list[str],
+  *,
+  names: list[str] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+  """The retroactive pass, yielding one record per container pass.
+
+  Streamed rather than returned: a backfill over an arena can take
+  minutes, and the operator who asked for it should watch it rather
+  than wait on a silent request. Driven entirely by this call — if
+  the client disconnects the work stops, which is fine because it is
+  idempotent (only missing pairs are ever computed)."""
+  service = _require_readouts(st)
+  async for report in service.compute(job_ids, names=names):
+    yield {
+      "job_id": report.job_id,
+      "instances": report.instances,
+      "written": report.written,
+      "unreported": report.unreported,
+      "remaining": report.remaining,
+      "error": report.error,
+    }
 
 
 def unregister_readout(

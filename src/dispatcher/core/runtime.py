@@ -76,12 +76,16 @@ if TYPE_CHECKING:
     JobState,
     Outcome,
   )
+  from dispatcher.core.readout import ReadoutValue
   from dispatcher.core.scheduler import Scheduler
 
   DispatchCallable = Callable[[DispatchEntry, JobState], Awaitable[None]]
   PollCallable = Callable[[Path], CompletionSnapshot | None]
   JobHook = Callable[[JobState, list[Outcome]], None]
-  TerminalHook = Callable[[str], None]
+  ReadoutSpecs = Callable[[str], list[dict[str, Any]]]
+  RecordReadouts = Callable[
+    [str, str, str, list["ReadoutValue"]], Awaitable[None]
+  ]
 
 
 logger = logging.getLogger(__name__)
@@ -142,7 +146,8 @@ class DispatcherRuntime:
     event_bus: EventBus | None = None,
     on_job_drained: JobHook | None = None,
     on_instance_completed: JobHook | None = None,
-    on_instance_scored: TerminalHook | None = None,
+    readout_specs: ReadoutSpecs | None = None,
+    record_readouts: RecordReadouts | None = None,
     docker_event_manager: DockerEventStreamManager | None = None,
   ) -> None:
     self._sched = scheduler
@@ -153,12 +158,13 @@ class DispatcherRuntime:
     self._event_bus = event_bus
     self._on_job_drained = on_job_drained
     self._on_instance_completed = on_instance_completed
-    # Fires with a job_id the moment an instance lands in
-    # done_ok/done_err — the readout trigger. Deliberately narrower
-    # and cheaper than on_instance_completed (which builds the whole
-    # outcome list) and deliberately NOT fired for unknown/ghosted:
-    # there is nothing to derive from an instance with no envelope.
-    self._on_instance_scored = on_instance_scored
+    # Readouts. `readout_specs(job_id)` is stamped into
+    # instance.json so the worker scores itself on the way out;
+    # `record_readouts` folds what it wrote into the job's column
+    # index. The dispatcher runs no readout code either way — it
+    # tells the instance what to run and files the answer.
+    self._readout_specs = readout_specs
+    self._record_readouts = record_readouts
     self._docker_events = docker_event_manager
     # (image_id, host) pairs verified present. Restart clears it;
     # re-verification is one cheap inspect per pair.
@@ -208,6 +214,16 @@ class DispatcherRuntime:
       "instance_id": action.instance_id,
       "home": state.container.home_mount,
       "payload": state.payloads.get(action.task_id),
+      # Read at dispatch, not at registration: an arena's readouts
+      # can change between instances of one job, and the instance
+      # should score itself on what is registered when it RUNS.
+      # Instances dispatched before a registration are the
+      # retroactive command's business.
+      "readouts": (
+        self._readout_specs(action.job_id)
+        if self._readout_specs is not None
+        else []
+      ),
     }
 
     def _stage() -> None:
@@ -561,16 +577,6 @@ class DispatcherRuntime:
     )
     if to_state in ("done_ok", "done_err"):
       self._last_exit.pop((aid, instance_id), None)
-      if self._on_instance_scored is not None:
-        # Synchronous and before any await below, so a value can
-        # start being computed in the same tick the bucket changed —
-        # this is where the "no delay" in the readout path comes
-        # from. It must not raise: a hook failure cannot be allowed
-        # to abandon a transition half-applied.
-        try:
-          self._on_instance_scored(aid)
-        except Exception:
-          logger.exception("on_instance_scored hook raised job=%s", aid)
 
     state = self._sched.job_state(aid)
     events_to_append: list[dict] = []
@@ -656,6 +662,26 @@ class DispatcherRuntime:
     # re-derives from disk anyway.
     for ev in events_to_append:
       await append_event_async(event_log_path_for(state), ev)
+    if (
+      self._record_readouts is not None
+      and snapshot is not None
+      and snapshot.readouts
+      and to_state in ("done_ok", "done_err")
+    ):
+      # Another append onto shared storage, so it belongs down here
+      # with the others. The values were read in the same look that
+      # classified the instance, so nothing was waited on for them.
+      try:
+        await self._record_readouts(
+          aid, task_id, instance_id, snapshot.readouts
+        )
+      except Exception:
+        logger.exception(
+          "readout record failed job=%s task=%s (the retroactive "
+          "pass will pick it up)",
+          aid,
+          task_id,
+        )
 
   # ── resolver ───────────────────────────────────────────────
 

@@ -88,7 +88,6 @@ from dispatcher.services.readouts import (
   ReadoutRegistry,
   ReadoutService,
   docker_readout_run,
-  readout_sweep_loop,
 )
 
 if TYPE_CHECKING:
@@ -144,9 +143,10 @@ def create_app(
       id_gen=lambda task: server_state.next_instance_id(task),
       pool_caps=dict(settings.pool_caps),
     )
-    # Readouts are built before the runtime so the completion path
-    # can call `request` synchronously — that hook is where "values
-    # appear with no artificial delay" actually comes from.
+    # Readouts are built before the runtime because the runtime
+    # needs both halves of the live path: the spec list to stamp
+    # into instance.json at dispatch, and somewhere to file what the
+    # worker scored itself at completion.
     readout_registry = ReadoutRegistry.load(config.data_dir)
 
     def _refresh_archive_bytes(job_id: str) -> None:
@@ -185,7 +185,10 @@ def create_app(
       poll=poll,
       tick_interval=config.tick_interval,
       event_bus=event_bus,
-      on_instance_scored=readouts.request,
+      readout_specs=lambda aid: [
+        s.model_dump(mode="json") for s in readouts.specs_for_job(aid)
+      ],
+      record_readouts=readouts.record,
     )
     if config.use_docker_events:
       docker_events = DockerEventStreamManager(
@@ -309,10 +312,9 @@ def create_app(
         ),
       ),
       ("notify", notify_manager.run),
-      (
-        "readout_sweep",
-        lambda: readout_sweep_loop(readouts, settings.readouts),
-      ),
+      # No readout loop. The live path is the worker scoring itself,
+      # and the retroactive path is driven by its own request — so
+      # nothing about readouts runs in the background.
     ]
     server_state.tasks = [
       asyncio.create_task(supervised(name, factory))
@@ -325,10 +327,6 @@ def create_app(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
           await task
-      # Readout passes are per-job tasks outside `tasks`; a
-      # container in flight is abandoned, and the pairs it did not
-      # report stay unscored for the next boot's sweep.
-      await readouts.close()
       if server_state.notify_sender is not None:
         await server_state.notify_sender.close()
       if docker_events is not None:
@@ -592,11 +590,43 @@ def create_app(
 
   @api.post("/readouts")
   async def register_readout(payload: dict[str, Any]) -> dict[str, Any]:
-    return ops.register_readout(_get_state(app), payload)
+    return await ops.register_readout(_get_state(app), payload)
 
   @api.delete("/readouts")
   async def unregister_readout(arena: str, name: str) -> dict[str, Any]:
     return ops.unregister_readout(_get_state(app), arena, name)
+
+  @api.post("/readouts/compute")
+  async def compute_readouts(payload: dict[str, Any] | None = None):
+    """Retroactive pass. Streams one JSON line per container pass —
+    a backfill can run for minutes and the operator who asked should
+    watch it, not wait on a silent request."""
+    body = payload or {}
+    raw_names = body.get("names")
+    names = (
+      [str(n) for n in raw_names]
+      if isinstance(raw_names, list) and raw_names
+      else None
+    )
+    st = _get_state(app)
+    # Resolved BEFORE the response starts: once bytes are on the
+    # wire a 404 can no longer be sent, and the client would get a
+    # 200 with a truncated body instead.
+    job_ids = ops.resolve_compute_targets(
+      st,
+      arena=str(body.get("arena") or ""),
+      job_id=str(body.get("job_id") or ""),
+    )
+
+    async def gen():
+      async for report in ops.compute_readouts(st, job_ids, names=names):
+        yield json.dumps(report) + "\n"
+
+    return StreamingResponse(
+      gen(),
+      media_type="application/x-ndjson",
+      headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
   @api.get("/jobs/{job_id}/readouts")
   async def get_job_readouts(job_id: str) -> dict[str, Any]:

@@ -1,29 +1,43 @@
-"""Readouts: operator code that turns finished instances into
-values the dispatcher can serve as columns.
+"""Readouts: operator code that turns a finished instance into
+values the dispatcher serves as columns.
 
 The dispatcher cannot know what `reward` or `tgc` means — every
-benchmark computes it differently, out of its own envelope. So the
-computation is the research repo's: a named Python callable that
-the dispatcher runs INSIDE a container built from the job's pinned
-image, once per finished instance, and whose return value it
-appends to a file under the job's home.
+benchmark computes it from its own envelope. So the computation is
+the research repo's: a named function of one finished instance,
+registered on an arena.
+
+**Where it runs is the whole design.** The instance's own worker
+process runs it, right after the work finishes, inside the
+container that already has every dependency loaded. So a value is
+on disk before the outcome envelope is, and the dispatcher reads it
+in the same look that detects completion — no second container, no
+trigger, no delay. That is the same shape Harbor's verifier and
+Braintrust's `Eval()` settled on: the thing doing the work scores
+itself.
+
+Only the **retroactive** path needs machinery, and it is a separate
+operator command (`dispatcher readout`): a readout registered after
+a run finished, a redefined one, or an instance that died before it
+could score itself. That path starts a container from the job's
+pinned image and computes the missing pairs.
 
 Identity is the NAME, alone. A changed computation is a different
 readout (`reward-v1` / `reward-v2`), never a new version of the
 same one: a column that silently changes meaning invalidates every
-figure already drawn from it, and nothing in the record would say
-so. That rule is why there is no version field here.
-
-One value per instance is the whole contract. Job- and arena-level
-numbers are arithmetic over those values (see `aggregate`), so no
-operator code runs at that level and there is nothing to keep in
-sync.
+figure already drawn from it. Each value also records the
+`source_sha256` + `image_id` that produced it, so "which code made
+this number" is answerable without trusting the name.
 
 Files, per job:
-  <home_root>/.readouts/<name>.jsonl   append-only, one ReadoutValue
-                                       per line, last line wins
-  <home_root>/.readouts/request.json   what the current container
-                                       pass was asked to do
+  <home_root>/.readouts/<name>.jsonl   append-only column index,
+                                       one ReadoutValue per line,
+                                       last line wins
+  <home_root>/.readouts/request.json   what the retroactive pass
+                                       was asked to do
+and per instance:
+  <home>/readouts.json                 what the worker scored
+                                       itself, written BEFORE the
+                                       outcome envelope
 """
 
 from __future__ import annotations
@@ -40,16 +54,17 @@ if TYPE_CHECKING:
 
 READOUT_DIRNAME = ".readouts"
 REQUEST_FILENAME = "request.json"
+INSTANCE_READOUTS_FILENAME = "readouts.json"
 
-# The readout runner marks its result lines with this prefix so
-# the operator's own prints can share stdout without corrupting
-# the protocol. U+001F (unit separator) does not occur in ordinary
+# The retroactive runner marks its result lines with this prefix so
+# the operator's own prints can share stdout without corrupting the
+# protocol. U+001F (unit separator) does not occur in ordinary
 # program output.
 RESULT_PREFIX = "\x1fdispatcher-readout\x1f"
 
 # The name becomes a filename and a wire key, so keep it boring.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-# `module.path:callable` — resolved in the container, never here.
+# `module.path:callable` — resolved where the code lives, never here.
 _ENTRYPOINT_RE = re.compile(
   r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
 )
@@ -60,21 +75,22 @@ class BadReadout(ValueError):
 
 
 class ReadoutSpec(BaseModel):
-  """One registration.
-
-  `entrypoint` is imported by the in-container runner, never by
-  the dispatcher — the dispatcher has no idea what the research
-  repo's modules are, and importing operator code into the
-  scheduler process is exactly the coupling this design avoids."""
+  """One registration. Travels into the instance via
+  `instance.json`, so the worker knows what to score itself on."""
 
   model_config = ConfigDict(extra="forbid")
 
   name: str
   entrypoint: str
-  timeout_sec: PositiveFloat = 60.0
-  """Per-INSTANCE wall clock inside the runner. The container also
-  gets an outer timeout; this one exists so a single pathological
-  instance cannot eat the whole batch."""
+  """`module:callable`, imported inside the research repo's own
+  container — never by the dispatcher, which has no idea what that
+  repo's modules are."""
+
+  timeout_sec: PositiveFloat = 600.0
+  """Per-instance wall clock. Deliberately generous: the readout
+  runs inside the instance, so its cost is accepted as part of the
+  work rather than fenced off. A readout that parses a large trace
+  is a legitimate readout; one that hangs forever is not."""
 
   def validated(self) -> ReadoutSpec:
     if not _NAME_RE.match(self.name):
@@ -90,20 +106,20 @@ class ReadoutSpec(BaseModel):
 
 
 class ReadoutValue(BaseModel):
-  """One line of `<name>.jsonl`.
+  """One line of `<name>.jsonl`, and one entry of a worker's
+  `readouts.json`.
 
   `ok=False` records a readout that RAISED on this instance. It
   still counts as scored: the envelope is immutable and the code is
   the same, so re-running it produces the same exception forever.
-  Batch-level failures (container never started, runner died) emit
-  no line at all, which is what makes those retry.
-
-  `name` is redundant with the filename and kept anyway: these
-  files outlive the dispatcher that wrote them, and a line that
-  names its own readout can be read years later without the
-  directory around it."""
+  An instance that produced no entry at all is what the retroactive
+  path exists for."""
 
   name: str = ""
+  """Redundant with the filename and kept anyway: these files
+  outlive the dispatcher that wrote them, and a line that names its
+  own readout can be read years later without the directory."""
+
   instance_id: str
   task_id: str = ""
   ok: bool = True
@@ -111,16 +127,21 @@ class ReadoutValue(BaseModel):
   error: str = ""
   at: datetime | None = None
   """When the DISPATCHER recorded it. Stamped on the way to disk,
-  not by the runner: the container's clock is not ours, and a
-  missing field must not make the line unparseable."""
+  not by the worker: a missing field must not make the line
+  unparseable, and the worker's clock is not ours."""
+
+  source_sha256: str = ""
+  image_id: str = ""
+  """What computed it. The name is the column's identity, but these
+  two pin the exact code — so a number can be traced back without
+  trusting that the name never got reused."""
 
 
 class ReadoutAggregate(BaseModel):
   """Job-level roll-up of one readout's values."""
 
   n: int = 0
-  """Instances with a value of any kind, errors and nulls included —
-  the denominator behind `readout_lag`."""
+  """Instances with a value of any kind, errors and nulls included."""
 
   errors: int = 0
   """The readout raised on this instance."""
@@ -141,10 +162,13 @@ class ReadoutAggregate(BaseModel):
 class ReadoutJobSummary(BaseModel):
   """What a job row carries about its readouts.
 
-  `lag` = (instance, readout) pairs with a finished instance and no
-  value yet. It is the number that makes a too-heavy readout
-  visible: if computation cannot keep up with completion, this
-  grows monotonically instead of the delay hiding somewhere.
+  `lag` = finished (instance, readout) pairs with no value. In the
+  live path it is 0 by construction — the worker scores itself, so a
+  finished instance arrives already scored. Anything above 0 is
+  therefore actionable rather than transient: an instance that died
+  before scoring, or a readout registered after the fact. It is the
+  number that says "run `dispatcher readout`".
+
   `None` = values for this job are not loaded, so the honest answer
   is "unknown", not 0."""
 
@@ -177,7 +201,38 @@ def aggregate(values: dict[str, ReadoutValue]) -> ReadoutAggregate:
   )
 
 
-# ── on-disk values ───────────────────────────────────────────────
+# ── per-instance file (the live path) ────────────────────────────
+
+
+def instance_readouts_path(instance_home: Path) -> Path:
+  return instance_home / INSTANCE_READOUTS_FILENAME
+
+
+def read_instance_readouts(instance_home: Path) -> list[ReadoutValue]:
+  """What the worker scored itself.
+
+  Absent or malformed is simply "no values" — never an error. The
+  outcome envelope is the dispatcher's contract; this file is a
+  courtesy the worker paid, and a broken one must not change how the
+  instance is classified. The retroactive path fills the gap."""
+  try:
+    raw = json.loads(
+      instance_readouts_path(instance_home).read_text(encoding="utf-8")
+    )
+  except (OSError, json.JSONDecodeError):
+    return []
+  if not isinstance(raw, list):
+    return []
+  out: list[ReadoutValue] = []
+  for row in raw:
+    try:
+      out.append(ReadoutValue.model_validate(row))
+    except Exception:
+      continue
+  return out
+
+
+# ── job-level column index ───────────────────────────────────────
 
 
 def readout_dir(home_root: Path) -> Path:
@@ -196,10 +251,10 @@ def read_values(home_root: Path, name: str) -> dict[str, ReadoutValue]:
   """`{instance_id: value}`, last line winning.
 
   Append-only with last-wins is what makes a recompute possible
-  without ever rewriting history: the old value stays in the file
-  as a record, the new one shadows it. Unparseable lines are
-  skipped — the file is read far more often than it is written, and
-  one torn tail must not hide a thousand good values."""
+  without rewriting history: the old value stays in the file as a
+  record, the new one shadows it. Unparseable lines are skipped —
+  the file is read far more often than written, and one torn tail
+  must not hide a thousand good values."""
   path = values_path(home_root, name)
   out: dict[str, ReadoutValue] = {}
   try:
@@ -220,11 +275,11 @@ def read_values(home_root: Path, name: str) -> dict[str, ReadoutValue]:
 def append_values(
   home_root: Path, name: str, values: list[ReadoutValue]
 ) -> None:
-  """One open, one write, one flush — the whole batch lands as a
-  single append so a crash cannot interleave it with another
-  writer's lines. Only the dispatcher writes these files (the
-  container's job home mount is read-only), so there is exactly
-  one writer per path and no lock is needed."""
+  """One open, one write — the whole batch lands as a single append
+  so a crash cannot interleave it. Only the DISPATCHER writes these
+  files (workers write their own instance home; the retroactive
+  container gets the job home read-only), so there is exactly one
+  writer per path and no lock is needed."""
   if not values:
     return
   path = values_path(home_root, name)
@@ -235,9 +290,8 @@ def append_values(
 
 
 def write_request(home_root: Path, request: dict[str, Any]) -> Path:
-  """Stage what the next container pass should do. Read back
-  through the job home's read-only mount, so the dispatcher stays
-  the only writer here too."""
+  """Stage what the next retroactive pass should do. Read back
+  through the job home's read-only mount."""
   path = request_path(home_root)
   path.parent.mkdir(parents=True, exist_ok=True)
   tmp = path.with_suffix(".json.tmp")
@@ -247,7 +301,7 @@ def write_request(home_root: Path, request: dict[str, Any]) -> Path:
 
 
 def parse_result_lines(stdout: str) -> list[ReadoutValue]:
-  """Pull result records out of the container's stdout.
+  """Pull result records out of a retroactive container's stdout.
 
   Everything without the marker is the operator's own output and is
   left for the log: a readout that prints is not a readout that

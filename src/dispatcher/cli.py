@@ -3,6 +3,12 @@
 Example:
   dispatcher serve --self-host ml10 --data-dir ~/dispatcher-data \\
     --host ml10=8 --host ml9=8 --max-concurrent 12 --port 7200
+
+`dispatcher readout <arena|job_id>` fills in readout values the
+live path never produced — a readout registered after a run
+finished, a redefinition, an instance that died before scoring
+itself. A command and not a background loop on purpose: it starts
+containers, and that is an operator's decision to make and watch.
 """
 
 from __future__ import annotations
@@ -57,8 +63,38 @@ def main(argv: list[str] | None = None) -> int:
   monitor.add_argument("--server", default="http://127.0.0.1:7200")
   monitor.add_argument("--detail", default=None, metavar="JOB_ID")
   monitor.add_argument("--refresh-per-second", type=int, default=4)
+  readout = sub.add_parser(
+    "readout",
+    help="compute readout values the live path did not produce",
+  )
+  readout.add_argument(
+    "target",
+    metavar="ARENA|JOB_ID",
+    help=(
+      "an arena path (covers its subtree) or one job_id; anything "
+      "containing '/' or starting with 'job-' is disambiguated "
+      "automatically"
+    ),
+  )
+  readout.add_argument(
+    "--name",
+    action="append",
+    default=[],
+    metavar="READOUT",
+    help="only this readout; repeatable (default: all registered)",
+  )
+  readout.add_argument("--server", default="http://127.0.0.1:7200")
 
   args = ap.parse_args(argv)
+
+  if args.cmd == "readout":
+    from dispatcher.tools.readout_cli import run_readout
+
+    return run_readout(
+      server=args.server,
+      target=args.target,
+      names=list(args.name),
+    )
 
   if args.cmd == "monitor":
     from rich.console import Console

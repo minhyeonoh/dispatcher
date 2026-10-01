@@ -79,10 +79,28 @@ the arm's mean down and read as a worse method instead of a broken
 run. And `kind` is a string on purpose: a column whose values are
 not all numbers gets `n` and nothing invented on top of it.
 
-Values appear as instances finish, with no timer in the path. Watch
-`readout_lag` on the jobs table while the sweep runs — it is
-finished `(instance, readout)` pairs with no value yet, so it
-should sit at 0 and only blip when several instances land at once.
+Each instance scores itself: `dispatcher_sdk.run` calls these four
+functions right after `work` returns and leaves the values in
+`readouts.json` next to the envelope. So `readout_lag` on the jobs
+table should sit at **exactly 0** the whole run — a finished
+instance arrives already scored, and there is no container, trigger
+or timer in the path.
+
+To see the other path, submit with `--no-readouts`, let it finish,
+then register and run the command:
+
+```bash
+uv run python examples/sleepbench/submit.py … --no-readouts
+# … wait for the arena to drain; readout_lag is null (nothing
+# registered), then 4 per instance once you register:
+curl -s localhost:7200/api/readouts -XPOST -H 'content-type: application/json' \
+  -d '{"arena":"demo/sleepbench","name":"reward","entrypoint":"readouts:reward"}'
+dispatcher readout demo/sleepbench
+```
+
+That is the retroactive path doing what it exists for — and the
+same `readouts.py`, imported in a container from the job's pinned
+image instead of in the worker.
 
 ## An instance sees only its own home
 

@@ -7,9 +7,11 @@ import os
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from dispatcher_sdk.readout import score_self
 
 if TYPE_CHECKING:
   from collections.abc import Callable
@@ -39,6 +41,12 @@ class InstanceContext:
   """`k=v` string for `docker run --label` on every sibling
   container this instance starts. Unlabelled siblings leak."""
 
+  readouts: list[dict[str, Any]] = field(default_factory=list)
+  """The readouts registered on this job's arena, as the dispatcher
+  stamped them into `instance.json`. `run()` applies them to the
+  envelope it is about to write — see `dispatcher_sdk.readout`.
+  Worker code does not normally touch this."""
+
 
 def load_instance(
   *,
@@ -67,6 +75,7 @@ def load_instance(
           f"{spec_path}: {last_exc}"
         ) from last_exc
       time.sleep(0.5)
+  readouts = spec.get("readouts")
   return InstanceContext(
     job=spec.get("job_id") or e.get("DISPATCHER_JOB", ""),
     task=spec.get("task_id") or e.get("DISPATCHER_TASK", ""),
@@ -74,6 +83,7 @@ def load_instance(
     home=home,
     payload=spec.get("payload"),
     set_label=e.get("DISPATCHER_SET_LABEL", ""),
+    readouts=readouts if isinstance(readouts, list) else [],
   )
 
 
@@ -87,6 +97,36 @@ def write_outcome(home: Path, envelope: dict[str, Any]) -> None:
   tmp.replace(path)
 
 
+def _finish(
+  instance: InstanceContext,
+  envelope: dict[str, Any],
+  *,
+  score: bool,
+) -> None:
+  """Score, then write the envelope. In that order, always.
+
+  The envelope is the dispatcher's completion signal, so everything
+  this instance wants read has to be on disk BEFORE it lands —
+  otherwise the dispatcher reads the home, finds no values, and the
+  operator has to run the retroactive path for a value the instance
+  already knew.
+
+  `score=False` for an infra failure: the machine failed, the task
+  will be requeued, and scoring a run that is about to be rerun
+  would put a value on an instance that never counted."""
+  if score:
+    score_self(
+      home=instance.home,
+      instance_id=instance.instance,
+      task_id=instance.task,
+      specs=instance.readouts,
+      outcome=envelope,
+      payload=instance.payload,
+      log=lambda m: print(f"dispatcher_sdk.readout: {m}", file=sys.stderr),
+    )
+  write_outcome(instance.home, envelope)
+
+
 def run(
   work: Callable[[InstanceContext], Any],
   *,
@@ -94,12 +134,19 @@ def run(
   spec_timeout_s: float = 15.0,
   _exit: Callable[[int], None] = sys.exit,
 ) -> None:
-  """Full lifecycle: load spec → work → write outcome → exit.
+  """Full lifecycle: load spec → work → readouts → write outcome →
+  exit.
 
   The outcome is written BEFORE the process (and thus the
   container) exits, so the die event the dispatcher sees always
   comes after the envelope hit the filesystem — the reader only
-  has to wait out cache lag, never the write itself."""
+  has to wait out cache lag, never the write itself.
+
+  Readouts run here, in this process, on the envelope about to be
+  written: every dependency is already loaded, the artifacts are
+  local, and the dispatcher finds the values in the same look that
+  detects completion. They cannot change the envelope — a scoring
+  bug must never be able to turn finished work into failed work."""
   try:
     instance = load_instance(env=env, timeout_s=spec_timeout_s)
   except InfraFailure as exc:
@@ -111,8 +158,8 @@ def run(
   try:
     out = work(instance)
   except InfraFailure as exc:
-    write_outcome(
-      instance.home,
+    _finish(
+      instance,
       {
         "ok": False,
         "error": {
@@ -122,12 +169,13 @@ def run(
         },
         "infra": True,
       },
+      score=False,
     )
     _exit(EX_INFRA)
     return
   except BaseException as exc:
-    write_outcome(
-      instance.home,
+    _finish(
+      instance,
       {
         "ok": False,
         "error": {
@@ -137,11 +185,16 @@ def run(
         },
         "infra": False,
       },
+      # A failed run still gets scored: `solved` is False, `kind`
+      # comes from the payload, and a column that skipped failures
+      # would quietly report a mean over successes only.
+      score=True,
     )
     _exit(EX_ERROR)
     return
-  write_outcome(
-    instance.home,
+  _finish(
+    instance,
     {"ok": True, "error": None, "infra": False, "data": out},
+    score=True,
   )
   _exit(EX_OK)

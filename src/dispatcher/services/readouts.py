@@ -1,51 +1,36 @@
-"""Readout execution: registry, executor, sweep.
+"""Readout registry, the column index, and the retroactive pass.
 
-Two triggers, one mechanism.
+Two paths, deliberately NOT merged — the same split Harbor and
+Braintrust arrived at:
 
-    instance → done_ok/done_err ──┐
-    readout registered ───────────┼──→ request(job) ──→ one container
-    periodic sweep (lag > 0) ─────┘                     pass for that job
+**Live.** The worker scores itself (`dispatcher_sdk.run`) and leaves
+`readouts.json` beside the envelope. The dispatcher reads it in the
+same look that detects completion and folds it into the job's column
+index. No container, no trigger, no timer, no delay — and nothing in
+this module schedules anything. `record()` is the whole live path.
 
-`request(job)` is the whole scheduler. There is no timer and no
-debounce: the first request starts a container immediately, so the
-common case (one instance finishing) pays zero artificial delay.
-Requests arriving while a pass is computing are folded into exactly
-ONE more pass after it — the running container's own duration is
-the batching window, which is a delay we are already spending
-rather than one we invented. A burst of 500 completions therefore
-costs two container runs, not 500.
+**Retroactive.** An operator runs `dispatcher readout`, which asks
+for pairs the live path never produced: a readout registered after
+the run, a redefinition, an instance that died before scoring
+itself. `compute()` starts a container from the job's pinned image,
+one pass at a time, and appends what it reports. Nothing here runs
+on its own — the request drives it, so there is no concurrency to
+bound and no starvation to reason about.
 
-The batch is capped (`batch_cap`). Without the cap, a readout
-heavy enough to lose the race against completion would grow its
-batch monotonically until the job ended, and then hold one
-container for an hour — turning "immediately" into "eventually"
-with nothing in the record saying so. With it, backlog accumulates
-on the filesystem (instances with no value) instead of inside one
-container, the loop simply runs back-to-back passes, and
-`ReadoutJobSummary.lag` makes the backlog a number the operator
-can read.
-
-Containers run on the launcher only. It is the host that resolved
-the image at submit, the job home is on a shared filesystem
-anyway, and host selection is the one piece of complexity this
-path can do entirely without.
+`ReadoutJobSummary.lag` is the number that connects them: 0 in
+steady state (the live path leaves nothing behind), and anything
+above 0 names work for the retroactive command.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from pydantic import (
-  BaseModel,
-  ConfigDict,
-  PositiveFloat,
-  PositiveInt,
-)
+from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from dispatcher.core import clock, labels
 from dispatcher.core.dispatch import (
@@ -54,7 +39,6 @@ from dispatcher.core.dispatch import (
   SOURCE_MOUNT,
   SOURCE_TAR_FILENAME,
 )
-from dispatcher.core.loops import every
 from dispatcher.core.readout import (
   READOUT_DIRNAME,
   REQUEST_FILENAME,
@@ -71,7 +55,7 @@ from dispatcher.core.readout import (
 )
 
 if TYPE_CHECKING:
-  from collections.abc import Awaitable, Callable
+  from collections.abc import AsyncIterator, Awaitable, Callable
   from datetime import datetime
   from pathlib import Path
 
@@ -86,9 +70,10 @@ logger = logging.getLogger(__name__)
 
 READOUTS_FILENAME = "readouts.json"
 
-# Container-side paths. The job home is mounted READ-ONLY: the
-# dispatcher is the only writer of value files, which is what makes
-# the append-only files single-writer and lock-free.
+# Container-side paths for the retroactive pass. The job home is
+# mounted READ-ONLY: the dispatcher is the only writer of the column
+# index, which is what makes those append-only files single-writer
+# and lock-free.
 JOB_MOUNT = "/dispatcher/job"
 ENV_JOB_DIR = "DISPATCHER_JOB_DIR"
 ENV_REQUEST = "DISPATCHER_READOUT_REQUEST"
@@ -105,47 +90,29 @@ _RUNNER_COMMAND = (
 
 
 class ReadoutSettings(BaseModel):
-  enabled: bool = True
-  """Off = no container ever starts. Values already on disk stay
-  readable; only computation stops."""
+  """Only the retroactive pass has knobs; the live path has none to
+  have — it is the worker's own process doing its own work."""
 
-  batch_cap: PositiveInt = 64
-  """Instances per container pass. Bounds worst-case latency at
-  `batch_cap × per-instance cost` and bounds how much work one
-  container death can lose."""
+  batch: PositiveInt = 64
+  """Instances per retroactive container pass. Bounds how much one
+  container death loses, and keeps progress visible per pass."""
 
-  max_concurrent_jobs: PositiveInt = 2
-  """Concurrent readout containers on the launcher. Boot-time only
-  — the gate is sized once, so this is deliberately absent from
-  ReadoutPatch rather than silently ignored there."""
-
-  sweep_interval_seconds: PositiveFloat = 300.0
-  """Cadence of the lag sweep, which exists to heal transient
-  failures (a container that could not start), NOT to deliver
-  values — the live path already does that with no delay."""
-
-  container_timeout_sec: PositiveFloat = 900.0
-  """Outer backstop. The per-readout timeout inside the runner is
-  the real guard; this catches a container that never gets that
-  far."""
+  container_timeout_sec: float = 3600.0
+  """Outer backstop for one pass. The per-readout timeout inside the
+  runner is the real guard; this catches a container that never gets
+  that far."""
 
 
 class ReadoutPatch(BaseModel):
   model_config = ConfigDict(extra="forbid")
 
-  enabled: bool | None = None
-  batch_cap: PositiveInt | None = None
-  sweep_interval_seconds: PositiveFloat | None = None
-  container_timeout_sec: PositiveFloat | None = None
+  batch: PositiveInt | None = None
+  container_timeout_sec: float | None = None
 
 
 def apply_patch(settings: ReadoutSettings, patch: ReadoutPatch) -> None:
-  if patch.enabled is not None:
-    settings.enabled = patch.enabled
-  if patch.batch_cap is not None:
-    settings.batch_cap = patch.batch_cap
-  if patch.sweep_interval_seconds is not None:
-    settings.sweep_interval_seconds = patch.sweep_interval_seconds
+  if patch.batch is not None:
+    settings.batch = patch.batch
   if patch.container_timeout_sec is not None:
     settings.container_timeout_sec = patch.container_timeout_sec
 
@@ -167,14 +134,15 @@ class ReadoutRegistry:
   """arena path → the readouts registered at that node.
 
   Registration is by arena because an arena is the comparison unit:
-  the jobs you put side by side are the jobs that must be scored
-  the same way. A path names its SUBTREE, so a readout at `bench`
+  the jobs you put side by side are the jobs that must be scored the
+  same way. A path names its SUBTREE, so a readout at `bench`
   applies to every job under `bench/...` too — the same inheritance
-  `arena_members` already gives group operations.
+  `arena_members` gives group operations.
 
   An arena is still derived state; nothing here creates one.
-  Registering for a path that no job names yet is legal and useful
-  (register, then submit)."""
+  Registering for a path no job names yet is legal and is in fact
+  the useful order: register, then submit, and every instance scores
+  itself on the way out."""
 
   def __init__(
     self,
@@ -186,10 +154,9 @@ class ReadoutRegistry:
 
   @classmethod
   def load(cls, data_dir: Path) -> ReadoutRegistry:
-    """A corrupt file raises rather than booting empty: the
-    registry is operator intent that nothing else on disk can
-    reconstruct, and silently dropping it would leave columns
-    quietly unfilled."""
+    """A corrupt file raises rather than booting empty: the registry
+    is operator intent that nothing else on disk can reconstruct, and
+    silently dropping it would leave every new instance unscored."""
     path = data_dir / READOUTS_FILENAME
     if not path.is_file():
       return cls(path)
@@ -252,8 +219,7 @@ class ReadoutRegistry:
     Refuses a name already registered on the same path. A name is
     the whole identity of a readout, so two definitions on one path
     would fill one column from two computations — and the jobs that
-    disagreed would be exactly the ones being compared. Better a
-    409 than a column nobody can trust."""
+    disagreed would be exactly the ones being compared."""
     spec = spec.validated()
     clash = self.conflicting_node(arena, spec.name)
     if clash is not None:
@@ -271,8 +237,8 @@ class ReadoutRegistry:
     self.save()
 
   def unregister(self, arena: str, name: str) -> bool:
-    """Stop computing it. Values already written stay on disk —
-    they are the record of a finished experiment, not a cache."""
+    """Stop computing it. Values already written stay on disk — they
+    are the record of a finished experiment, not a cache."""
     specs = self._by_arena.get(arena)
     if not specs:
       return False
@@ -287,7 +253,7 @@ class ReadoutRegistry:
     return True
 
 
-# ── executor ─────────────────────────────────────────────────────
+# ── service ──────────────────────────────────────────────────────
 
 
 @dataclass
@@ -298,6 +264,18 @@ class _Target:
   task_id: str
   state: str
   names: list[str]
+
+
+@dataclass
+class PassReport:
+  """One retroactive container pass, for the CLI to print."""
+
+  job_id: str
+  instances: int
+  written: int
+  unreported: int
+  remaining: int
+  error: str = ""
 
 
 class ReadoutService:
@@ -320,112 +298,126 @@ class ReadoutService:
     # job_id → readout name → instance_id → value.
     self._values: dict[str, dict[str, dict[str, ReadoutValue]]] = {}
     # (job_id, name) pairs read off disk. Per-NAME, so registering a
-    # readout later still picks up values a previous dispatcher
+    # readout later still picks up values an earlier dispatcher
     # generation wrote for it.
     self._loaded: set[tuple[str, str]] = set()
-    self._tasks: dict[str, asyncio.Task[None]] = {}
-    # A job in `_computing` has its snapshot taken; a job whose task
-    # exists but is absent here is still waiting for a slot, and the
-    # pass it is about to take will see any state changed since.
-    # That distinction is what lets `request` be a no-op in the
-    # second case without losing work.
-    self._computing: set[str] = set()
-    self._pending: set[str] = set()
-    self._slots = asyncio.Semaphore(settings.max_concurrent_jobs)
 
   @property
   def registry(self) -> ReadoutRegistry:
     return self._registry
 
-  # ── trigger ──────────────────────────────────────────────────
-
-  def request(self, job_id: str) -> None:
-    """Ask for a readout pass. Synchronous, idempotent, no delay.
-
-    Safe to call from a completion handler: it only touches
-    in-memory sets and creates a task."""
-    if not self._settings.enabled:
-      return
-    task = self._tasks.get(job_id)
-    if task is not None and not task.done():
-      if job_id in self._computing:
-        self._pending.add(job_id)
-      return
-    self._tasks[job_id] = asyncio.create_task(
-      self._run(job_id), name=f"readout-{job_id}"
-    )
-
-  def sweep_live(self) -> int:
-    """Re-request every live job carrying lag. The live path
-    already delivers values, so anything still missing here means a
-    pass failed — this is the retry, not the delivery."""
-    n = 0
-    for job_id in list(self._scheduler.iter_job_ids()):
-      if self._scheduler.is_archived(job_id):
-        continue
-      if (self.summary(job_id).lag or 0) > 0:
-        self.request(job_id)
-        n += 1
-    return n
-
-  async def close(self) -> None:
-    tasks = list(self._tasks.values())
-    for task in tasks:
-      task.cancel()
-    for task in tasks:
-      with contextlib.suppress(BaseException):
-        await task
-
-  # ── the loop ─────────────────────────────────────────────────
-
-  async def _run(self, job_id: str) -> None:
-    try:
-      while True:
-        async with self._slots:
-          self._computing.add(job_id)
-          try:
-            more = await self._compute_once(job_id)
-          except Exception:
-            logger.exception("readout pass failed job=%s", job_id)
-            more = False
-          finally:
-            self._computing.discard(job_id)
-        # Nothing may await between the discard above and this
-        # decision, or a `request` landing in the gap would find no
-        # task computing, take the "waiting for a slot" branch, and
-        # be dropped. Semaphore release is synchronous, so it does
-        # not yield — keep it that way.
-        if more or job_id in self._pending:
-          self._pending.discard(job_id)
-          continue
-        return
-    finally:
-      self._tasks.pop(job_id, None)
-      self._pending.discard(job_id)
-
-  async def _compute_once(self, job_id: str) -> bool:
-    """One container pass. Returns whether work remains (the cap
-    truncated the batch), which the loop turns into another pass
-    immediately."""
+  def specs_for_job(self, job_id: str) -> list[ReadoutSpec]:
+    """What a job's instances should score themselves on. Read at
+    dispatch and stamped into `instance.json`."""
     try:
       state = self._scheduler.job_state(job_id)
     except KeyError:
-      return False  # cancelled under us
+      return []
+    return self._registry.for_arena(state.arena)
+
+  # ── live path ────────────────────────────────────────────────
+
+  async def record(
+    self,
+    job_id: str,
+    task_id: str,
+    instance_id: str,
+    values: list[ReadoutValue],
+  ) -> None:
+    """Fold a worker's self-scored values into the job's column
+    index. The entire live path.
+
+    Called from the terminal pipeline with what the completion read
+    already found on disk, so this adds one NFS append and no other
+    work. Values the job does not register are dropped — the worker
+    is told what to run, but the registry decides what counts."""
+    if not values:
+      return
+    try:
+      state = self._scheduler.job_state(job_id)
+    except KeyError:
+      return
     specs = self._registry.for_arena(state.arena)
+    # Read the existing files once per (job, name) before adding to
+    # them. Marking them loaded without reading would hide values an
+    # earlier dispatcher generation wrote, and the job row would
+    # report a lag that the retroactive pass then found nothing to
+    # fix. In steady state `load_live` already did this at boot.
+    await self._ensure_loaded(job_id, state, specs)
+    registered = {s.name for s in specs}
+    now = self._clock()
+    by_name: dict[str, list[ReadoutValue]] = {}
+    for value in values:
+      if value.name not in registered:
+        continue
+      by_name.setdefault(value.name, []).append(
+        value.model_copy(
+          update={
+            "instance_id": instance_id,
+            "task_id": task_id or value.task_id,
+            "at": now,
+            "source_sha256": state.source_sha256,
+            "image_id": state.image_id,
+          }
+        )
+      )
+    await self._append(job_id, state, by_name)
+
+  # ── retroactive path ─────────────────────────────────────────
+
+  async def compute(
+    self, job_ids: list[str], *, names: list[str] | None = None
+  ) -> AsyncIterator[PassReport]:
+    """Fill in missing values, one container pass at a time,
+    yielding a report per pass so the caller can show progress.
+
+    Sequential on purpose. This is an operator command, not a
+    service: the cost of running it is the operator's to see, and a
+    single ordered stream of passes needs no concurrency limit, no
+    coalescing, and no starvation story."""
+    for job_id in job_ids:
+      while True:
+        report = await self._one_pass(job_id, names)
+        if report is None:
+          break
+        yield report
+        if report.error or report.remaining <= 0:
+          break
+        if report.written == 0:
+          # No progress and work remaining: stop rather than spin.
+          # Every target already had its chance this pass.
+          logger.warning(
+            "readout: job=%s made no progress, %d pair(s) left",
+            job_id,
+            report.remaining,
+          )
+          break
+
+  async def _one_pass(
+    self, job_id: str, names: list[str] | None
+  ) -> PassReport | None:
+    try:
+      state = self._scheduler.job_state(job_id)
+    except KeyError:
+      return None
+    specs = [
+      s
+      for s in self._registry.for_arena(state.arena)
+      if names is None or s.name in names
+    ]
     if not specs:
-      return False
+      return None
     await self._ensure_loaded(job_id, state, specs)
     targets = self._unscored(job_id, specs)
     if not targets:
-      # The common no-op: an `unknown` transition, or a request that
-      # raced another pass. Costs a dict walk, never a container.
-      return False
-    cap = max(1, self._settings.batch_cap)
-    batch, more = targets[:cap], len(targets) > cap
+      return None
+    cap = max(1, self._settings.batch)
+    batch, remaining = targets[:cap], max(0, len(targets) - cap)
     asked: dict[str, set[str]] = {}
     for target in batch:
       for name in target.names:
         asked.setdefault(name, set()).add(target.instance_id)
+    total_asked = sum(len(ids) for ids in asked.values())
 
     await asyncio.to_thread(
       write_request,
@@ -445,48 +437,72 @@ class ReadoutService:
         ],
       },
     )
-    stdout = await self._runner(
-      state, self._settings.container_timeout_sec
-    )
+    try:
+      stdout = await self._runner(
+        state, self._settings.container_timeout_sec
+      )
+    except Exception as exc:
+      logger.exception("readout pass failed job=%s", job_id)
+      return PassReport(
+        job_id=job_id,
+        instances=len(batch),
+        written=0,
+        unreported=total_asked,
+        remaining=remaining + len(batch),
+        error=f"{type(exc).__name__}: {exc}",
+      )
 
     now = self._clock()
     by_name: dict[str, list[ReadoutValue]] = {}
     for row in parse_result_lines(stdout):
       if row.instance_id not in asked.get(row.name, ()):
         # Never write a value nobody asked for: a confused runner
-        # must not be able to score instances outside its batch.
+        # must not score instances outside its batch.
         continue
       by_name.setdefault(row.name, []).append(
-        row.model_copy(update={"at": now})
+        row.model_copy(
+          update={
+            "at": now,
+            "source_sha256": state.source_sha256,
+            "image_id": state.image_id,
+          }
+        )
       )
+    written = await self._append(job_id, state, by_name)
+    return PassReport(
+      job_id=job_id,
+      instances=len(batch),
+      written=written,
+      unreported=total_asked - written,
+      remaining=remaining,
+    )
+
+  # ── shared ───────────────────────────────────────────────────
+
+  async def _append(
+    self,
+    job_id: str,
+    state: JobState,
+    by_name: dict[str, list[ReadoutValue]],
+  ) -> int:
+    """Disk first, memory second: a failed append must leave the
+    pair unscored so `lag` still names it."""
     written = 0
     for name, values in by_name.items():
       await asyncio.to_thread(append_values, state.home_root, name, values)
-      # Disk first, memory second: a failed append must leave the
-      # pair unscored so the sweep retries it.
       index = self._values.setdefault(job_id, {}).setdefault(name, {})
       for value in values:
         index[value.instance_id] = value
       written += len(values)
-    unreported = sum(len(ids) for ids in asked.values()) - written
-    if unreported > 0:
-      logger.warning(
-        "readout job=%s: %d/%d pair(s) unreported by the container "
-        "— they stay unscored and the sweep retries them",
-        job_id,
-        unreported,
-        unreported + written,
-      )
     if written and self._on_values_written is not None:
       self._on_values_written(job_id)
-    return more
+    return written
 
   def _unscored(
     self, job_id: str, specs: list[ReadoutSpec]
   ) -> list[_Target]:
     """Finished instances missing at least one value, in completion
-    order — so a truncated batch works through the oldest first and
-    nothing starves."""
+    order — so a truncated batch works through the oldest first."""
     view = self._scheduler.job_view(job_id)
     values = self._values.get(job_id, {})
     out: list[_Target] = []
@@ -542,12 +558,11 @@ class ReadoutService:
     index = self._values.get(job_id, {})
     return {s.name: dict(index.get(s.name, {})) for s in specs}
 
-  async def load_live(self) -> None:
-    """Boot: pull values for live jobs that have readouts, so the
-    first jobs table already carries columns and lag."""
-    for job_id in list(self._scheduler.iter_job_ids()):
-      if self._scheduler.is_archived(job_id):
-        continue
+  async def load_many(self, job_ids: list[str]) -> None:
+    """Pull values for these jobs off disk so `summary` can answer
+    truthfully. A read, never a computation — this is what makes
+    registering a readout able to say how much work it created."""
+    for job_id in job_ids:
       try:
         state = self._scheduler.job_state(job_id)
       except KeyError:
@@ -559,6 +574,17 @@ class ReadoutService:
         await self._ensure_loaded(job_id, state, specs)
       except OSError as exc:
         logger.warning("readout load failed job=%s: %s", job_id, exc)
+
+  async def load_live(self) -> None:
+    """Boot: pull values for live jobs that have readouts, so the
+    first jobs table carries columns and a truthful lag."""
+    await self.load_many(
+      [
+        job_id
+        for job_id in self._scheduler.iter_job_ids()
+        if not self._scheduler.is_archived(job_id)
+      ]
+    )
 
   def summary(self, job_id: str) -> ReadoutJobSummary:
     """The job row's readout cell. Pure projection over what is
@@ -581,16 +607,19 @@ class ReadoutService:
         continue
       values = index.get(spec.name, {})
       aggregates[spec.name] = aggregate(values)
-      # Values can include instances a requeue superseded, so the
-      # count is a lower bound on lag, not an exact one. It is an
-      # operator signal (is computation keeping up?), not a ledger.
+      # Values can include instances a requeue superseded, so this is
+      # a lower bound on lag, not an exact count. It is an operator
+      # signal ("run the retroactive pass"), not a ledger.
       lag += max(0, terminal - len(values))
     return ReadoutJobSummary(
       aggregates=aggregates, lag=None if unloaded else lag
     )
 
+  def jobs_with_lag(self, job_ids: list[str]) -> list[str]:
+    return [j for j in job_ids if (self.summary(j).lag or 0) > 0]
 
-# ── the container ────────────────────────────────────────────────
+
+# ── the retroactive container ────────────────────────────────────
 
 
 class ReadoutRunError(RuntimeError):
@@ -598,14 +627,17 @@ class ReadoutRunError(RuntimeError):
 
 
 def build_readout_argv(state: JobState) -> list[str]:
-  """`docker run` for one readout pass.
+  """`docker run` for one retroactive pass.
 
-  Deliberately unlike an instance's container in three ways: the
-  job home is mounted read-only (the dispatcher owns the value
-  files), `container.extra_args` is NOT applied (a readout has no
-  business claiming GPUs or the host network), and the command is
-  the SDK runner rather than the job's own — the operator supplies
-  an entrypoint, not a process."""
+  Deliberately unlike an instance's container in three ways: the job
+  home is mounted read-only (the dispatcher owns the column index),
+  `container.extra_args` is NOT applied (a readout has no business
+  claiming GPUs or the host network), and the command is the SDK
+  runner rather than the job's own.
+
+  It runs on the launcher. That host resolved the image at submit,
+  the job home is on shared storage anyway, and host selection is
+  complexity an operator-invoked command does not need."""
   spec = state.container
   argv = [
     "docker",
@@ -637,17 +669,16 @@ def build_readout_argv(state: JobState) -> list[str]:
 
 
 async def docker_readout_run(state: JobState, timeout_sec: float) -> str:
-  """Run the pass on the launcher and return its stdout.
+  """Run one pass on the launcher and return its stdout.
 
   Stdout is returned even on a non-zero exit: the runner emits one
   result line per pair as it goes, so a crash halfway still carries
   real values, and discarding them would make the batch's worst
-  instance cost the whole batch. Pairs with no line stay unscored
-  and the sweep retries them.
+  instance cost the whole batch. Pairs with no line stay unscored and
+  keep showing up in `lag`.
 
-  `start_new_session=True` — without it a tmux C-c on the
-  dispatcher pane forwards SIGINT into an in-flight docker
-  client."""
+  `start_new_session=True` — without it a tmux C-c on the dispatcher
+  pane forwards SIGINT into an in-flight docker client."""
   argv = build_readout_argv(state)
   proc = await asyncio.create_subprocess_exec(
     *argv,
@@ -695,27 +726,10 @@ async def kill_readout_containers(job_id: str) -> None:
   await proc.wait()
 
 
-# ── loop ─────────────────────────────────────────────────────────
-
-
-async def readout_sweep_loop(
-  service: ReadoutService, settings: ReadoutSettings
-) -> None:
-  async def tick() -> None:
-    n = service.sweep_live()
-    if n:
-      logger.info("readout sweep: re-requested %d job(s) with lag", n)
-
-  await every(
-    "readout_sweep",
-    lambda: settings.sweep_interval_seconds,
-    tick,
-    enabled_fn=lambda: settings.enabled,
-  )
-
-
 __all__ = [
   "BadReadout",
+  "JOB_MOUNT",
+  "PassReport",
   "ReadoutConflict",
   "ReadoutPatch",
   "ReadoutRegistry",
@@ -726,5 +740,4 @@ __all__ = [
   "apply_patch",
   "build_readout_argv",
   "docker_readout_run",
-  "readout_sweep_loop",
 ]

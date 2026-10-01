@@ -1,13 +1,17 @@
 """sleepbench's readouts: what its columns mean.
 
 Frozen into the same source tar as `worker.py`, so the code that
-scored a run is recorded next to the run — and the dispatcher
-imports it by name (`readouts:reward`) inside the job's own image.
+scored a run is recorded next to the run.
 
-A readout is just a function of one finished instance. It never
-writes anything; the dispatcher owns the value files. Everything
-it needs was put in `outcome["data"]` by the worker, which is why
-`data` is worth being generous with.
+These run in the instance's **own worker process**, right after
+`work` returns — `dispatcher_sdk.run` calls them on the envelope it
+is about to write. The same functions are what the retroactive
+`dispatcher readout` command imports in a container, so they cannot
+behave differently depending on which path ran them.
+
+A readout never writes anything; the dispatcher owns the value
+files. Everything it needs was put in `outcome["data"]` by the
+worker, which is why `data` is worth being generous with.
 """
 
 from __future__ import annotations
