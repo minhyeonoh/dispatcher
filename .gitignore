@@ -10,3 +10,8 @@ node_modules/
 
 # runtime artifacts
 *.log
+
+# reference screenshots dropped in the repo root while working on the
+# theme. One slipped into a commit because that commit used `git add
+# -A`; the pattern is what stops the next one.
+/Screenshot*.png
