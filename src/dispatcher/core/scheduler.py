@@ -179,11 +179,12 @@ class Scheduler:
     server runs that resolver pass before dispatch starts."""
     if job.job_id in self._jobs:
       raise ValueError(f"job already submitted: {job.job_id!r}")
-    # Pre-alias logs replay with alias="" — mint here; the caller
-    # persists the backfill.
     if not job.alias:
-      job.alias = self.mint_alias(job.job_id)
-    elif job.alias in self._alias_to_id:
+      raise ValueError(
+        f"job {job.job_id!r} restored with empty alias — the submit "
+        f"event is supposed to carry one"
+      )
+    if job.alias in self._alias_to_id:
       raise AliasCollisionError(job.alias)
     self._alias_to_id[job.alias] = job.job_id
     ghosted = ghosted or {}

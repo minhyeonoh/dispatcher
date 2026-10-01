@@ -197,11 +197,10 @@ def _erase_dispatch(
 def _parse_dispatch(
   ev: dict[str, Any], *, event_index: int
 ) -> DispatchEntry:
+  # The log writes `at`; DispatchEntry calls it `dispatched_at`.
   payload = {k: v for k, v in ev.items() if k != "type"}
-  if "dispatched_at" not in payload and "at" in payload:
+  if "at" in payload:
     payload["dispatched_at"] = payload.pop("at")
-  else:
-    payload.pop("at", None)
   try:
     return DispatchEntry.model_validate(payload)
   except Exception as e:

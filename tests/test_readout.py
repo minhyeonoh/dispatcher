@@ -1406,28 +1406,15 @@ async def test_no_pool_means_no_columns(tmp_path: Path):
   assert service.summary(job.job_id).columns == {}
 
 
-def test_registry_refuses_an_entrypoint_registration(tmp_path: Path):
-  """An entrypoint cannot be migrated: the code it names lives in
-  each job's archive, which is the limitation source registration
-  exists to remove. Refusing loudly beats serving a readout that
-  fails on every instance."""
-  (tmp_path / "readouts.json").write_text(
-    json.dumps(
-      {"bench": [{"name": "reward", "entrypoint": "readouts:reward"}]}
-    ),
-    encoding="utf-8",
-  )
-  with pytest.raises(RuntimeError, match="no longer supported"):
-    ReadoutRegistry.load(tmp_path)
-
-
-def test_registry_keeps_the_bare_list_file_format(tmp_path: Path):
+def test_registry_round_trips_columns_through_disk(tmp_path: Path):
   (tmp_path / "readouts.json").write_text(
     json.dumps(
       {
-        "bench": [
-          {"name": "reward", "source": "def reward(i):\n  return 1\n"}
-        ]
+        "bench": {
+          "readouts": [
+            {"name": "reward", "source": "def reward(i):\n  return 1\n"}
+          ]
+        }
       }
     ),
     encoding="utf-8",
@@ -1450,3 +1437,30 @@ def test_columns_source_takes_the_nearest_node(tmp_path: Path):
   assert reg.columns_source("other") == ""
   with pytest.raises(BadReadout):
     reg.set_columns("bench", "def not_columns(job): return {}")
+
+
+async def test_columns_recompute_after_a_restart(tmp_path: Path):
+  """Columns are a cache, and a restart empties it. Nothing will mark
+  a FINISHED job dirty afterwards — no further value is coming — so
+  loading its values has to, or the column stays blank forever."""
+  scheduler, service, pool, job = await mk_columns_world(tmp_path)
+  try:
+    await service.refresh([job.job_id])
+    assert service.summary(job.job_id).columns
+
+    # A fresh service over the same scheduler and disk = a restart.
+    reborn = ReadoutService(
+      scheduler=scheduler,
+      registry=service.registry,
+      settings=ReadoutSettings(),
+      runner=FakeRunner(),
+      pool=pool,
+    )
+    assert reborn.summary(job.job_id).columns == {}
+    await reborn.load_live()
+    await reborn.refresh([job.job_id])
+    assert reborn.summary(job.job_id).columns["reward_median"] == (
+      pytest.approx(0.3)
+    )
+  finally:
+    await pool.close()

@@ -187,14 +187,7 @@ class ReadoutRegistry:
   def load(cls, data_dir: Path) -> ReadoutRegistry:
     """A corrupt file raises rather than booting empty: the registry
     is operator intent that nothing else on disk can reconstruct, and
-    silently dropping it would leave every new instance unscored.
-
-    A bare list per arena is the oldest format and still loads. An
-    entry that still carries `entrypoint` instead of `source` CANNOT
-    be migrated — the code it points at lives in each job's archive,
-    which is the limitation source registration exists to remove — so
-    it raises rather than silently serving a readout that will fail on
-    every instance."""
+    silently dropping it would leave every new instance unscored."""
     path = data_dir / READOUTS_FILENAME
     if not path.is_file():
       return cls(path)
@@ -203,22 +196,11 @@ class ReadoutRegistry:
       by_arena: dict[str, list[ReadoutSpec]] = {}
       columns: dict[str, str] = {}
       for arena, node in raw.items():
-        specs = (
-          node if isinstance(node, list) else (node.get("readouts") or [])
-        )
-        for spec in specs:
-          if isinstance(spec, dict) and "entrypoint" in spec:
-            raise RuntimeError(
-              f"readout {spec.get('name')!r} at {arena!r} is registered "
-              f"as an entrypoint, which is no longer supported (the "
-              f"code must be registered, not a path into a job's "
-              f"archive). Re-register with `dispatcher readout add "
-              f"{arena} --file <py> --name {spec.get('name')}`"
-            )
         by_arena[arena] = [
-          ReadoutSpec.model_validate(s).validated() for s in specs
+          ReadoutSpec.model_validate(s).validated()
+          for s in node.get("readouts") or []
         ]
-        if isinstance(node, dict) and node.get("columns"):
+        if node.get("columns"):
           columns[arena] = str(node["columns"])
     except Exception as exc:
       raise RuntimeError(
@@ -806,6 +788,14 @@ class ReadoutService:
         await self._ensure_loaded(job_id, state, specs)
       except OSError as exc:
         logger.warning("readout load failed job=%s: %s", job_id, exc)
+        continue
+      # Columns are a cache and the cache is empty here — on boot
+      # because the process is new, on registration because what the
+      # values MEAN just changed. Either way every loaded job is
+      # dirty. Without this a finished job never recomputes (no
+      # further value will ever arrive to mark it) and its columns
+      # would stay blank forever.
+      self._dirty.add(job_id)
 
   async def load_live(self) -> None:
     """Boot: pull values for live jobs that have readouts, so the

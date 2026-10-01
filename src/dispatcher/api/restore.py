@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from dispatcher.api.wire import full_job_view
 from dispatcher.core.event_log import (
   ReplayError,
-  append_event,
   find_event_logs,
   read_events,
   replay_events,
@@ -108,7 +107,6 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
           host=entry.host,
           dispatched_at=entry.dispatched_at,
         )
-    needs_alias_backfill = not job.alias
     try:
       scheduler.restore(
         job,
@@ -124,23 +122,6 @@ def restore_jobs_from_disk(scheduler: Scheduler, data_dir: Path) -> int:
         exc,
       )
       continue
-    if needs_alias_backfill:
-      try:
-        append_event(
-          log_path,
-          {
-            "type": "patch",
-            "job_id": job.job_id,
-            "at": job.submitted_at.isoformat(),
-            "alias": job.alias,
-          },
-        )
-      except OSError as exc:
-        logger.warning(
-          "restore: alias backfill failed for %s: %s",
-          job.job_id,
-          exc,
-        )
     # Seed the outcome cache from the LATEST instance of each task
     # only — a superseded (requeued) instance's outcome must not
     # win.

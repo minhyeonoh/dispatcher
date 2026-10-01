@@ -949,7 +949,7 @@ async def set_columns(
   arena = normalize_arena(payload.get("arena", ""))
   if not arena:
     raise Invalid("arena is required")
-  source = str(payload.get("source") or payload.get("columns") or "")
+  source = str(payload.get("source") or "")
   try:
     service.registry.set_columns(arena, source)
   except BadReadout as exc:
