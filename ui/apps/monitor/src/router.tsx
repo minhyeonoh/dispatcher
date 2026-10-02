@@ -11,6 +11,7 @@
 //   /arenas/*path                    arena subtree
 //   /hosts                           fleet
 //   /settings                        the settings document
+//   /design                          how this is put together
 
 import {
   createRootRoute,
@@ -19,6 +20,7 @@ import {
 } from "@tanstack/react-router";
 import { parseJobFilter } from "./features/jobs/filter";
 import { ArenaPage } from "./features/arenas/ArenaPage";
+import { DesignPage } from "./features/design/DesignPage";
 import { HostsPage } from "./features/hosts/HostsPage";
 import { InstancePage } from "./features/instances/InstancePage";
 import { JobPage } from "./features/jobs/JobPage";
@@ -76,6 +78,12 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const designRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/design",
+  component: DesignPage,
+});
+
 export const router = createRouter({
   routeTree: rootRoute.addChildren([
     indexRoute,
@@ -85,6 +93,7 @@ export const router = createRouter({
     arenaRoute,
     hostsRoute,
     settingsRoute,
+    designRoute,
   ]),
 });
 

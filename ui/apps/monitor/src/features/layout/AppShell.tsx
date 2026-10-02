@@ -60,6 +60,7 @@ const NAV = [
   { to: "/jobs", label: "jobs", exact: false },
   { to: "/hosts", label: "fleet", exact: false },
   { to: "/settings", label: "settings", exact: false },
+  { to: "/design", label: "design", exact: false },
 ] as const;
 
 function Nav({ stacked = false }: { stacked?: boolean }) {
