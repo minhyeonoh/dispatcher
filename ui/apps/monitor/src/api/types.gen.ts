@@ -279,6 +279,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/packs-changed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Packs Changed Ep
+         * @description Somebody wrote this job's archives from outside the server.
+         *
+         *     `dispatcher pack` is that somebody. The server deliberately never
+         *     reads archives on the HTTP path — `pack_lag` answers from memory so
+         *     a sick NFS cannot stall `GET /jobs` — which leaves one gap: a write
+         *     it did not make. Rather than poll for it, the writer says so, and
+         *     this is the one read of disk a request is allowed to cause, because
+         *     an operator who just ran the command is waiting to see it land.
+         */
+        post: operations["packs_changed_ep_api_jobs__job_id__packs_changed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/unarchive": {
         parameters: {
             query?: never;
@@ -716,8 +743,6 @@ export interface components {
             auto?: boolean | null;
             /** Processors */
             processors?: number | null;
-            /** Timeout Sec */
-            timeout_sec?: number | null;
         };
         /** PackSettings */
         PackSettings: {
@@ -731,11 +756,6 @@ export interface components {
              * @default 2
              */
             processors: number;
-            /**
-             * Timeout Sec
-             * @default 600
-             */
-            timeout_sec: number;
         };
         /**
          * ReadoutAggregate
@@ -1490,6 +1510,39 @@ export interface operations {
         };
     };
     archive_job_ep_api_jobs__job_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    packs_changed_ep_api_jobs__job_id__packs_changed_post: {
         parameters: {
             query?: never;
             header?: never;

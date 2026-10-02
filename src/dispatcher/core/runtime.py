@@ -38,7 +38,6 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-import anyio
 from pydantic import BaseModel, ConfigDict, PositiveFloat, PositiveInt
 
 from dispatcher.core import clock, labels
@@ -52,6 +51,7 @@ from dispatcher.core.event_log import (
   append_event_async,
   event_log_path_for,
 )
+from dispatcher.core.loops import fan_out
 from dispatcher.core.models import (
   INFRA_EXIT_CODES,
   INSTANCE_SPEC_FILENAME,
@@ -734,39 +734,39 @@ class DispatcherRuntime:
     ghosted_entries = list(self._sched.iter_ghosted())
     if not unknown_entries and not ghosted_entries:
       return counts
-    sem = anyio.Semaphore(max(1, max_concurrent_probes))
 
-    async def probe_unknown(
-      aid: str, task_id: str, tv: InstanceView
+    # `fan_out` owns the bound and the per-item isolation; this loop
+    # owned both by hand first, and the shell was generalised FROM it —
+    # the GC and the packer were walking their hosts sequentially and
+    # lacked the property this had all along.
+    async def probe(
+      entry: tuple[str, str, str, InstanceView],
     ) -> None:
-      async with sem:
-        try:
-          outcome = await self._resolve_unknown_one(aid, task_id, tv)
-        except Exception:
-          logger.exception(
-            "resolver (unknown) failed for %s / %s", aid, task_id
-          )
-          outcome = "error"
+      kind, aid, task_id, tv = entry
+      resolve = (
+        self._resolve_unknown_one
+        if kind == "unknown"
+        else self._resolve_ghosted_one
+      )
+      # Counted inside, not by fan_out: a raise has to become the
+      # "error" outcome rather than vanish, so the tick's report still
+      # adds up to the number of entries it looked at.
+      try:
+        outcome = await resolve(aid, task_id, tv)
+      except Exception:
+        logger.exception(
+          "resolver (%s) failed for %s / %s", kind, aid, task_id
+        )
+        outcome = "error"
       counts[outcome] = counts.get(outcome, 0) + 1
 
-    async def probe_ghosted(
-      aid: str, task_id: str, tv: InstanceView
-    ) -> None:
-      async with sem:
-        try:
-          outcome = await self._resolve_ghosted_one(aid, task_id, tv)
-        except Exception:
-          logger.exception(
-            "resolver (ghosted) failed for %s / %s", aid, task_id
-          )
-          outcome = "error"
-      counts[outcome] = counts.get(outcome, 0) + 1
-
-    async with anyio.create_task_group() as tg:
-      for aid, task_id, tv in unknown_entries:
-        tg.start_soon(probe_unknown, aid, task_id, tv)
-      for aid, task_id, tv in ghosted_entries:
-        tg.start_soon(probe_ghosted, aid, task_id, tv)
+    await fan_out(
+      "resolver",
+      [("unknown", a, t, v) for a, t, v in unknown_entries]
+      + [("ghosted", a, t, v) for a, t, v in ghosted_entries],
+      probe,
+      max_concurrent=max_concurrent_probes,
+    )
     return counts
 
   async def _resolve_ghosted_one(

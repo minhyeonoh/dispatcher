@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
-from dispatcher.core.loops import LoopSkip, every, supervised
+import pytest
+
+from dispatcher.core.loops import LoopSkip, every, fan_out, supervised
 from dispatcher.services.auto_archive import (
   archive_loop,
   scan_auto_archive_candidates,
@@ -314,3 +317,95 @@ def test_scan_candidates_terminal_and_idle_only(tmp_path: Path):
     sched, datetime.now(UTC), threshold_days=7
   )
   assert out == ["job-old"]
+
+
+# ── fan_out ──────────────────────────────────────────────────────
+
+
+async def test_fan_out_runs_every_item():
+  seen: list[int] = []
+
+  async def work(i: int) -> None:
+    seen.append(i)
+
+  await fan_out("t", range(5), work)
+  assert sorted(seen) == [0, 1, 2, 3, 4]
+
+
+async def test_a_slow_item_does_not_hold_the_others():
+  """The whole reason this shell exists.
+
+  Sequentially, one item that takes its deadline makes every item
+  behind it wait that long too — and in a periodic loop the next tick
+  waits as well, since the current one has not returned. So one dark
+  host could stop a sweep outright."""
+  done: list[str] = []
+
+  async def work(item: str) -> None:
+    if item == "slow":
+      await asyncio.sleep(0.4)
+    done.append(item)
+
+  started = time.monotonic()
+  await fan_out("t", ["slow", "a", "b", "c"], work)
+  elapsed = time.monotonic() - started
+  # Sequential would be 0.4s + the rest; concurrent is ~0.4s total, and
+  # the fast ones finished long before the slow one.
+  assert elapsed < 0.4 * 2
+  assert done[-1] == "slow"
+
+
+async def test_one_failure_does_not_stop_the_siblings():
+  done: list[int] = []
+
+  async def work(i: int) -> None:
+    if i == 2:
+      raise RuntimeError("boom")
+    done.append(i)
+
+  await fan_out("t", range(5), work)
+  assert sorted(done) == [0, 1, 3, 4]
+
+
+async def test_fan_out_does_not_retry():
+  # A shell that retried would need a backoff and a give-up rule, which
+  # is policy. Converging callers re-derive their work next tick.
+  calls: list[int] = []
+
+  async def work(i: int) -> None:
+    calls.append(i)
+    raise RuntimeError("boom")
+
+  await fan_out("t", [1], work)
+  assert calls == [1]
+
+
+async def test_fan_out_bounds_concurrency():
+  live = 0
+  peak = 0
+
+  async def work(_i: int) -> None:
+    nonlocal live, peak
+    live += 1
+    peak = max(peak, live)
+    await asyncio.sleep(0.02)
+    live -= 1
+
+  await fan_out("t", range(20), work, max_concurrent=3)
+  assert peak <= 3
+
+
+async def test_fan_out_cancellation_propagates():
+  # Shutdown must not be something an item can swallow.
+  async def work(_i: int) -> None:
+    await asyncio.sleep(10)
+
+  task = asyncio.create_task(fan_out("t", range(3), work))
+  await asyncio.sleep(0.05)
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+
+async def test_fan_out_on_no_items():
+  await fan_out("t", [], lambda _x: asyncio.sleep(0))

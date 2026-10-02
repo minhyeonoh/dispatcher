@@ -753,6 +753,48 @@
         }
       }
     },
+    "/api/jobs/{job_id}/packs-changed": {
+      "post": {
+        "summary": "Packs Changed Ep",
+        "description": "Somebody wrote this job's archives from outside the server.\n\n`dispatcher pack` is that somebody. The server deliberately never\nreads archives on the HTTP path \u2014 `pack_lag` answers from memory so\na sick NFS cannot stall `GET /jobs` \u2014 which leaves one gap: a write\nit did not make. Rather than poll for it, the writer says so, and\nthis is the one read of disk a request is allowed to cause, because\nan operator who just ran the command is waiting to see it land.",
+        "operationId": "packs_changed_ep_api_jobs__job_id__packs_changed_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Packs Changed Ep Api Jobs  Job Id  Packs Changed Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/unarchive": {
       "post": {
         "summary": "Unarchive Job Ep",
@@ -1849,17 +1891,6 @@
               }
             ],
             "title": "Processors"
-          },
-          "timeout_sec": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Timeout Sec"
           }
         },
         "additionalProperties": false,
@@ -1878,11 +1909,6 @@
             "exclusiveMinimum": 0.0,
             "title": "Processors",
             "default": 2
-          },
-          "timeout_sec": {
-            "type": "number",
-            "title": "Timeout Sec",
-            "default": 600.0
           }
         },
         "type": "object",

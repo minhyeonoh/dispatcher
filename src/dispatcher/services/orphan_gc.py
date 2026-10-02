@@ -21,6 +21,7 @@ from dispatcher.core.containers import (
   parse_created,
   remove_instance_sets,
 )
+from dispatcher.core.loops import fan_out
 
 if TYPE_CHECKING:
   from datetime import datetime
@@ -79,56 +80,81 @@ class OrphanGC:
       preserved.add(tv.instance_id)
 
     per_host_removed: dict[str, int] = {}
-    for host in list(self._sched.all_host_settings()):
-      try:
-        containers = await census_host(
-          host,
-          self_host=self._self_host,
-          label_filter=labels.SET,
-        )
-      except RuntimeError as exc:
-        logger.warning("gc: census %s failed: %s", host, exc)
-        continue
 
-      per_set_min_age_s: dict[str, float] = {}
-      for c in containers:
-        set_name = container_labels(c).get(labels.SET)
-        if not set_name:
-          continue
-        created_at = parse_created(c.get("Created", ""))
-        if created_at is None:
-          continue  # unparseable — err on the side of caution
-        age_s = (now - created_at).total_seconds()
-        prev = per_set_min_age_s.get(set_name)
-        per_set_min_age_s[set_name] = (
-          age_s if prev is None else min(prev, age_s)
-        )
+    async def one_host(host: str) -> None:
+      removed = await self._sweep_host(
+        host,
+        now=now,
+        preserved=preserved,
+        min_container_age_s=min_container_age_s,
+      )
+      if removed > 0:
+        per_host_removed[host] = removed
 
-      suspects_prev = self._suspects.get(host, {})
-      suspects_next: dict[str, datetime] = {}
-      to_delete: list[str] = []
-      for set_name, min_age_s in per_set_min_age_s.items():
-        if set_name in preserved:
-          continue
-        if min_age_s < min_container_age_s:
-          # Hard "not this tick" — suspect state only accrues
-          # once the whole set has aged past the floor.
-          continue
-        if set_name in suspects_prev:
-          to_delete.append(set_name)
-        else:
-          suspects_next[set_name] = now
-
-      self._suspects[host] = suspects_next
-
-      if to_delete:
-        removed = await remove_instance_sets(
-          host, to_delete, self_host=self._self_host
-        )
-        if removed > 0:
-          per_host_removed[host] = removed
-
+    # Per host, concurrently: this used to be a sequential walk, so a
+    # machine whose docker daemon had wedged held every host behind it
+    # for its census deadline — and because the next tick waits for this
+    # one, one dark machine could stop collection outright. Each task
+    # touches only its own host's keys.
+    await fan_out("gc", list(self._sched.all_host_settings()), one_host)
     return per_host_removed
+
+  async def _sweep_host(
+    self,
+    host: str,
+    *,
+    now: datetime,
+    preserved: set[str],
+    min_container_age_s: float,
+  ) -> int:
+    """One host's census → suspect accrual → removal. Returns how many
+    container sets it removed."""
+    try:
+      containers = await census_host(
+        host,
+        self_host=self._self_host,
+        label_filter=labels.SET,
+      )
+    except RuntimeError as exc:
+      logger.warning("gc: census %s failed: %s", host, exc)
+      return 0
+
+    per_set_min_age_s: dict[str, float] = {}
+    for c in containers:
+      set_name = container_labels(c).get(labels.SET)
+      if not set_name:
+        continue
+      created_at = parse_created(c.get("Created", ""))
+      if created_at is None:
+        continue  # unparseable — err on the side of caution
+      age_s = (now - created_at).total_seconds()
+      prev = per_set_min_age_s.get(set_name)
+      per_set_min_age_s[set_name] = (
+        age_s if prev is None else min(prev, age_s)
+      )
+
+    suspects_prev = self._suspects.get(host, {})
+    suspects_next: dict[str, datetime] = {}
+    to_delete: list[str] = []
+    for set_name, min_age_s in per_set_min_age_s.items():
+      if set_name in preserved:
+        continue
+      if min_age_s < min_container_age_s:
+        # Hard "not this tick" — suspect state only accrues once the
+        # whole set has aged past the floor.
+        continue
+      if set_name in suspects_prev:
+        to_delete.append(set_name)
+      else:
+        suspects_next[set_name] = now
+
+    self._suspects[host] = suspects_next
+
+    if not to_delete:
+      return 0
+    return await remove_instance_sets(
+      host, to_delete, self_host=self._self_host
+    )
 
 
 async def gc_loop(gc: OrphanGC, settings: OrphanGCSettings) -> None:

@@ -24,10 +24,11 @@ on a host, so a trickle of completions gives batches of one and a burst
 gives however many accumulated. Nothing is held back and there is no
 size or interval to get wrong.
 
-Sequential, one append at a time across all hosts: exactly one writer
-per archive without a lock, one task to supervise, no per-host
-lifecycle. The cost is that an unreachable host holds the queue for its
-timeout before the next is served.
+Per host, concurrently (`loops.fan_out`): an archive has one writer
+either way, since a host only ever appends its own, and a machine whose
+NFS or docker has wedged must not make every other host wait out its
+deadline behind it. That concurrency is also what demoted the append
+deadline from a setting to a constant — see `APPEND_TIMEOUT`.
 
 When a pass makes no progress and work remains it stops rather than
 re-queueing — the readout service's rule, for the same reason: a host
@@ -59,6 +60,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 from dispatcher.core.hosts import run_on
+from dispatcher.core.loops import fan_out
 from dispatcher.core.pack import (
   bust_dir_cache,
   instance_home_for,
@@ -78,6 +80,21 @@ if TYPE_CHECKING:
   """An archive's (mtime_ns, size), or None when it does not exist."""
 
 logger = logging.getLogger(__name__)
+
+APPEND_TIMEOUT = 900.0
+"""Backstop for one append — a constant, not a setting.
+
+It stopped being a knob once appends run per host concurrently: a hang
+no longer holds the other hosts, so the value only bounds how long one
+leaked `mksquashfs` lingers, and nobody needs to tune that. It is
+larger than `hosts.DEFAULT_TIMEOUT` because the work legitimately
+takes longer than 30s on a first pack — measured 1.9s per 52 instances,
+so a 1,344-instance job is about 50s.
+
+Both hang paths it covers are real: `flock` has no `-w`, so a hand-run
+`dispatcher pack` holding the lock would block this, and the NFS mounts
+are `hard`, which means they block rather than erroring when a server
+goes away."""
 
 _TERMINAL = ("done_ok", "done_err")
 """The only states whose homes may be packed.
@@ -107,22 +124,12 @@ class PackSettings(BaseModel):
   append is 0.14s of CPU against a 0.29s ssh round trip, so more
   workers buy nothing and would take cores from trials."""
 
-  timeout_sec: float = 600.0
-  """Backstop for one append, not a tuning knob. Measured work is
-  sub-second; this exists because the consumer is sequential, so an
-  append that hung with no deadline would stop packing for the rest of
-  the server's life. Both hang paths are real: `flock` without `-w`
-  waits forever, so a hand-run `dispatcher pack` would block this, and
-  the NFS mounts are `hard` — they block rather than erroring when a
-  server goes away."""
-
 
 class PackPatch(BaseModel):
   model_config = ConfigDict(extra="forbid")
 
   auto: bool | None = None
   processors: PositiveInt | None = None
-  timeout_sec: float | None = None
 
 
 def apply_patch(settings: PackSettings, patch: PackPatch) -> None:
@@ -130,8 +137,6 @@ def apply_patch(settings: PackSettings, patch: PackPatch) -> None:
     settings.auto = patch.auto
   if patch.processors is not None:
     settings.processors = patch.processors
-  if patch.timeout_sec is not None:
-    settings.timeout_sec = patch.timeout_sec
 
 
 class Packer:
@@ -286,8 +291,14 @@ class Packer:
     # own work, off the HTTP path.
     await self.load(job_id)
     before = self.pack_lag(job_id) or 0
-    for host, instance_ids in self.missing(job_id).items():
-      await self._append(job_id, host, instance_ids)
+    # Per host, concurrently: one archive has one writer either way, and
+    # a host whose NFS or docker has wedged must not make every other
+    # host wait out its deadline behind it.
+    await fan_out(
+      "pack",
+      list(self.missing(job_id).items()),
+      lambda pair: self._append(job_id, pair[0], pair[1]),
+    )
     after = self.pack_lag(job_id) or 0
     if after and after >= before:
       logger.warning(
@@ -321,7 +332,7 @@ class Packer:
         pack_shell_cmd(
           home_root, host, todo, processors=self._settings.processors
         ),
-        timeout=self._settings.timeout_sec,
+        timeout=APPEND_TIMEOUT,
       )
       now, stamp = await asyncio.to_thread(_read_one_host, home_root, host)
       self._held.setdefault(job_id, {})[host] = (stamp, now)

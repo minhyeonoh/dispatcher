@@ -18,11 +18,13 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
 from dispatcher.core.models import HostSettings
 from dispatcher.core.pack import pack_path, packed_instances
 from dispatcher.core.scheduler import Scheduler
 from dispatcher.services.packer import (
+  APPEND_TIMEOUT,
   Packer,
   PackPatch,
   PackSettings,
@@ -438,14 +440,20 @@ def test_packing_is_off_by_default():
 
 def test_patch_applies_each_knob():
   settings = PackSettings()
-  apply_patch(settings, PackPatch(auto=True, processors=4, timeout_sec=5))
-  assert (settings.auto, settings.processors, settings.timeout_sec) == (
-    True,
-    4,
-    5,
-  )
+  apply_patch(settings, PackPatch(auto=True, processors=4))
+  assert (settings.auto, settings.processors) == (True, 4)
   apply_patch(settings, PackPatch())
   assert settings.auto is True
+
+
+def test_the_append_deadline_is_not_a_setting():
+  # It stopped being one when appends went concurrent: a hang no longer
+  # holds the other hosts, so the value only bounds how long a leaked
+  # mksquashfs lingers, and `extra="forbid"` now rejects the knob rather
+  # than silently ignoring it.
+  with pytest.raises(ValidationError):
+    PackPatch(timeout_sec=5)  # type: ignore[call-arg]  # the point
+  assert APPEND_TIMEOUT > 0
 
 
 # ── telling the server about an outside write ────────────────────
