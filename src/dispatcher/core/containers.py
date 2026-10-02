@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 
 from dispatcher.core import clock, labels
-from dispatcher.core.hosts import SSH_OPTS, run_on
+from dispatcher.core.hosts import SSH_OPTS, run_argv, run_on
 
 if TYPE_CHECKING:
   from collections.abc import (
@@ -458,29 +458,20 @@ async def remove_instance_sets(
     else ["ssh", *SSH_OPTS, host, inner]
   )
   try:
-    proc = await asyncio.create_subprocess_exec(
-      *argv,
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-  except (OSError, RuntimeError) as exc:
+    # Deadlined: the GC loop's next tick waits for this one, so a
+    # wedged `docker rm` would stop orphan collection for good.
+    done = await run_argv(argv)
+  except (OSError, RuntimeError, TimeoutError) as exc:
     logger.warning("gc: rm on %s raised: %s", host, exc)
     return 0
-  if proc.returncode != 0:
+  if done.returncode != 0:
     logger.warning(
       "gc: rm on %s exited %s: %s",
       host,
-      proc.returncode,
-      stderr.decode("utf-8", "replace")[:300],
+      done.returncode,
+      done.stderr[:300],
     )
-  return len(
-    [
-      ln
-      for ln in stdout.decode("utf-8", "replace").splitlines()
-      if ln.strip()
-    ]
-  )
+  return len([ln for ln in done.stdout.splitlines() if ln.strip()])
 
 
 # ── image identity + distribution ────────────────────────────────

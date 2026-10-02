@@ -25,6 +25,7 @@ above 0 names work for the retroactive command.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -44,6 +45,7 @@ from dispatcher.core.dispatch import (
   SOURCE_MOUNT,
   SOURCE_TAR_FILENAME,
 )
+from dispatcher.core.hosts import run_argv
 from dispatcher.core.pack import packed_hosts, stage_instances
 from dispatcher.core.readout import (
   COLUMNS_NAME,
@@ -1087,15 +1089,11 @@ async def kill_readout_containers(job_id: str) -> None:
     f"label={labels.READOUT}={job_id}"
     '); [ -n "$ids" ] && docker rm -f $ids > /dev/null 2>&1; true'
   )
-  proc = await asyncio.create_subprocess_exec(
-    "bash",
-    "-c",
-    inner,
-    stdout=asyncio.subprocess.DEVNULL,
-    stderr=asyncio.subprocess.DEVNULL,
-    start_new_session=True,
-  )
-  await proc.wait()
+  # Deadlined like everything else, and this one especially: it is the
+  # cleanup a pass that ALREADY timed out runs, so a hang here would
+  # turn one stuck container into a stuck server.
+  with contextlib.suppress(TimeoutError, OSError):
+    await run_argv(["bash", "-c", inner], capture=False)
 
 
 __all__ = [

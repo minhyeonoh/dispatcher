@@ -10,12 +10,15 @@ cannot see it.
 
 from __future__ import annotations
 
-import asyncio
 import shlex
 from typing import TYPE_CHECKING
 
 from dispatcher.core import labels
-from dispatcher.core.hosts import SSH_OPTS
+from dispatcher.core.hosts import (
+  DEFAULT_TIMEOUT,
+  SSH_OPTS,
+  run_argv,
+)
 
 if TYPE_CHECKING:
   from pathlib import Path
@@ -115,24 +118,36 @@ async def docker_dispatch(
   """Fire the docker run and wait only for its (fast) return —
   the daemon holds the container afterwards.
 
-  `start_new_session=True`: without it, self-host dispatch runs
-  in the dispatcher's process group and a tmux C-c on the
-  dispatcher pane forwards SIGINT into an in-flight docker/ssh
-  client."""
+  Deadlined, because "fast" is an expectation and not a guarantee, and
+  this is the worst place in the server to be wrong about it: the
+  dispatch walk is sequential, so one `docker run` that never returns
+  stops dispatch for the WHOLE cluster — and without
+  `--no-docker-events`, the same tick's completion poll with it. A hang
+  is not a crash, so `supervised` would not restart anything and no log
+  line would appear. `ssh`'s ConnectTimeout does not cover it: that is
+  reaching the host, and a remote daemon that wedges after connecting
+  waits forever.
+
+  A timeout becomes a `DispatchError` so it lands in the path a failed
+  dispatch already has — requeue, and park in `unknown` past the
+  budget. A hang the operator can see beats a hang they cannot, and it
+  is the same evidence either way: no container was confirmed started,
+  and the GC-orphan sweep reaps one if it was."""
   argv = build_argv(
     action, state, instance_home=instance_home, self_host=self_host
   )
-  proc = await asyncio.create_subprocess_exec(
-    *argv,
-    stdout=asyncio.subprocess.PIPE,
-    stderr=asyncio.subprocess.PIPE,
-    start_new_session=True,
-  )
-  stdout, stderr = await proc.communicate()
-  if proc.returncode != 0:
+  # Passed, not left to `run_argv`'s own default: the deadline and the
+  # message it produces have to come from one place, or the error can
+  # name a number that is not the one that fired.
+  try:
+    done = await run_argv(argv, timeout=DEFAULT_TIMEOUT)
+  except TimeoutError as exc:
+    raise DispatchError(
+      f"dispatch to {action.host!r} timed out after {DEFAULT_TIMEOUT}s"
+    ) from exc
+  if done.returncode != 0:
     raise DispatchError(
       f"dispatch to {action.host!r} failed "
-      f"(exit {proc.returncode}): "
-      f"stdout={stdout.decode(errors='replace')!r} "
-      f"stderr={stderr.decode(errors='replace')!r}"
+      f"(exit {done.returncode}): "
+      f"stdout={done.stdout!r} stderr={done.stderr!r}"
     )
