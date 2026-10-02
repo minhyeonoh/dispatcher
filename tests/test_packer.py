@@ -326,16 +326,14 @@ async def test_an_unknown_job_is_skipped_not_fatal(tmp_path: Path):
 # ── the cache must not lie ───────────────────────────────────────
 
 
-async def test_lag_before_loading_would_lie_so_load_fixes_it(
-  tmp_path: Path,
-):
+async def test_an_unread_job_reports_null_not_a_count(tmp_path: Path):
   """Found on the live server: every job reported its full terminal
   count as unpacked, including ones that were fully packed.
 
-  `pack_lag` reads the cache, and a cold cache means "nothing is
-  archived" — a number wrong in the alarming direction, which sent me
-  to `dispatcher pack` for a job that needed nothing. The fix is that
-  reads load first; this pins both halves."""
+  A cold cache means "nothing is archived", so deriving a NUMBER from
+  it is wrong in the alarming direction — it sent me to `dispatcher
+  pack` for a job that needed nothing. The answer is None: the UI draws
+  a dash, which says "not known yet" and is true."""
   packer, scheduler, job = mk_packer(tmp_path)
   finish(packer, scheduler, job, "t0")
   await drain(packer, job.job_id)
@@ -347,9 +345,39 @@ async def test_lag_before_loading_would_lie_so_load_fixes_it(
     settings=PackSettings(auto=True),
     self_host=SELF,
   )
-  assert cold.pack_lag(job.job_id) == 1  # the lie, unavoidable
+  assert cold.pack_lag(job.job_id) is None  # not 1, and not 0
   await cold.load(job.job_id)
-  assert cold.pack_lag(job.job_id) == 0  # and gone once loaded
+  assert cold.pack_lag(job.job_id) == 0
+
+
+async def test_pack_lag_never_touches_disk(tmp_path: Path, monkeypatch):
+  """It is rendered on every job row of every poll, so `unsquashfs` on
+  that path would make `GET /jobs` wait on NFS — minutes of it when a
+  server is sick, which is exactly when the page matters."""
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0")
+  await drain(packer, job.job_id)
+
+  def explode(*_a, **_k):
+    raise AssertionError("pack_lag read disk")
+
+  monkeypatch.setattr(
+    "dispatcher.services.packer.packed_instances", explode
+  )
+  monkeypatch.setattr("dispatcher.services.packer.packed_hosts", explode)
+  assert packer.pack_lag(job.job_id) == 0
+  assert packer.missing(job.job_id) == {}
+
+
+async def test_load_all_covers_archived_jobs(tmp_path: Path):
+  # Archived is where a finished experiment's files are, and
+  # `dispatcher pack` works on them, so they have a real gap worth
+  # reporting from the first page view.
+  packer, scheduler, job = mk_packer(tmp_path)
+  finish(packer, scheduler, job, "t0")
+  assert packer.pack_lag(job.job_id) is None
+  await packer.load_all()
+  assert packer.pack_lag(job.job_id) == 1
 
 
 async def test_an_archive_written_by_another_process_is_noticed(
@@ -418,3 +446,41 @@ def test_patch_applies_each_knob():
   )
   apply_patch(settings, PackPatch())
   assert settings.auto is True
+
+
+# ── telling the server about an outside write ────────────────────
+
+
+def test_packs_changed_reloads_one_job(tmp_path: Path):
+  """The server never reads archives on its HTTP path, so it cannot see
+  a write it did not make — `dispatcher pack` is exactly that writer.
+
+  Rather than poll, the writer says so. Without this the gap the command
+  just closed kept being reported until the next completion or a
+  restart, which is the same symptom as the cache bug it replaced."""
+  from tests.test_server import mk_client
+
+  with mk_client(tmp_path) as client:
+    body = {
+      "label": "arm",
+      "task_ids": ["t0"],
+      "home_root": str(tmp_path / "home"),
+      "container": {"image": "img", "command": ["true"]},
+    }
+    created = client.post("/jobs", json=body)
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    resp = client.post(f"/jobs/{job_id}/packs-changed")
+    assert resp.status_code == 200
+    assert resp.json()["job_id"] == job_id
+    # Nothing is packed, but the job IS read now — so the answer is a
+    # number rather than the "not known yet" null.
+    assert resp.json()["pack_lag"] == 0
+
+
+def test_packs_changed_404s_for_an_unknown_job(tmp_path: Path):
+  from tests.test_server import mk_client
+
+  with mk_client(tmp_path) as client:
+    assert client.post("/jobs/nope/packs-changed").status_code == 404

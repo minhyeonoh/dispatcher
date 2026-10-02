@@ -183,23 +183,36 @@ class Packer:
         out.setdefault(tv.host, []).append(tv.instance_id)
     return out
 
-  def pack_lag(self, job_id: str) -> int:
-    """How many terminal instances are not in an archive.
+  def pack_lag(self, job_id: str) -> int | None:
+    """How many terminal instances are not in an archive, or None when
+    this job's archives have not been read yet.
 
-    Answered from the cache, so `load` has to have run — a read that
-    projects this without loading first would call every terminal
-    instance unpacked, a number that lies in the alarming direction.
-    0 once everything is packed; with `auto` off it is simply how much
-    `dispatcher pack` would do."""
+    Pure projection over memory — no disk, no await, because this is
+    rendered on every job row of every poll. Reading disk here would
+    put `unsquashfs` on the HTTP path, where a sick NFS server turns
+    `GET /jobs` into a minutes-long wait at exactly the moment the
+    operator most needs the page.
+
+    None rather than a count before the first read: a cold cache means
+    "nothing is archived", which would report every terminal instance
+    as unpacked — wrong in the alarming direction, and it once sent me
+    to `dispatcher pack` for a job that needed nothing. The dash the UI
+    draws for None says "not known yet", which is true."""
+    if job_id not in self._held:
+      return None
     return sum(len(v) for v in self.missing(job_id).values())
 
   async def load(self, job_id: str) -> None:
     """Make the cache agree with the archives on disk.
 
+    Called by the packer's own work, not by a read: a client asking for
+    a job row must never be what goes to the filesystem.
+
     Re-reads an archive only when its (mtime, size) moved, so the
     steady state is one glob and one stat per archive and the contents
     are decompressed again only after somebody wrote them — whoever
-    that somebody was."""
+    that somebody was, which is how `dispatcher pack` from another
+    process gets noticed."""
     try:
       state = self._scheduler.job_state(job_id)
     except KeyError:
@@ -214,6 +227,20 @@ class Packer:
         await self.load(job_id)
       except OSError as exc:
         logger.warning("pack load failed job=%s: %s", job_id, exc)
+
+  async def load_all(self) -> None:
+    """Boot: read every job's archives once, archived included.
+
+    So that rows are answerable from the first page view rather than
+    showing dashes until something completes. Archived jobs are where a
+    finished experiment's files are, and `dispatcher pack` works on
+    them, so they have a real gap worth reporting.
+
+    One glob and one stat per archive for jobs that have none — which
+    is most of them — so this is cheap even over NFS. It is also the
+    only place a read of disk is allowed to delay anything, and at boot
+    there is nothing yet to delay."""
+    await self.load_many(list(self._scheduler.iter_job_ids()))
 
   # ── the queue ────────────────────────────────────────────────
 
@@ -255,11 +282,13 @@ class Packer:
     the gap is left visible instead — the next completion in this job
     re-drives it, and `dispatcher pack` covers a job that has stopped
     producing them."""
+    # The one place disk is read before deriving the gap — the packer's
+    # own work, off the HTTP path.
     await self.load(job_id)
-    before = self.pack_lag(job_id)
+    before = self.pack_lag(job_id) or 0
     for host, instance_ids in self.missing(job_id).items():
       await self._append(job_id, host, instance_ids)
-    after = self.pack_lag(job_id)
+    after = self.pack_lag(job_id) or 0
     if after and after >= before:
       logger.warning(
         "pack: job=%s made no progress, %d instance(s) unpacked",

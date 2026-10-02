@@ -765,6 +765,17 @@ async def retry_done_err(
   }
 
 
+async def packs_changed(st: ServerState, job_id: str) -> dict[str, Any]:
+  """Re-read one job's archives, because a writer outside the server
+  changed them."""
+  if not st.scheduler.has_job(job_id):
+    raise NotFound(f"job {job_id!r} not found")
+  if st.packer is None:
+    return {"job_id": job_id, "pack_lag": None}
+  await st.packer.load(job_id)
+  return {"job_id": job_id, "pack_lag": st.packer.pack_lag(job_id)}
+
+
 async def archive_job(
   st: ServerState,
   job_id: str,

@@ -25,10 +25,14 @@ if TYPE_CHECKING:
   wire.py stays a projection over scheduler state: None (tests,
   restore) simply means no readout columns."""
 
-  PackLagFn = Callable[[str], int]
-  """`job_id → unpacked terminal instances`. Threaded the same way and
-  for the same reason; None means nothing is packing, which reports as
-  null rather than as a reassuring zero."""
+  PackLagFn = Callable[[str], int | None]
+  """`job_id → unpacked terminal instances`, or None when that is not
+  known yet (this job's archives have not been read).
+
+  Threaded like `ReadoutSummaryFn` and for the same reason. The
+  Optional is load-bearing twice over: no packer attached at all, and a
+  packer that has not looked at this job — both report null rather than
+  a zero that would read as "caught up"."""
 
 
 class RetryDoneErrRequest(BaseModel):

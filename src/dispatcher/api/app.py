@@ -118,15 +118,13 @@ async def _refresh_live_cells(st: ServerState, job_ids: list[str]) -> None:
   service, which leaves the job dirty so the next read retries and
   marks the numbers stale meanwhile.
 
-  The pack side has to be here rather than answered from an empty
-  cache: `pack_lag` read before anything loaded would report every
-  terminal instance as unpacked, which is a number that lies in the
-  alarming direction — it sent me to `dispatcher pack` for a job that
-  was already fully packed."""
+  Packing is NOT refreshed here. `pack_lag` answers from memory and the
+  packer reads disk on its own work, because `unsquashfs` on the HTTP
+  path would make `GET /jobs` wait on NFS — minutes of it when a server
+  is sick, which is exactly when the page matters. A cold entry reports
+  null, not a count."""
   if st.readouts is not None:
     await st.readouts.refresh(list(job_ids))
-  if st.packer is not None:
-    await st.packer.load_many(list(job_ids))
 
 
 def create_app(
@@ -290,6 +288,7 @@ def create_app(
     # Values for live jobs, so the first jobs table already carries
     # readout columns and a truthful lag instead of nulls.
     await readouts.load_all()
+    await packer.load_all()
     metrics_file = config.data_dir / HOST_METRICS_FILENAME
     initial_ring = load_ring(
       metrics_file, settings.host_autotune.ring_buffer_size
@@ -656,6 +655,18 @@ def create_app(
     return await ops.archive_job(
       _get_state(app), job_id, clock_fn, kind="manual"
     )
+
+  @api.post("/jobs/{job_id}/packs-changed")
+  async def packs_changed_ep(job_id: str) -> dict[str, Any]:
+    """Somebody wrote this job's archives from outside the server.
+
+    `dispatcher pack` is that somebody. The server deliberately never
+    reads archives on the HTTP path — `pack_lag` answers from memory so
+    a sick NFS cannot stall `GET /jobs` — which leaves one gap: a write
+    it did not make. Rather than poll for it, the writer says so, and
+    this is the one read of disk a request is allowed to cause, because
+    an operator who just ran the command is waiting to see it land."""
+    return await ops.packs_changed(_get_state(app), job_id)
 
   @api.post("/jobs/{job_id}/unarchive")
   async def unarchive_job_ep(

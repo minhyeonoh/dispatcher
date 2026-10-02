@@ -448,6 +448,7 @@ def do_pack(
     print("nothing terminal to pack", file=out)
     return 0
   failures = 0
+  packed_any = False
   _see_fresh(home_root)
   for host, instance_ids in groups.items():
     already = packed_instances(pack_path(home_root, host))
@@ -489,7 +490,28 @@ def do_pack(
       )
     else:
       print(f"{host:6s} +{len(todo):<5} now {len(now)} packed", file=out)
+      packed_any = True
+  # The server never reads archives on its own HTTP path, so it cannot
+  # see a write this command made. Telling it is cheaper and more
+  # certain than having it poll, and an operator who just ran this is
+  # looking at the page now. Best-effort: the gap it closed is real
+  # whether or not the server has caught up to it.
+  if packed_any and not dry_run:
+    _post(server, f"/api/jobs/{job_id}/packs-changed")
   return 1 if failures else 0
+
+
+def _post(server: str, path: str) -> None:
+  import httpx
+
+  try:
+    httpx.post(server.rstrip("/") + path, timeout=30.0)
+  except httpx.HTTPError as exc:
+    print(
+      f"note: packed, but could not tell the server ({exc}) — its "
+      f"pack_lag will catch up on the next completion or restart",
+      file=sys.stderr,
+    )
 
 
 def do_mount(
